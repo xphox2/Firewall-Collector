@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.2 - 2026-02-28
+
+### Improved
+- Add `PROBE_REGISTRATION_KEY` and `PROBE_SERVER_URL` as pre-defined environment variables in Dockerfile so users can see and fill them in directly in Docker UIs instead of typing variable names manually
+
 ## 1.0.1 - 2026-02-28
 
 ### Security

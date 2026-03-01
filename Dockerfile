@@ -19,6 +19,9 @@ WORKDIR /app
 
 COPY --from=builder /build/firewall-collector .
 
+ENV PROBE_REGISTRATION_KEY=""
+ENV PROBE_SERVER_URL="https://stats.technicallabs.org"
+
 EXPOSE 162/udp 514/udp 6343/udp
 
 ENTRYPOINT ["./firewall-collector"]
