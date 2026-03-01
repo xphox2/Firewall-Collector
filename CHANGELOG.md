@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.2 - 2026-03-01
+
+### Fixed
+- **Syslog TCP read deadline**: Moved `SetReadDeadline` inside read loop so it resets per-read instead of expiring 60s after connection start
+- **Syslog Stop() double-close panic**: Both TCP and UDP receivers now use `sync.Once` to prevent panic on double-close of stopCh
+- **sFlow Stop() double-close panic**: Same `sync.Once` fix for sFlow receiver
+
 ## 1.1.1 - 2026-03-01
 
 ### Fixed

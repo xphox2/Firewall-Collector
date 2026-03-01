@@ -26,6 +26,7 @@ type SyslogReceiver struct {
 	listener   net.Listener
 	running    atomic.Bool
 	stopCh     chan struct{}
+	stopOnce   sync.Once
 }
 
 func NewSyslogReceiver(listenAddr string, port int) *SyslogReceiver {
@@ -62,13 +63,15 @@ func (s *SyslogReceiver) Stop() error {
 		return nil
 	}
 
-	s.running.Store(false)
-	close(s.stopCh)
-
-	if s.listener != nil {
-		return s.listener.Close()
-	}
-	return nil
+	var closeErr error
+	s.stopOnce.Do(func() {
+		s.running.Store(false)
+		close(s.stopCh)
+		if s.listener != nil {
+			closeErr = s.listener.Close()
+		}
+	})
+	return closeErr
 }
 
 func (s *SyslogReceiver) acceptLoop() {
@@ -90,9 +93,8 @@ func (s *SyslogReceiver) handleConnection(conn net.Conn) {
 	buf := make([]byte, MaxMessageSize)
 	var messageBuf bytes.Buffer
 
-	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-
 	for {
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 		n, err := conn.Read(buf)
 		if err != nil {
 			break
@@ -144,6 +146,7 @@ type UDPSyslogReceiver struct {
 	conn       *net.UDPConn
 	running    atomic.Bool
 	stopCh     chan struct{}
+	stopOnce   sync.Once
 	wg         sync.WaitGroup
 }
 
@@ -185,15 +188,17 @@ func (u *UDPSyslogReceiver) Stop() error {
 		return nil
 	}
 
-	u.running.Store(false)
-	close(u.stopCh)
-
-	if u.conn != nil {
-		u.conn.Close()
-	}
+	var closeErr error
+	u.stopOnce.Do(func() {
+		u.running.Store(false)
+		close(u.stopCh)
+		if u.conn != nil {
+			closeErr = u.conn.Close()
+		}
+	})
 
 	u.wg.Wait()
-	return nil
+	return closeErr
 }
 
 func (u *UDPSyslogReceiver) readLoop() {

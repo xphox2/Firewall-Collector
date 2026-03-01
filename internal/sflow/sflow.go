@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -17,6 +18,7 @@ type SFlowReceiver struct {
 	handler    func(*relay.FlowSample)
 	conn       *net.UDPConn
 	stopChan   chan struct{}
+	stopOnce   sync.Once
 	running    atomic.Bool
 }
 
@@ -63,13 +65,15 @@ func (r *SFlowReceiver) Stop() error {
 		return nil
 	}
 
-	r.running.Store(false)
-	close(r.stopChan)
-
-	if r.conn != nil {
-		return r.conn.Close()
-	}
-	return nil
+	var closeErr error
+	r.stopOnce.Do(func() {
+		r.running.Store(false)
+		close(r.stopChan)
+		if r.conn != nil {
+			closeErr = r.conn.Close()
+		}
+	})
+	return closeErr
 }
 
 func (r *SFlowReceiver) readLoop() {
