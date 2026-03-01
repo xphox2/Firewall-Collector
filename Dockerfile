@@ -1,11 +1,11 @@
 # Firewall Collector - Lightweight probe for remote sites
 FROM golang:1.21-alpine AS builder
 
-RUN apk add --no-cache gcc musl-dev
-
 WORKDIR /build
 
 COPY go.mod go.sum ./
+RUN go mod download
+
 COPY cmd ./cmd
 COPY internal ./internal
 

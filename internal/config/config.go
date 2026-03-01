@@ -2,6 +2,8 @@ package config
 
 import (
 	"os"
+	"strconv"
+	"time"
 )
 
 type Config struct {
@@ -15,6 +17,8 @@ type ProbeConfig struct {
 	TLSKeyFile         string
 	CACertFile         string
 	InsecureSkipVerify bool
+	HeartbeatInterval  time.Duration
+	SyncInterval       time.Duration
 }
 
 func Load() *Config {
@@ -26,6 +30,8 @@ func Load() *Config {
 			TLSKeyFile:      os.Getenv("PROBE_TLS_KEY"),
 			CACertFile:         os.Getenv("PROBE_CA_CERT"),
 			InsecureSkipVerify: os.Getenv("PROBE_INSECURE_SKIP_VERIFY") == "true",
+			HeartbeatInterval:  parseDurationSeconds("PROBE_HEARTBEAT_INTERVAL", 60),
+			SyncInterval:       parseDurationSeconds("PROBE_SYNC_INTERVAL", 30),
 		},
 	}
 }
@@ -35,4 +41,13 @@ func getEnv(key, defaultValue string) string {
 		return v
 	}
 	return defaultValue
+}
+
+func parseDurationSeconds(envKey string, defaultSeconds int) time.Duration {
+	if v := os.Getenv(envKey); v != "" {
+		if seconds, err := strconv.Atoi(v); err == nil && seconds > 0 {
+			return time.Duration(seconds) * time.Second
+		}
+	}
+	return time.Duration(defaultSeconds) * time.Second
 }

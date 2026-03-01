@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.4 - 2026-02-28
+
+### Improved
+- Send offline heartbeat to server on graceful shutdown so the server knows immediately instead of waiting for a timeout
+- Heartbeat and sync intervals are now configurable via `PROBE_HEARTBEAT_INTERVAL` and `PROBE_SYNC_INTERVAL` env vars (in seconds, defaults: 60 and 30)
+- Remove unnecessary gcc/musl-dev from Dockerfile builder stage (not needed with `CGO_ENABLED=0`)
+- Add `go mod download` layer to Dockerfile for faster rebuilds when only source code changes
+
 ## 1.0.3 - 2026-02-28
 
 ### Fixed

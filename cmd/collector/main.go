@@ -27,7 +27,8 @@ func main() {
 	relayClient := relay.NewClient(relay.Config{
 		ServerURL:          cfg.Probe.ServerURL,
 		RegistrationKey:    registrationKey,
-		SyncInterval:       30 * time.Second,
+		SyncInterval:       cfg.Probe.SyncInterval,
+		HeartbeatInterval:  cfg.Probe.HeartbeatInterval,
 		TLSCertFile:        cfg.Probe.TLSCertFile,
 		TLSKeyFile:         cfg.Probe.TLSKeyFile,
 		CACertFile:         cfg.Probe.CACertFile,

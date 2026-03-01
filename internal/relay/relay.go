@@ -27,6 +27,7 @@ type Config struct {
 	TLSKeyFile         string
 	CACertFile         string
 	SyncInterval       time.Duration
+	HeartbeatInterval  time.Duration
 	InsecureSkipVerify bool
 }
 
@@ -56,6 +57,9 @@ type RegisterResponse struct {
 func NewClient(cfg Config) *Client {
 	if cfg.SyncInterval == 0 {
 		cfg.SyncInterval = 30 * time.Second
+	}
+	if cfg.HeartbeatInterval == 0 {
+		cfg.HeartbeatInterval = 60 * time.Second
 	}
 
 	tlsConfig := &tls.Config{}
@@ -197,7 +201,7 @@ func (c *Client) HeartbeatLoop() error {
 		log.Printf("Initial heartbeat error: %v", err)
 	}
 
-	ticker := time.NewTicker(60 * time.Second)
+	ticker := time.NewTicker(c.Config.HeartbeatInterval)
 	defer ticker.Stop()
 
 	for {
@@ -213,13 +217,17 @@ func (c *Client) HeartbeatLoop() error {
 }
 
 func (c *Client) SendHeartbeat() error {
+	return c.sendHeartbeatWithStatus("online")
+}
+
+func (c *Client) sendHeartbeatWithStatus(status string) error {
 	c.mu.Lock()
 	probeID := c.probeID
 	c.mu.Unlock()
 
 	data := map[string]interface{}{
 		"probe_id":  probeID,
-		"status":    "online",
+		"status":    status,
 		"timestamp": time.Now().Unix(),
 	}
 
@@ -270,4 +278,7 @@ func (c *Client) DataSendLoop() error {
 
 func (c *Client) Stop() {
 	close(c.stopChan)
+	if err := c.sendHeartbeatWithStatus("offline"); err != nil {
+		log.Printf("Failed to send offline heartbeat: %v", err)
+	}
 }
