@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.1 - 2026-03-01
+
+### Fixed
+- **FlowSample DTO mismatch**: Rewrote FlowSample struct to match server model exactly (added 11 missing fields: `sampling_rate`, `src_addr`, `dst_addr`, `src_port`, `dst_port`, `protocol`, `bytes`, `packets`, `input_if_index`, `output_if_index`, `tcp_flags`; removed non-existent `sample_count`)
+- **Relay Stop() panic**: Wrapped `close(stopChan)` in `sync.Once` to prevent panic on double-close
+- **Trap Start() silent failure**: Now waits up to 2s for listener to confirm startup or return error instead of always returning nil
+- **Syslog IPv6 source IP**: Use `net.SplitHostPort()` for TCP connections instead of `strings.LastIndex(":")` which breaks on IPv6 addresses
+- **Unbounded queue growth**: Capped all 4 data queues (trap, ping, syslog, flow) at 10,000 entries; drops oldest when full to prevent OOM
+- **sFlow handler**: Removed reference to deleted `SampleCount` field, aligned with corrected FlowSample DTO
+
 ## 1.1.0 - 2026-03-01
 
 ### Added

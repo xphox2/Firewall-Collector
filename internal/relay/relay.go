@@ -19,6 +19,7 @@ import (
 )
 
 const maxReregisterAttempts = 5
+const maxQueueSize = 10000
 
 // --- DTOs matching server JSON tags ---
 
@@ -100,7 +101,17 @@ type FlowSample struct {
 	ProbeID        uint      `json:"probe_id"`
 	SamplerAddress string    `json:"sampler_address"`
 	SequenceNumber uint32    `json:"sequence_number"`
-	SampleCount    uint32    `json:"sample_count"`
+	SamplingRate   uint32    `json:"sampling_rate"`
+	SrcAddr        string    `json:"src_addr"`
+	DstAddr        string    `json:"dst_addr"`
+	SrcPort        uint16    `json:"src_port"`
+	DstPort        uint16    `json:"dst_port"`
+	Protocol       uint8     `json:"protocol"`
+	Bytes          uint64    `json:"bytes"`
+	Packets        uint64    `json:"packets"`
+	InputIfIndex   uint32    `json:"input_if_index"`
+	OutputIfIndex  uint32    `json:"output_if_index"`
+	TCPFlags       uint8     `json:"tcp_flags"`
 }
 
 type DeviceInfo struct {
@@ -149,6 +160,7 @@ type Client struct {
 	approved           atomic.Bool
 	mu                 sync.Mutex
 	stopChan           chan struct{}
+	stopOnce           sync.Once
 	probeID            uint
 	probeName          string
 	reregisterAttempts int
@@ -374,24 +386,40 @@ func (c *Client) sendHeartbeatWithStatus(status string) error {
 
 func (c *Client) SendTrap(trap *TrapEvent) {
 	c.mu.Lock()
+	if len(c.trapQueue) >= maxQueueSize {
+		c.trapQueue = c.trapQueue[1:]
+		log.Println("[Relay] Trap queue full, dropping oldest entry")
+	}
 	c.trapQueue = append(c.trapQueue, trap)
 	c.mu.Unlock()
 }
 
 func (c *Client) SendPingResult(result *PingResult) {
 	c.mu.Lock()
+	if len(c.pingQueue) >= maxQueueSize {
+		c.pingQueue = c.pingQueue[1:]
+		log.Println("[Relay] Ping queue full, dropping oldest entry")
+	}
 	c.pingQueue = append(c.pingQueue, result)
 	c.mu.Unlock()
 }
 
 func (c *Client) SendSyslogMessage(msg *SyslogMessage) {
 	c.mu.Lock()
+	if len(c.syslogQueue) >= maxQueueSize {
+		c.syslogQueue = c.syslogQueue[1:]
+		log.Println("[Relay] Syslog queue full, dropping oldest entry")
+	}
 	c.syslogQueue = append(c.syslogQueue, msg)
 	c.mu.Unlock()
 }
 
 func (c *Client) SendFlowSample(sample *FlowSample) {
 	c.mu.Lock()
+	if len(c.flowQueue) >= maxQueueSize {
+		c.flowQueue = c.flowQueue[1:]
+		log.Println("[Relay] Flow queue full, dropping oldest entry")
+	}
 	c.flowQueue = append(c.flowQueue, sample)
 	c.mu.Unlock()
 }
@@ -560,8 +588,10 @@ func (c *Client) sendBatch(url, name string, data interface{}) {
 // --- Shutdown ---
 
 func (c *Client) Stop() {
-	close(c.stopChan)
-	if err := c.sendHeartbeatWithStatus("offline"); err != nil {
-		log.Printf("Failed to send offline heartbeat: %v", err)
-	}
+	c.stopOnce.Do(func() {
+		close(c.stopChan)
+		if err := c.sendHeartbeatWithStatus("offline"); err != nil {
+			log.Printf("Failed to send offline heartbeat: %v", err)
+		}
+	})
 }

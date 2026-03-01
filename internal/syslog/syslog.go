@@ -125,9 +125,10 @@ func (s *SyslogReceiver) handleConnection(conn net.Conn) {
 			}
 
 			if msg != nil && s.handler != nil {
-				msg.SourceIP = conn.RemoteAddr().String()
-				if i := strings.LastIndex(msg.SourceIP, ":"); i != -1 {
-					msg.SourceIP = msg.SourceIP[:i]
+				if host, _, err := net.SplitHostPort(conn.RemoteAddr().String()); err == nil {
+					msg.SourceIP = host
+				} else {
+					msg.SourceIP = conn.RemoteAddr().String()
 				}
 				s.handler(msg)
 			}

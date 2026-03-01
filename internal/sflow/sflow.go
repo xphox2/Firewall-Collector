@@ -105,14 +105,12 @@ func (r *SFlowReceiver) parseSFlowDatagram(data []byte) {
 
 	sequence := uint32(data[4])<<24 | uint32(data[5])<<16 | uint32(data[6])<<8 | uint32(data[7])
 	agentIP := net.IP(data[8:12])
-	sampleCount := uint32(data[16])<<24 | uint32(data[17])<<16 | uint32(data[18])<<8 | uint32(data[19])
 
 	if r.handler != nil {
 		sample := &relay.FlowSample{
 			Timestamp:      time.Now(),
 			SamplerAddress: agentIP.String(),
 			SequenceNumber: sequence,
-			SampleCount:    sampleCount,
 		}
 		r.handler(sample)
 	}

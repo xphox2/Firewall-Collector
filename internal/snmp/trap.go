@@ -45,13 +45,23 @@ func (t *TrapReceiver) Start(handler func(*relay.TrapEvent)) error {
 	listenAddr := fmt.Sprintf("%s:%d", t.listenAddr, t.port)
 	log.Printf("[SNMP Trap] Starting listener on %s", listenAddr)
 
+	errCh := make(chan error, 1)
 	go func() {
 		if err := t.server.Listen(listenAddr); err != nil {
-			log.Printf("[SNMP Trap] Listener error: %v", err)
+			errCh <- err
 		}
+		close(errCh)
 	}()
 
-	return nil
+	select {
+	case err := <-errCh:
+		if err != nil {
+			return fmt.Errorf("trap listener failed: %w", err)
+		}
+		return nil
+	case <-time.After(2 * time.Second):
+		return nil
+	}
 }
 
 func (t *TrapReceiver) Stop() {
