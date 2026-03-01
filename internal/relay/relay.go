@@ -193,6 +193,10 @@ func (c *Client) IsApproved() bool {
 }
 
 func (c *Client) HeartbeatLoop() error {
+	if err := c.SendHeartbeat(); err != nil {
+		log.Printf("Initial heartbeat error: %v", err)
+	}
+
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 

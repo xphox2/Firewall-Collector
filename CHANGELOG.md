@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.3 - 2026-02-28
+
+### Fixed
+- Send initial heartbeat immediately on startup instead of waiting 60 seconds for the first ticker interval
+
 ## 1.0.2 - 2026-02-28
 
 ### Improved
