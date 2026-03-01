@@ -1,5 +1,5 @@
 # Firewall Collector - Lightweight probe for remote sites
-FROM alpine:3.19 AS builder
+FROM golang:1.21-alpine AS builder
 
 RUN apk add --no-cache gcc musl-dev
 
