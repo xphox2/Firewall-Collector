@@ -18,24 +18,27 @@ import (
 	"time"
 )
 
+const maxReregisterAttempts = 5
+
 type Config struct {
-	ServerURL       string
-	RegistrationKey string
-	TLSCertFile     string
-	TLSKeyFile      string
-	CACertFile      string
-	SyncInterval    time.Duration
+	ServerURL          string
+	RegistrationKey    string
+	TLSCertFile        string
+	TLSKeyFile         string
+	CACertFile         string
+	SyncInterval       time.Duration
+	InsecureSkipVerify bool
 }
 
 type Client struct {
-	Config     Config
-	httpClient *http.Client
-	running    atomic.Bool
-	approved   atomic.Bool
-	mu         sync.Mutex
-	stopChan   chan struct{}
-	probeID    uint
-	probeName  string
+	Config               Config
+	httpClient           *http.Client
+	approved             atomic.Bool
+	mu                   sync.Mutex
+	stopChan             chan struct{}
+	probeID              uint
+	probeName            string
+	reregisterAttempts   int
 }
 
 type RegisterRequest struct {
@@ -55,26 +58,37 @@ func NewClient(cfg Config) *Client {
 		cfg.SyncInterval = 30 * time.Second
 	}
 
-	tlsConfig := &tls.Config{InsecureSkipVerify: true}
+	tlsConfig := &tls.Config{}
+
 	if cfg.CACertFile != "" {
 		caCert, err := os.ReadFile(cfg.CACertFile)
-		if err == nil {
-			caPool := x509.NewCertPool()
-			caPool.AppendCertsFromPEM(caCert)
-			tlsConfig.RootCAs = caPool
-			tlsConfig.InsecureSkipVerify = false
+		if err != nil {
+			log.Fatalf("Failed to read CA certificate file %s: %v", cfg.CACertFile, err)
 		}
+		caPool := x509.NewCertPool()
+		if !caPool.AppendCertsFromPEM(caCert) {
+			log.Fatalf("Failed to parse CA certificate from %s", cfg.CACertFile)
+		}
+		tlsConfig.RootCAs = caPool
+	}
+
+	if cfg.InsecureSkipVerify {
+		log.Println("WARNING: TLS certificate verification is disabled — do not use in production")
+		tlsConfig.InsecureSkipVerify = true
 	}
 
 	return &Client{
-		Config:     cfg,
-		httpClient: &http.Client{Transport: &http.Transport{TLSClientConfig: tlsConfig}},
-		stopChan:   make(chan struct{}),
+		Config: cfg,
+		httpClient: &http.Client{
+			Timeout:   30 * time.Second,
+			Transport: &http.Transport{TLSClientConfig: tlsConfig},
+		},
+		stopChan: make(chan struct{}),
 	}
 }
 
 func generateRandomName() string {
-	adjectives := []string{"swift", "bright", "eager", "keen", "active", "bold", "calm", "keen", "lively", "noble"}
+	adjectives := []string{"swift", "bright", "eager", "keen", "active", "bold", "calm", "sharp", "lively", "noble"}
 	nouns := []string{"falcon", "eagle", "hawk", "owl", "raven", "wolf", "bear", "lion", "tiger", "dragon"}
 
 	adj := adjectives[randInt(len(adjectives))]
@@ -85,14 +99,32 @@ func generateRandomName() string {
 }
 
 func randInt(max int) int {
-	n, _ := rand.Int(rand.Reader, big.NewInt(int64(max)))
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(max)))
+	if err != nil {
+		log.Printf("Failed to generate random int: %v", err)
+		return 0
+	}
 	return int(n.Int64())
 }
 
 func randBytes(n int) []byte {
 	b := make([]byte, n)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		log.Printf("Failed to generate random bytes: %v", err)
+	}
 	return b
+}
+
+// doAuthenticatedRequest sends an HTTP request with the registration key as a
+// Bearer token so the server can authenticate every call, not just registration.
+func (c *Client) doAuthenticatedRequest(method, url string, body []byte) (*http.Response, error) {
+	req, err := http.NewRequest(method, url, bytes.NewBuffer(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.Config.RegistrationKey)
+	return c.httpClient.Do(req)
 }
 
 func (c *Client) Register() error {
@@ -100,12 +132,20 @@ func (c *Client) Register() error {
 		RegistrationKey: c.Config.RegistrationKey,
 	}
 
-	jsonData, _ := json.Marshal(data)
-	resp, err := c.httpClient.Post(c.Config.ServerURL+"/api/probes/register", "application/json", bytes.NewBuffer(jsonData))
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("failed to marshal registration data: %w", err)
+	}
+
+	resp, err := c.doAuthenticatedRequest("POST", c.Config.ServerURL+"/api/probes/register", jsonData)
 	if err != nil {
 		return fmt.Errorf("registration request failed: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("registration failed with HTTP status %d", resp.StatusCode)
+	}
 
 	var result RegisterResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -119,8 +159,12 @@ func (c *Client) Register() error {
 		return fmt.Errorf("registration failed: %s", result.Message)
 	}
 
+	c.mu.Lock()
 	c.probeID = result.ProbeID
 	c.probeName = result.ProbeName
+	c.reregisterAttempts = 0
+	c.mu.Unlock()
+
 	c.approved.Store(result.Approved)
 
 	if !result.Approved {
@@ -133,10 +177,14 @@ func (c *Client) Register() error {
 }
 
 func (c *Client) GetProbeID() uint {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.probeID
 }
 
 func (c *Client) GetProbeName() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.probeName
 }
 
@@ -161,21 +209,41 @@ func (c *Client) HeartbeatLoop() error {
 }
 
 func (c *Client) SendHeartbeat() error {
+	c.mu.Lock()
+	probeID := c.probeID
+	c.mu.Unlock()
+
 	data := map[string]interface{}{
-		"probe_id":  c.probeID,
+		"probe_id":  probeID,
 		"status":    "online",
 		"timestamp": time.Now().Unix(),
 	}
 
-	jsonData, _ := json.Marshal(data)
-	resp, err := c.httpClient.Post(c.Config.ServerURL+"/api/probes/heartbeat", "application/json", bytes.NewBuffer(jsonData))
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("failed to marshal heartbeat data: %w", err)
+	}
+
+	resp, err := c.doAuthenticatedRequest("POST", c.Config.ServerURL+"/api/probes/heartbeat", jsonData)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == 403 || resp.StatusCode == 401 {
-		log.Println("Probe not approved yet, re-registering...")
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		c.mu.Lock()
+		attempts := c.reregisterAttempts
+		c.reregisterAttempts++
+		c.mu.Unlock()
+
+		if attempts >= maxReregisterAttempts {
+			return fmt.Errorf("max re-registration attempts (%d) reached, giving up", maxReregisterAttempts)
+		}
+
+		backoff := time.Duration(1<<uint(attempts)) * 10 * time.Second
+		log.Printf("Probe unauthorized (attempt %d/%d), retrying registration in %v...",
+			attempts+1, maxReregisterAttempts, backoff)
+		time.Sleep(backoff)
 		return c.Register()
 	}
 
@@ -197,6 +265,5 @@ func (c *Client) DataSendLoop() error {
 }
 
 func (c *Client) Stop() {
-	c.running.Store(false)
 	close(c.stopChan)
 }

@@ -9,11 +9,12 @@ type Config struct {
 }
 
 type ProbeConfig struct {
-	RegistrationKey string
-	ServerURL       string
-	TLSCertFile     string
-	TLSKeyFile      string
-	CACertFile      string
+	RegistrationKey    string
+	ServerURL          string
+	TLSCertFile        string
+	TLSKeyFile         string
+	CACertFile         string
+	InsecureSkipVerify bool
 }
 
 func Load() *Config {
@@ -23,7 +24,8 @@ func Load() *Config {
 			ServerURL:       getEnv("PROBE_SERVER_URL", "https://stats.technicallabs.org"),
 			TLSCertFile:     os.Getenv("PROBE_TLS_CERT"),
 			TLSKeyFile:      os.Getenv("PROBE_TLS_KEY"),
-			CACertFile:      os.Getenv("PROBE_CA_CERT"),
+			CACertFile:         os.Getenv("PROBE_CA_CERT"),
+			InsecureSkipVerify: os.Getenv("PROBE_INSECURE_SKIP_VERIFY") == "true",
 		},
 	}
 }

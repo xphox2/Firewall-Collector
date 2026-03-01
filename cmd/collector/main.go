@@ -25,12 +25,13 @@ func main() {
 	log.Printf("Server URL: %s", cfg.Probe.ServerURL)
 
 	relayClient := relay.NewClient(relay.Config{
-		ServerURL:       cfg.Probe.ServerURL,
-		RegistrationKey: registrationKey,
-		SyncInterval:    30 * time.Second,
-		TLSCertFile:     cfg.Probe.TLSCertFile,
-		TLSKeyFile:      cfg.Probe.TLSKeyFile,
-		CACertFile:      cfg.Probe.CACertFile,
+		ServerURL:          cfg.Probe.ServerURL,
+		RegistrationKey:    registrationKey,
+		SyncInterval:       30 * time.Second,
+		TLSCertFile:        cfg.Probe.TLSCertFile,
+		TLSKeyFile:         cfg.Probe.TLSKeyFile,
+		CACertFile:         cfg.Probe.CACertFile,
+		InsecureSkipVerify: cfg.Probe.InsecureSkipVerify,
 	})
 
 	if err := relayClient.Register(); err != nil {
