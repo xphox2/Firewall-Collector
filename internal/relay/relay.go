@@ -20,6 +20,106 @@ import (
 
 const maxReregisterAttempts = 5
 
+// --- DTOs matching server JSON tags ---
+
+type SystemStatus struct {
+	Timestamp    time.Time `json:"timestamp"`
+	DeviceID     uint      `json:"device_id"`
+	Hostname     string    `json:"hostname"`
+	Version      string    `json:"version"`
+	CPUUsage     float64   `json:"cpu_usage"`
+	MemoryUsage  float64   `json:"memory_usage"`
+	MemoryTotal  uint64    `json:"memory_total"`
+	DiskUsage    float64   `json:"disk_usage"`
+	DiskTotal    uint64    `json:"disk_total"`
+	SessionCount int       `json:"session_count"`
+	Uptime       uint64    `json:"uptime"`
+}
+
+type InterfaceStats struct {
+	Timestamp   time.Time `json:"timestamp"`
+	DeviceID    uint      `json:"device_id"`
+	Index       int       `json:"index"`
+	Name        string    `json:"name"`
+	Type        int       `json:"type"`
+	Speed       uint64    `json:"speed"`
+	Status      string    `json:"status"`
+	AdminStatus string    `json:"admin_status"`
+	InBytes     uint64    `json:"in_bytes"`
+	InPackets   uint64    `json:"in_packets"`
+	InErrors    uint64    `json:"in_errors"`
+	InDiscards  uint64    `json:"in_discards"`
+	OutBytes    uint64    `json:"out_bytes"`
+	OutPackets  uint64    `json:"out_packets"`
+	OutErrors   uint64    `json:"out_errors"`
+	OutDiscards uint64    `json:"out_discards"`
+}
+
+type TrapEvent struct {
+	Timestamp time.Time `json:"timestamp"`
+	DeviceID  uint      `json:"device_id"`
+	ProbeID   uint      `json:"probe_id"`
+	SourceIP  string    `json:"source_ip"`
+	TrapOID   string    `json:"trap_oid"`
+	TrapType  string    `json:"trap_type"`
+	Severity  string    `json:"severity"`
+	Message   string    `json:"message"`
+}
+
+type PingResult struct {
+	Timestamp    time.Time `json:"timestamp"`
+	DeviceID     uint      `json:"device_id"`
+	ProbeID      uint      `json:"probe_id"`
+	TargetIP     string    `json:"target_ip"`
+	Success      bool      `json:"success"`
+	Latency      float64   `json:"latency"`
+	PacketLoss   float64   `json:"packet_loss"`
+	TTL          int       `json:"ttl"`
+	ErrorMessage string    `json:"error_message"`
+}
+
+type SyslogMessage struct {
+	Timestamp      time.Time `json:"timestamp"`
+	DeviceID       uint      `json:"device_id"`
+	ProbeID        uint      `json:"probe_id"`
+	Hostname       string    `json:"hostname"`
+	AppName        string    `json:"app_name"`
+	ProcessID      string    `json:"process_id"`
+	MessageID      string    `json:"message_id"`
+	StructuredData string    `json:"structured_data"`
+	Message        string    `json:"message"`
+	Priority       int       `json:"priority"`
+	Facility       int       `json:"facility"`
+	Severity       int       `json:"severity"`
+	SourceIP       string    `json:"source_ip"`
+}
+
+type FlowSample struct {
+	Timestamp      time.Time `json:"timestamp"`
+	DeviceID       uint      `json:"device_id"`
+	ProbeID        uint      `json:"probe_id"`
+	SamplerAddress string    `json:"sampler_address"`
+	SequenceNumber uint32    `json:"sequence_number"`
+	SampleCount    uint32    `json:"sample_count"`
+}
+
+type DeviceInfo struct {
+	ID            uint   `json:"id"`
+	Name          string `json:"name"`
+	IPAddress     string `json:"ip_address"`
+	SNMPPort      int    `json:"snmp_port"`
+	SNMPCommunity string `json:"snmp_community"`
+	SNMPVersion   string `json:"snmp_version"`
+	Enabled       bool   `json:"enabled"`
+}
+
+type DevicesResponse struct {
+	Success bool         `json:"success"`
+	Data    []DeviceInfo `json:"data"`
+}
+
+// --- Config & Client ---
+
 type Config struct {
 	ServerURL          string
 	RegistrationKey    string
@@ -29,17 +129,6 @@ type Config struct {
 	SyncInterval       time.Duration
 	HeartbeatInterval  time.Duration
 	InsecureSkipVerify bool
-}
-
-type Client struct {
-	Config               Config
-	httpClient           *http.Client
-	approved             atomic.Bool
-	mu                   sync.Mutex
-	stopChan             chan struct{}
-	probeID              uint
-	probeName            string
-	reregisterAttempts   int
 }
 
 type RegisterRequest struct {
@@ -52,6 +141,23 @@ type RegisterResponse struct {
 	ProbeName string `json:"probe_name"`
 	Message   string `json:"message"`
 	Approved  bool   `json:"approved"`
+}
+
+type Client struct {
+	Config             Config
+	httpClient         *http.Client
+	approved           atomic.Bool
+	mu                 sync.Mutex
+	stopChan           chan struct{}
+	probeID            uint
+	probeName          string
+	reregisterAttempts int
+
+	// Data queues
+	trapQueue   []*TrapEvent
+	pingQueue   []*PingResult
+	syslogQueue []*SyslogMessage
+	flowQueue   []*FlowSample
 }
 
 func NewClient(cfg Config) *Client {
@@ -119,8 +225,6 @@ func randBytes(n int) []byte {
 	return b
 }
 
-// doAuthenticatedRequest sends an HTTP request with the registration key as a
-// Bearer token so the server can authenticate every call, not just registration.
 func (c *Client) doAuthenticatedRequest(method, url string, body []byte) (*http.Response, error) {
 	req, err := http.NewRequest(method, url, bytes.NewBuffer(body))
 	if err != nil {
@@ -130,6 +234,8 @@ func (c *Client) doAuthenticatedRequest(method, url string, body []byte) (*http.
 	req.Header.Set("Authorization", "Bearer "+c.Config.RegistrationKey)
 	return c.httpClient.Do(req)
 }
+
+// --- Registration ---
 
 func (c *Client) Register() error {
 	data := RegisterRequest{
@@ -195,6 +301,8 @@ func (c *Client) GetProbeName() string {
 func (c *Client) IsApproved() bool {
 	return c.approved.Load()
 }
+
+// --- Heartbeat ---
 
 func (c *Client) HeartbeatLoop() error {
 	if err := c.SendHeartbeat(); err != nil {
@@ -262,6 +370,108 @@ func (c *Client) sendHeartbeatWithStatus(status string) error {
 	return nil
 }
 
+// --- Queue methods (append to queue for batch sending) ---
+
+func (c *Client) SendTrap(trap *TrapEvent) {
+	c.mu.Lock()
+	c.trapQueue = append(c.trapQueue, trap)
+	c.mu.Unlock()
+}
+
+func (c *Client) SendPingResult(result *PingResult) {
+	c.mu.Lock()
+	c.pingQueue = append(c.pingQueue, result)
+	c.mu.Unlock()
+}
+
+func (c *Client) SendSyslogMessage(msg *SyslogMessage) {
+	c.mu.Lock()
+	c.syslogQueue = append(c.syslogQueue, msg)
+	c.mu.Unlock()
+}
+
+func (c *Client) SendFlowSample(sample *FlowSample) {
+	c.mu.Lock()
+	c.flowQueue = append(c.flowQueue, sample)
+	c.mu.Unlock()
+}
+
+// --- Direct send (SNMP poll results sent immediately) ---
+
+func (c *Client) SendSystemStatuses(statuses []SystemStatus) error {
+	if !c.approved.Load() {
+		return fmt.Errorf("probe not approved")
+	}
+
+	jsonData, err := json.Marshal(statuses)
+	if err != nil {
+		return fmt.Errorf("failed to marshal system statuses: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/api/probes/%d/system-status", c.Config.ServerURL, c.GetProbeID())
+	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
+	if err != nil {
+		return fmt.Errorf("failed to send system statuses: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return fmt.Errorf("send system statuses returned status %d", resp.StatusCode)
+}
+
+func (c *Client) SendInterfaceStats(stats []InterfaceStats) error {
+	if !c.approved.Load() {
+		return fmt.Errorf("probe not approved")
+	}
+
+	jsonData, err := json.Marshal(stats)
+	if err != nil {
+		return fmt.Errorf("failed to marshal interface stats: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/api/probes/%d/interface-stats", c.Config.ServerURL, c.GetProbeID())
+	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
+	if err != nil {
+		return fmt.Errorf("failed to send interface stats: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return fmt.Errorf("send interface stats returned status %d", resp.StatusCode)
+}
+
+// --- FetchDevices ---
+
+func (c *Client) FetchDevices() ([]DeviceInfo, error) {
+	if !c.approved.Load() {
+		return nil, fmt.Errorf("probe not approved")
+	}
+
+	url := fmt.Sprintf("%s/api/probes/%d/devices", c.Config.ServerURL, c.GetProbeID())
+	resp, err := c.doAuthenticatedRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch devices: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("fetch devices returned status %d", resp.StatusCode)
+	}
+
+	var result DevicesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode devices response: %w", err)
+	}
+
+	return result.Data, nil
+}
+
+// --- Data sync loop (replaces empty DataSendLoop) ---
+
 func (c *Client) DataSendLoop() error {
 	ticker := time.NewTicker(c.Config.SyncInterval)
 	defer ticker.Stop()
@@ -269,12 +479,85 @@ func (c *Client) DataSendLoop() error {
 	for {
 		select {
 		case <-ticker.C:
-			// Placeholder for data sending
+			c.syncData()
 		case <-c.stopChan:
+			c.syncData() // Final flush
 			return nil
 		}
 	}
 }
+
+func (c *Client) syncData() {
+	c.mu.Lock()
+
+	traps := c.trapQueue
+	c.trapQueue = nil
+
+	pings := c.pingQueue
+	c.pingQueue = nil
+
+	syslogs := c.syslogQueue
+	c.syslogQueue = nil
+
+	flows := c.flowQueue
+	c.flowQueue = nil
+
+	c.mu.Unlock()
+
+	if !c.approved.Load() {
+		return
+	}
+
+	probeID := c.GetProbeID()
+	baseURL := fmt.Sprintf("%s/api/probes/%d", c.Config.ServerURL, probeID)
+
+	if len(traps) > 0 {
+		c.sendBatch(baseURL+"/traps", "traps", traps)
+	}
+	if len(pings) > 0 {
+		c.sendBatch(baseURL+"/pings", "pings", pings)
+	}
+	if len(syslogs) > 0 {
+		c.sendBatch(baseURL+"/syslog", "syslog", syslogs)
+	}
+	if len(flows) > 0 {
+		c.sendBatch(baseURL+"/flows", "flows", flows)
+	}
+}
+
+func (c *Client) sendBatch(url, name string, data interface{}) {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("[Relay] Failed to marshal %s batch: %v", name, err)
+		return
+	}
+
+	for attempt := 0; attempt < 3; attempt++ {
+		resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
+		if err != nil {
+			log.Printf("[Relay] Failed to send %s batch (attempt %d/3): %v", name, attempt+1, err)
+			time.Sleep(time.Duration(attempt+1) * time.Second)
+			continue
+		}
+		resp.Body.Close()
+
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			log.Printf("[Relay] Sent %s batch to server", name)
+			return
+		}
+
+		if resp.StatusCode == 404 {
+			c.approved.Store(false)
+			log.Printf("[Relay] Probe no longer approved (404 on %s)", name)
+			return
+		}
+
+		log.Printf("[Relay] Failed to send %s batch: status %d (attempt %d/3)", name, resp.StatusCode, attempt+1)
+		time.Sleep(time.Duration(attempt+1) * time.Second)
+	}
+}
+
+// --- Shutdown ---
 
 func (c *Client) Stop() {
 	close(c.stopChan)

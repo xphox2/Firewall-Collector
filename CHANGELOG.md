@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.1.0 - 2026-03-01
+
+### Added
+- SNMP polling: polls system status (CPU, memory, disk, sessions, uptime) and interface stats from assigned devices
+- SNMP trap receiver: listens for FortiGate SNMP traps with OID-based type/severity classification
+- Syslog receiver: TCP and UDP listeners with RFC 5424 parsing and device ID extraction
+- sFlow receiver: UDP listener with sFlow v5 datagram validation
+- Ping collector: ICMP ping with configurable interval, timeout, and count per device
+- Queue-based data relay: all collected data is batched and sent to server with 3-retry logic
+- Device list fetching: periodically fetches assigned devices from server for SNMP polling and ping targets
+- Feature toggles: each collector can be individually enabled/disabled via environment variables
+- Configurable listener ports, poll intervals, and ping parameters via environment variables
+- Full orchestration with graceful shutdown (stop all receivers, flush queues, send offline heartbeat)
+
+### Changed
+- Rewritten `cmd/collector/main.go` with `Collector` struct for full lifecycle management
+- Relay client now includes DTOs, data queues, batch sync loop, and `FetchDevices()`/`SendSystemStatuses()`/`SendInterfaceStats()` methods
+- Config expanded with 15 new fields for listener ports, intervals, and feature toggles
+- Dockerfile updated with all new environment variable defaults
+
 ## 1.0.4 - 2026-02-28
 
 ### Improved
