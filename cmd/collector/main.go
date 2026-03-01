@@ -17,7 +17,7 @@ import (
 	"firewall-collector/internal/syslog"
 )
 
-const version = "1.1.0"
+const version = "1.1.3"
 
 type Collector struct {
 	cfg           *config.ProbeConfig
@@ -30,6 +30,7 @@ type Collector struct {
 	devices       []relay.DeviceInfo
 	deviceMu      sync.RWMutex
 	stopChan      chan struct{}
+	pollWg        sync.WaitGroup
 }
 
 func main() {
@@ -199,6 +200,8 @@ func (c *Collector) snmpPollingLoop() {
 	ticker := time.NewTicker(c.cfg.PollInterval)
 	defer ticker.Stop()
 
+	sem := make(chan struct{}, 10) // Limit concurrent SNMP polls
+
 	for {
 		select {
 		case <-c.stopChan:
@@ -213,7 +216,13 @@ func (c *Collector) snmpPollingLoop() {
 				if !dev.Enabled {
 					continue
 				}
-				go c.pollDevice(dev)
+				c.pollWg.Add(1)
+				sem <- struct{}{} // Acquire semaphore slot
+				go func(d relay.DeviceInfo) {
+					defer c.pollWg.Done()
+					defer func() { <-sem }() // Release semaphore slot
+					c.pollDevice(d)
+				}(dev)
 			}
 		}
 	}
@@ -288,6 +297,9 @@ func (c *Collector) deviceRefreshLoop() {
 func (c *Collector) stop() {
 	close(c.stopChan)
 
+	// Wait for in-flight SNMP polls to finish
+	c.pollWg.Wait()
+
 	if c.trapReceiver != nil {
 		c.trapReceiver.Stop()
 	}
@@ -305,5 +317,4 @@ func (c *Collector) stop() {
 	}
 
 	c.relayClient.Stop()
-	time.Sleep(1 * time.Second)
 }

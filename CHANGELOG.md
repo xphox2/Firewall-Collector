@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.3 - 2026-03-01
+
+### Fixed
+- **SNMP poll goroutine leak**: Added semaphore (max 10 concurrent) and `sync.WaitGroup` tracking to prevent unbounded goroutine spawning when polls take longer than the interval
+- **Shutdown race condition**: `stop()` now waits for in-flight SNMP polls to complete via `WaitGroup` instead of `time.Sleep(1s)` hack
+
 ## 1.1.2 - 2026-03-01
 
 ### Fixed
