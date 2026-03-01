@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.4 - 2026-03-01
+
+### Added
+- **docker-compose.yml**: Reference compose file with `restart: unless-stopped`, `stop_grace_period: 30s`, all port mappings, env vars, and commented-out TLS cert volume mounts
+
+### Fixed
+- **Shutdown flush race**: `relay.Stop()` now waits up to 15s for `DataSendLoop` to complete its final `syncData()` flush before sending the offline heartbeat (previously could exit before flush finished)
+- **Docker STOPSIGNAL**: Added explicit `STOPSIGNAL SIGTERM` to Dockerfile to document the expected shutdown signal
+
 ## 1.1.3 - 2026-03-01
 
 ### Fixed

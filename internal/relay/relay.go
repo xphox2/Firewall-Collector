@@ -160,6 +160,7 @@ type Client struct {
 	approved           atomic.Bool
 	mu                 sync.Mutex
 	stopChan           chan struct{}
+	done               chan struct{}
 	stopOnce           sync.Once
 	probeID            uint
 	probeName          string
@@ -206,6 +207,7 @@ func NewClient(cfg Config) *Client {
 			Transport: &http.Transport{TLSClientConfig: tlsConfig},
 		},
 		stopChan: make(chan struct{}),
+		done:     make(chan struct{}),
 	}
 }
 
@@ -501,6 +503,8 @@ func (c *Client) FetchDevices() ([]DeviceInfo, error) {
 // --- Data sync loop (replaces empty DataSendLoop) ---
 
 func (c *Client) DataSendLoop() error {
+	defer close(c.done)
+
 	ticker := time.NewTicker(c.Config.SyncInterval)
 	defer ticker.Stop()
 
@@ -590,6 +594,15 @@ func (c *Client) sendBatch(url, name string, data interface{}) {
 func (c *Client) Stop() {
 	c.stopOnce.Do(func() {
 		close(c.stopChan)
+
+		// Wait for DataSendLoop to finish its final flush
+		select {
+		case <-c.done:
+			log.Println("[Relay] Final data flush completed")
+		case <-time.After(15 * time.Second):
+			log.Println("[Relay] Timed out waiting for final data flush")
+		}
+
 		if err := c.sendHeartbeatWithStatus("offline"); err != nil {
 			log.Printf("Failed to send offline heartbeat: %v", err)
 		}

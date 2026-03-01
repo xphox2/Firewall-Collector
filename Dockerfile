@@ -59,4 +59,6 @@ LABEL org.opencontainers.image.title="Firewall Collector" \
       com.technicallabs.ports.syslog="514/tcp+udp - Syslog receiver" \
       com.technicallabs.ports.sflow="6343/udp - sFlow receiver"
 
+STOPSIGNAL SIGTERM
+
 ENTRYPOINT ["./firewall-collector"]

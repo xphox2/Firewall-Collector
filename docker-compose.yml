@@ -1,0 +1,49 @@
+services:
+  firewall-collector:
+    build: .
+    # image: firewall-collector:latest
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+    ports:
+      - "162:162/udp"     # SNMP Trap
+      - "514:514/tcp"     # Syslog TCP
+      - "514:514/udp"     # Syslog UDP
+      - "6343:6343/udp"   # sFlow
+
+    environment:
+      # Required — registration key from admin panel
+      PROBE_REGISTRATION_KEY: ""
+      PROBE_SERVER_URL: "https://stats.technicallabs.org"
+
+      # Intervals (seconds)
+      PROBE_HEARTBEAT_INTERVAL: "60"
+      PROBE_SYNC_INTERVAL: "30"
+      PROBE_POLL_INTERVAL: "60"
+      PROBE_DEVICE_REFRESH_INTERVAL: "300"
+      PROBE_PING_INTERVAL: "60"
+      PROBE_PING_TIMEOUT: "5"
+      PROBE_PING_COUNT: "4"
+
+      # Listener configuration
+      PROBE_LISTEN_ADDR: "0.0.0.0"
+      PROBE_SNMP_TRAP_PORT: "162"
+      PROBE_SYSLOG_PORT: "514"
+      PROBE_SFLOW_PORT: "6343"
+      PROBE_SNMP_TRAP_COMMUNITY: ""
+
+      # Feature toggles (set to "false" to disable)
+      PROBE_SNMP_TRAP_ENABLED: "true"
+      PROBE_SYSLOG_ENABLED: "true"
+      PROBE_SFLOW_ENABLED: "true"
+      PROBE_PING_ENABLED: "true"
+
+    # Uncomment to mount custom TLS certificates
+    # volumes:
+    #   - ./certs/ca.pem:/app/certs/ca.pem:ro
+    #   - ./certs/client.pem:/app/certs/client.pem:ro
+    #   - ./certs/client-key.pem:/app/certs/client-key.pem:ro
+    # environment:
+    #   PROBE_CA_CERT_FILE: "/app/certs/ca.pem"
+    #   PROBE_TLS_CERT_FILE: "/app/certs/client.pem"
+    #   PROBE_TLS_KEY_FILE: "/app/certs/client-key.pem"
