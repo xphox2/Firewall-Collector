@@ -12,15 +12,15 @@ import (
 
 // FortiGate-specific SNMP OIDs (Fortinet enterprise MIB 1.3.6.1.4.1.12356)
 var (
-	OIDSystemCPU       = ".1.3.6.1.4.1.12356.101.4.1.3"
-	OIDSystemMemory    = ".1.3.6.1.4.1.12356.101.4.1.4"
-	OIDSystemMemoryCap = ".1.3.6.1.4.1.12356.101.4.1.5"
-	OIDSystemDisk      = ".1.3.6.1.4.1.12356.101.4.1.6"
-	OIDSystemDiskCap   = ".1.3.6.1.4.1.12356.101.4.1.7"
-	OIDSystemSessions  = ".1.3.6.1.4.1.12356.101.4.1.8"
-	OIDSystemUptime    = ".1.3.6.1.4.1.12356.101.4.1.20"
-	OIDSystemVersion   = ".1.3.6.1.4.1.12356.101.4.1.1"
-	OIDSystemHostname  = ".1.3.6.1.4.1.12356.101.4.1.2"
+	OIDSystemCPU       = ".1.3.6.1.4.1.12356.101.4.1.3.0"
+	OIDSystemMemory    = ".1.3.6.1.4.1.12356.101.4.1.4.0"
+	OIDSystemMemoryCap = ".1.3.6.1.4.1.12356.101.4.1.5.0"
+	OIDSystemDisk      = ".1.3.6.1.4.1.12356.101.4.1.6.0"
+	OIDSystemDiskCap   = ".1.3.6.1.4.1.12356.101.4.1.7.0"
+	OIDSystemSessions  = ".1.3.6.1.4.1.12356.101.4.1.8.0"
+	OIDSystemUptime    = ".1.3.6.1.4.1.12356.101.4.1.20.0"
+	OIDSystemVersion   = ".1.3.6.1.4.1.12356.101.4.1.1.0"
+	OIDSystemHostname  = ".1.3.6.1.4.1.12356.101.4.1.2.0"
 
 	BaseOIDInterface   = ".1.3.6.1.2.1.2.2.1"
 	OIDIfDescr         = ".1.3.6.1.2.1.2.2.1.2"

@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.9 - 2026-03-01
+
+### Fixed
+- **System status shows 0/-**: SNMP GET returns PDUs with `.0` instance suffix for scalar MIB objects but OID constants were missing the suffix, so the switch statement never matched any values; appended `.0` to all 9 system OID constants (CPU, memory, memory cap, disk, disk cap, sessions, uptime, version, hostname)
+
 ## 1.1.8 - 2026-03-01
 
 ### Fixed
