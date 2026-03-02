@@ -440,6 +440,29 @@ func getOrCreateInterface(interfaces map[int]relay.InterfaceStats, index int) re
 	return relay.InterfaceStats{Index: index}
 }
 
+func (s *SNMPClient) GetProcessorStats(vendor ...string) ([]relay.ProcessorStats, error) {
+	v := ""
+	if len(vendor) > 0 {
+		v = vendor[0]
+	}
+	profile := s.resolveVendor(v)
+	if profile == nil {
+		return nil, fmt.Errorf("no vendor profile available")
+	}
+
+	baseOID := profile.ProcessorBaseOID()
+	if baseOID == "" {
+		return nil, nil
+	}
+
+	pdus, err := s.client.WalkAll(baseOID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to walk processor table: %w", err)
+	}
+
+	return profile.ParseProcessorStats(pdus), nil
+}
+
 func (s *SNMPClient) GetHardwareSensors(vendor ...string) ([]relay.HardwareSensor, error) {
 	v := ""
 	if len(vendor) > 0 {

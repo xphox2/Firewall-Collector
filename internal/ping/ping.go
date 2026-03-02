@@ -156,14 +156,15 @@ func (p *PingCollector) pingDevice(dev relay.DeviceInfo, probeID uint) {
 func Ping(host string, timeout time.Duration) (latency float64, ttl int, err error) {
 	conn, err := icmp.ListenPacket("udp4", "0.0.0.0:0")
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("icmp listen: %w", err)
 	}
 	defer conn.Close()
 
-	dst, err := net.ResolveIPAddr("ip4:icmp", host)
+	ip, err := net.ResolveIPAddr("ip4", host)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("resolve %s: %w", host, err)
 	}
+	dst := &net.UDPAddr{IP: ip.IP}
 
 	conn.SetDeadline(time.Now().Add(timeout))
 
@@ -179,29 +180,29 @@ func Ping(host string, timeout time.Duration) (latency float64, ttl int, err err
 
 	wb, err := wm.Marshal(nil)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("marshal icmp: %w", err)
 	}
 
 	start := time.Now()
 	if _, err = conn.WriteTo(wb, dst); err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("icmp write to %s: %w", host, err)
 	}
 
 	rb := make([]byte, 1500)
 	respLen, _, err := conn.ReadFrom(rb)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("icmp read from %s: %w", host, err)
 	}
 
 	latency = float64(time.Since(start).Nanoseconds()) / 1e6
 
 	rm, err := icmp.ParseMessage(int(ipv4.ICMPTypeEchoReply), rb[:respLen])
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("parse icmp reply: %w", err)
 	}
 
 	if rm.Type == ipv4.ICMPTypeDestinationUnreachable {
-		return 0, 0, fmt.Errorf("destination unreachable")
+		return 0, 0, fmt.Errorf("destination unreachable: %s", host)
 	}
 
 	return latency, 64, nil

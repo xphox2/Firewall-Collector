@@ -17,7 +17,7 @@ import (
 	"firewall-collector/internal/syslog"
 )
 
-const version = "1.2.4"
+const version = "1.2.5"
 
 type Collector struct {
 	cfg           *config.ProbeConfig
@@ -313,6 +313,18 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 		}
 		if err := c.relayClient.SendHardwareSensors(sensors); err != nil {
 			log.Printf("[SNMP] Failed to send hardware sensors for %s: %v", dev.Name, err)
+		}
+	}
+
+	// Collect processor stats (CPU cores, NP/SPU ASICs)
+	procStats, procErr := client.GetProcessorStats(vendor)
+	if procErr == nil && len(procStats) > 0 {
+		for i := range procStats {
+			procStats[i].DeviceID = dev.ID
+			procStats[i].Timestamp = now
+		}
+		if err := c.relayClient.SendProcessorStats(procStats); err != nil {
+			log.Printf("[SNMP] Failed to send processor stats for %s: %v", dev.Name, err)
 		}
 	}
 }

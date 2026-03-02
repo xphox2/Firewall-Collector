@@ -30,6 +30,10 @@ type VendorProfile interface {
 	HWSensorBaseOID() string
 	ParseHardwareSensors(pdus []gosnmp.SnmpPDU) []relay.HardwareSensor
 
+	// Processors
+	ProcessorBaseOID() string
+	ParseProcessorStats(pdus []gosnmp.SnmpPDU) []relay.ProcessorStats
+
 	// Traps
 	TrapOIDs() map[string]TrapDef
 }

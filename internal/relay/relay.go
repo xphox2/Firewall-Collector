@@ -143,6 +143,13 @@ type HardwareSensor struct {
 	Unit      string    `json:"unit"`
 }
 
+type ProcessorStats struct {
+	Timestamp time.Time `json:"timestamp"`
+	DeviceID  uint      `json:"device_id"`
+	Index     int       `json:"index"`
+	Usage     float64   `json:"usage"`
+}
+
 type DeviceInfo struct {
 	ID             uint   `json:"id"`
 	Name           string `json:"name"`
@@ -553,6 +560,29 @@ func (c *Client) SendHardwareSensors(sensors []HardwareSensor) error {
 		return nil
 	}
 	return fmt.Errorf("send hardware sensors returned status %d", resp.StatusCode)
+}
+
+func (c *Client) SendProcessorStats(stats []ProcessorStats) error {
+	if !c.approved.Load() {
+		return fmt.Errorf("probe not approved")
+	}
+
+	jsonData, err := json.Marshal(stats)
+	if err != nil {
+		return fmt.Errorf("failed to marshal processor stats: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/api/probes/%d/processor-stats", c.Config.ServerURL, c.GetProbeID())
+	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
+	if err != nil {
+		return fmt.Errorf("failed to send processor stats: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return fmt.Errorf("send processor stats returned status %d", resp.StatusCode)
 }
 
 // --- FetchDevices ---

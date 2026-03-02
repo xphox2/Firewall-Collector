@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.5 - 2026-03-02
+
+### Added
+- **Processor stats polling**: Collector now polls per-core CPU usage via FortiGate `fgProcessorUsage` OID and sends to server (was missing — only the server poller had this)
+- **Sensor unit inference**: Hardware sensors now include Type and Unit fields inferred from name patterns (temperature → °C, fan → RPM, voltage → mV)
+- `GetProcessorStats()` to SNMP client and `ProcessorBaseOID()`/`ParseProcessorStats()` to vendor profile interface
+
+### Fixed
+- Ping now uses correct `*net.UDPAddr` for UDP ICMP mode instead of `*net.IPAddr`
+- Ping errors now include wrapped context (which host failed, at what stage) for easier debugging
+
 ## 1.2.4 - 2026-03-02
 
 ### Added

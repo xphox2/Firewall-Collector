@@ -33,6 +33,9 @@ var (
 	fgOIDHWSensorValue = ".1.3.6.1.4.1.12356.101.4.3.2.1.3"
 	fgOIDHWSensorAlarm = ".1.3.6.1.4.1.12356.101.4.3.2.1.4"
 
+	fgBaseOIDProcessor  = ".1.3.6.1.4.1.12356.101.4.4.2.1"
+	fgOIDProcessorUsage = ".1.3.6.1.4.1.12356.101.4.4.2.1.2"
+
 	fgTrapVPNTunnelUp   = ".1.3.6.1.4.1.12356.101.2.0.301"
 	fgTrapVPNTunnelDown = ".1.3.6.1.4.1.12356.101.2.0.302"
 	fgTrapHASwitch      = ".1.3.6.1.4.1.12356.101.2.0.401"
@@ -195,9 +198,53 @@ func (f *FortiGateProfile) ParseHardwareSensors(pdus []gosnmp.SnmpPDU) []relay.H
 	sensors := make([]relay.HardwareSensor, 0, len(sensorMap))
 	for _, sensor := range sensorMap {
 		sensor.Timestamp = now
+		inferSensorUnit(sensor)
 		sensors = append(sensors, *sensor)
 	}
 	return sensors
+}
+
+// inferSensorUnit sets Type and Unit based on FortiGate sensor name patterns.
+func inferSensorUnit(s *relay.HardwareSensor) {
+	lower := strings.ToLower(s.Name)
+	switch {
+	case strings.Contains(lower, "temp") || strings.Contains(lower, "dts") || strings.Contains(lower, "lm75"):
+		s.Type = "temperature"
+		s.Unit = "°C"
+	case strings.Contains(lower, "fan"):
+		s.Type = "fan"
+		s.Unit = "RPM"
+	case strings.Contains(lower, "vcc") || strings.Contains(lower, "vdd") ||
+		strings.Contains(lower, "+1.") || strings.Contains(lower, "+2.") ||
+		strings.Contains(lower, "+3.") || strings.Contains(lower, "+5.") ||
+		strings.Contains(lower, "+12") || strings.Contains(lower, "volt"):
+		s.Type = "voltage"
+		s.Unit = "mV"
+	case strings.Contains(lower, "ps") && strings.Contains(lower, "status"):
+		s.Type = "power"
+		s.Unit = ""
+	}
+}
+
+func (f *FortiGateProfile) ProcessorBaseOID() string { return fgBaseOIDProcessor }
+
+func (f *FortiGateProfile) ParseProcessorStats(pdus []gosnmp.SnmpPDU) []relay.ProcessorStats {
+	now := time.Now()
+	var result []relay.ProcessorStats
+	for _, pdu := range pdus {
+		if strings.HasPrefix(pdu.Name, fgOIDProcessorUsage+".") {
+			idx := getIndexFromOID(pdu.Name, fgOIDProcessorUsage)
+			if idx < 0 {
+				continue
+			}
+			result = append(result, relay.ProcessorStats{
+				Timestamp: now,
+				Index:     idx,
+				Usage:     float64(gosnmp.ToBigInt(pdu.Value).Int64()),
+			})
+		}
+	}
+	return result
 }
 
 func (f *FortiGateProfile) TrapOIDs() map[string]TrapDef {
