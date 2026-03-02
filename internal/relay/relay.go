@@ -54,6 +54,25 @@ type InterfaceStats struct {
 	OutPackets  uint64    `json:"out_packets"`
 	OutErrors   uint64    `json:"out_errors"`
 	OutDiscards uint64    `json:"out_discards"`
+	Alias       string    `json:"alias"`
+	MTU         int       `json:"mtu"`
+	MACAddress  string    `json:"mac_address"`
+	TypeName    string    `json:"type_name"`
+	HighSpeed   uint64    `json:"high_speed"`
+	VLANID      int       `json:"vlan_id"`
+}
+
+type VPNStatus struct {
+	Timestamp  time.Time `json:"timestamp"`
+	DeviceID   uint      `json:"device_id"`
+	TunnelName string    `json:"tunnel_name"`
+	RemoteIP   string    `json:"remote_ip"`
+	Status     string    `json:"status"`
+	BytesIn    uint64    `json:"bytes_in"`
+	BytesOut   uint64    `json:"bytes_out"`
+	PacketsIn  uint64    `json:"packets_in"`
+	PacketsOut uint64    `json:"packets_out"`
+	State      string    `json:"state"`
 }
 
 type TrapEvent struct {
@@ -115,13 +134,18 @@ type FlowSample struct {
 }
 
 type DeviceInfo struct {
-	ID            uint   `json:"id"`
-	Name          string `json:"name"`
-	IPAddress     string `json:"ip_address"`
-	SNMPPort      int    `json:"snmp_port"`
-	SNMPCommunity string `json:"snmp_community"`
-	SNMPVersion   string `json:"snmp_version"`
-	Enabled       bool   `json:"enabled"`
+	ID             uint   `json:"id"`
+	Name           string `json:"name"`
+	IPAddress      string `json:"ip_address"`
+	SNMPPort       int    `json:"snmp_port"`
+	SNMPCommunity  string `json:"snmp_community"`
+	SNMPVersion    string `json:"snmp_version"`
+	SNMPV3Username string `json:"snmpv3_username"`
+	SNMPV3AuthType string `json:"snmpv3_auth_type"`
+	SNMPV3AuthPass string `json:"snmpv3_auth_pass"`
+	SNMPV3PrivType string `json:"snmpv3_priv_type"`
+	SNMPV3PrivPass string `json:"snmpv3_priv_pass"`
+	Enabled        bool   `json:"enabled"`
 }
 
 type DevicesResponse struct {
@@ -472,6 +496,29 @@ func (c *Client) SendInterfaceStats(stats []InterfaceStats) error {
 		return nil
 	}
 	return fmt.Errorf("send interface stats returned status %d", resp.StatusCode)
+}
+
+func (c *Client) SendVPNStatuses(statuses []VPNStatus) error {
+	if !c.approved.Load() {
+		return fmt.Errorf("probe not approved")
+	}
+
+	jsonData, err := json.Marshal(statuses)
+	if err != nil {
+		return fmt.Errorf("failed to marshal VPN statuses: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/api/probes/%d/vpn-status", c.Config.ServerURL, c.GetProbeID())
+	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
+	if err != nil {
+		return fmt.Errorf("failed to send VPN statuses: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return fmt.Errorf("send VPN statuses returned status %d", resp.StatusCode)
 }
 
 // --- FetchDevices ---

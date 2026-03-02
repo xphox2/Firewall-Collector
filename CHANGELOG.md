@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.1.5 - 2026-03-01
+
+### Added
+- **SNMPv3 support**: Per-device SNMPv3 credentials (username, auth type/pass, priv type/pass) received from server and used when connecting to v3 devices
+- **VPN tunnel polling**: Collects IPSec VPN tunnel status from FortiGate devices via SNMP (tunnel name, remote gateway, status, bytes in/out) and relays to server
+- **Enhanced interface collection**: ifXTable walk for alias, HC 64-bit counters, high speed; ifMtu and ifPhysAddress (MAC) from ifTable; Q-BRIDGE-MIB for native VLAN ID; human-readable interface type names
+
+### Changed
+- `NewSNMPClient()` now accepts optional `SNMPv3Config` parameter for per-device v3 credentials
+- `DeviceInfo` struct includes 5 new SNMPv3 fields matching server relay contract
+- `InterfaceStats` struct includes 6 new fields (Alias, MTU, MACAddress, TypeName, HighSpeed, VLANID)
+- Added `VPNStatus` DTO and `SendVPNStatuses()` relay method
+
 ## 1.1.4 - 2026-03-01
 
 ### Added

@@ -17,7 +17,7 @@ import (
 	"firewall-collector/internal/syslog"
 )
 
-const version = "1.1.4"
+const version = "1.1.5"
 
 type Collector struct {
 	cfg           *config.ProbeConfig
@@ -229,7 +229,18 @@ func (c *Collector) snmpPollingLoop() {
 }
 
 func (c *Collector) pollDevice(dev relay.DeviceInfo) {
-	client, err := snmp.NewSNMPClient(dev.IPAddress, dev.SNMPPort, dev.SNMPCommunity, dev.SNMPVersion)
+	var v3 *snmp.SNMPv3Config
+	if dev.SNMPVersion == "3" {
+		v3 = &snmp.SNMPv3Config{
+			Username: dev.SNMPV3Username,
+			AuthType: dev.SNMPV3AuthType,
+			AuthPass: dev.SNMPV3AuthPass,
+			PrivType: dev.SNMPV3PrivType,
+			PrivPass: dev.SNMPV3PrivPass,
+		}
+	}
+
+	client, err := snmp.NewSNMPClient(dev.IPAddress, dev.SNMPPort, dev.SNMPCommunity, dev.SNMPVersion, v3)
 	if err != nil {
 		log.Printf("[SNMP] Connect failed for %s (%s): %v", dev.Name, dev.IPAddress, err)
 		return
@@ -263,6 +274,18 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 	}
 	if err := c.relayClient.SendInterfaceStats(ifaces); err != nil {
 		log.Printf("[SNMP] Failed to send interface stats for %s: %v", dev.Name, err)
+	}
+
+	// Collect VPN tunnel status (silently skip if device has no VPN)
+	vpnStatuses, vpnErr := client.GetVPNStatus()
+	if vpnErr == nil && len(vpnStatuses) > 0 {
+		for i := range vpnStatuses {
+			vpnStatuses[i].DeviceID = dev.ID
+			vpnStatuses[i].Timestamp = now
+		}
+		if err := c.relayClient.SendVPNStatuses(vpnStatuses); err != nil {
+			log.Printf("[SNMP] Failed to send VPN statuses for %s: %v", dev.Name, err)
+		}
 	}
 }
 
