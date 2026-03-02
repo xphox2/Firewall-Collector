@@ -17,7 +17,7 @@ import (
 	"firewall-collector/internal/syslog"
 )
 
-const version = "1.2.6"
+const version = "1.2.7"
 
 type Collector struct {
 	cfg           *config.ProbeConfig
@@ -270,8 +270,8 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 
 	status.DeviceID = dev.ID
 	status.Timestamp = time.Now()
-	log.Printf("[SNMP] %s (%s) [device_id=%d]: CPU=%.1f%% Mem=%.1f%% Sessions=%d",
-		dev.Name, dev.IPAddress, dev.ID, status.CPUUsage, status.MemoryUsage, status.SessionCount)
+	log.Printf("[SNMP] %s (%s) [device_id=%d]: CPU=%.1f%% Mem=%.1f%% Disk=%.1f%%/%dMB Sessions=%d",
+		dev.Name, dev.IPAddress, dev.ID, status.CPUUsage, status.MemoryUsage, status.DiskUsage, status.DiskTotal, status.SessionCount)
 	if err := c.relayClient.SendSystemStatuses([]relay.SystemStatus{*status}); err != nil {
 		log.Printf("[SNMP] Failed to send system status for %s (device_id=%d): %v", dev.Name, dev.ID, err)
 	}

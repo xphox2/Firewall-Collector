@@ -74,7 +74,11 @@ func (f *FortiGateProfile) SystemOIDs() []string {
 
 func (f *FortiGateProfile) ParseSystemStatus(pdus []gosnmp.SnmpPDU) *relay.SystemStatus {
 	status := &relay.SystemStatus{Timestamp: time.Now()}
+	var rawDiskMB, rawDiskCapMB int64
 	for _, pdu := range pdus {
+		if !isValidPDU(pdu) {
+			continue
+		}
 		switch pdu.Name {
 		case fgOIDSystemHostname:
 			status.Hostname = safeString(pdu.Value)
@@ -87,15 +91,20 @@ func (f *FortiGateProfile) ParseSystemStatus(pdus []gosnmp.SnmpPDU) *relay.Syste
 		case fgOIDSystemMemoryCap:
 			status.MemoryTotal = uint64(gosnmp.ToBigInt(pdu.Value).Uint64())
 		case fgOIDSystemDisk:
-			status.DiskUsage = float64(gosnmp.ToBigInt(pdu.Value).Int64())
+			rawDiskMB = gosnmp.ToBigInt(pdu.Value).Int64()
 		case fgOIDSystemDiskCap:
-			status.DiskTotal = uint64(gosnmp.ToBigInt(pdu.Value).Uint64())
+			rawDiskCapMB = gosnmp.ToBigInt(pdu.Value).Int64()
 		case fgOIDSystemSessions:
 			status.SessionCount = int(gosnmp.ToBigInt(pdu.Value).Int64())
 		case fgOIDSystemUptime:
 			status.Uptime = uint64(gosnmp.ToBigInt(pdu.Value).Uint64())
 		}
 	}
+	// fgSysDiskUsage/fgSysDiskCapacity are in MB — compute percentage
+	if rawDiskCapMB > 0 {
+		status.DiskUsage = float64(rawDiskMB) / float64(rawDiskCapMB) * 100
+	}
+	status.DiskTotal = uint64(rawDiskCapMB)
 	return status
 }
 

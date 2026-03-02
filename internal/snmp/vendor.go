@@ -8,6 +8,14 @@ import (
 	"github.com/gosnmp/gosnmp"
 )
 
+// isValidPDU returns false for SNMP error types (NoSuchObject, NoSuchInstance, EndOfMibView)
+// that indicate the OID is unsupported by the device.
+func isValidPDU(pdu gosnmp.SnmpPDU) bool {
+	return pdu.Type != gosnmp.NoSuchObject &&
+		pdu.Type != gosnmp.NoSuchInstance &&
+		pdu.Type != gosnmp.EndOfMibView
+}
+
 // TrapDef describes a vendor-specific trap OID mapping.
 type TrapDef struct {
 	Type     string
