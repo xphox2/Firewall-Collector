@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.6 - 2026-03-02
+
+### Fixed
+- **Docker ICMP ping**: Added `cap_add: NET_RAW` and `sysctls: net.ipv4.ping_group_range` to docker-compose.yml so ICMP ping works inside the container without "socket: permission denied" errors
+
 ## 1.2.5 - 2026-03-02
 
 ### Added

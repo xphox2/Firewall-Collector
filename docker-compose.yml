@@ -5,6 +5,12 @@ services:
     restart: unless-stopped
     stop_grace_period: 30s
 
+    # Required for ICMP ping to monitored devices
+    cap_add:
+      - NET_RAW
+    sysctls:
+      - net.ipv4.ping_group_range=0 2147483647
+
     ports:
       - "162:162/udp"     # SNMP Trap
       - "514:514/tcp"     # Syslog TCP
