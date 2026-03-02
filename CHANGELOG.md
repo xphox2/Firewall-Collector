@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.7 - 2026-03-01
+
+### Fixed
+- **SNMP traps not received**: Trap parser now correctly extracts the trap OID from the `snmpTrapOID.0` varbind value (SNMPv2c/v3 format) instead of searching varbind names, which never matched; also handles SNMPv1 enterprise+specific-trap OID construction
+- **Trap device mapping**: Trap source IP is now resolved to a device ID by matching against the known device list, so traps are associated with the correct device
+- **Generic trap support**: Traps with non-FortiGate OIDs are now accepted as "GENERIC" info-level events instead of being silently dropped
+- **Trap message includes all varbinds**: Message now concatenates all payload varbinds instead of only the first matching one
+- **Trap debug logging**: Incoming traps are logged with source IP, varbind count, version, and community for troubleshooting
+
 ## 1.1.6 - 2026-03-01
 
 ### Fixed

@@ -17,7 +17,7 @@ import (
 	"firewall-collector/internal/syslog"
 )
 
-const version = "1.1.6"
+const version = "1.1.7"
 
 type Collector struct {
 	cfg           *config.ProbeConfig
@@ -121,6 +121,9 @@ func main() {
 		trapReceiver := snmp.NewTrapReceiver(probeCfg.ListenAddr, probeCfg.SNMPTrapPort, probeCfg.TrapCommunity)
 		if err := trapReceiver.Start(func(trap *relay.TrapEvent) {
 			trap.ProbeID = probeID
+			if trap.DeviceID == 0 {
+				trap.DeviceID = c.resolveDeviceByIP(trap.SourceIP)
+			}
 			relayClient.SendTrap(trap)
 		}); err != nil {
 			log.Printf("  -> SNMP Trap failed to start: %v", err)
