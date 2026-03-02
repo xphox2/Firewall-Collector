@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.4 - 2026-03-02
+
+### Added
+- Per-device SNMP success logging showing device_id, CPU, memory, and session values after each poll
+- Poll cycle summary log showing enabled/total device count
+- Device refresh log now lists device names and IDs for easier debugging
+
 ## 1.2.3 - 2026-03-02
 
 ### Fixed

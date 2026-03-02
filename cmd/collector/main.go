@@ -17,7 +17,7 @@ import (
 	"firewall-collector/internal/syslog"
 )
 
-const version = "1.2.2"
+const version = "1.2.4"
 
 type Collector struct {
 	cfg           *config.ProbeConfig
@@ -218,10 +218,12 @@ func (c *Collector) snmpPollingLoop() {
 			copy(devices, c.devices)
 			c.deviceMu.RUnlock()
 
+			enabledCount := 0
 			for _, dev := range devices {
 				if !dev.Enabled {
 					continue
 				}
+				enabledCount++
 				c.pollWg.Add(1)
 				sem <- struct{}{} // Acquire semaphore slot
 				go func(d relay.DeviceInfo) {
@@ -230,6 +232,7 @@ func (c *Collector) snmpPollingLoop() {
 					c.pollDevice(d)
 				}(dev)
 			}
+			log.Printf("[SNMP] Poll cycle: %d/%d devices enabled", enabledCount, len(devices))
 		}
 	}
 }
@@ -267,8 +270,10 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 
 	status.DeviceID = dev.ID
 	status.Timestamp = time.Now()
+	log.Printf("[SNMP] %s (%s) [device_id=%d]: CPU=%.1f%% Mem=%.1f%% Sessions=%d",
+		dev.Name, dev.IPAddress, dev.ID, status.CPUUsage, status.MemoryUsage, status.SessionCount)
 	if err := c.relayClient.SendSystemStatuses([]relay.SystemStatus{*status}); err != nil {
-		log.Printf("[SNMP] Failed to send system status for %s: %v", dev.Name, err)
+		log.Printf("[SNMP] Failed to send system status for %s (device_id=%d): %v", dev.Name, dev.ID, err)
 	}
 
 	// Poll interface stats
@@ -331,7 +336,11 @@ func (c *Collector) deviceRefreshLoop() {
 			c.devices = devices
 			c.deviceMu.Unlock()
 
-			log.Printf("[Devices] Refreshed: %d devices", len(devices))
+			names := make([]string, len(devices))
+			for i, d := range devices {
+				names[i] = fmt.Sprintf("%s(id=%d)", d.Name, d.ID)
+			}
+			log.Printf("[Devices] Refreshed: %d devices: %v", len(devices), names)
 
 			if c.pingCollector != nil {
 				c.pingCollector.UpdateDevices(devices)
