@@ -15,6 +15,9 @@ import (
 	"golang.org/x/net/ipv4"
 )
 
+// proto is the ICMP protocol number used for parsing replies.
+const proto = 1
+
 // seqCounter provides unique ICMP sequence numbers across all goroutines.
 var seqCounter uint32
 
@@ -180,8 +183,7 @@ func Ping(host string, timeout time.Duration) (latency float64, ttl int, err err
 	id := os.Getpid() & 0xffff
 	seq := int(atomic.AddUint32(&seqCounter, 1) & 0xffff)
 
-	// Try privileged raw socket first (gives us real TTL via control messages),
-	// fall back to unprivileged UDP ICMP socket.
+	// Open ICMP socket — try raw first (CAP_NET_RAW), fallback to UDP
 	conn, isRaw, err := newICMPConn()
 	if err != nil {
 		return 0, 0, fmt.Errorf("icmp listen: %w", err)
@@ -190,15 +192,6 @@ func Ping(host string, timeout time.Duration) (latency float64, ttl int, err err
 
 	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
 		return 0, 0, fmt.Errorf("set deadline: %w", err)
-	}
-
-	// Enable TTL control messages on raw sockets
-	var p4 *ipv4.PacketConn
-	if isRaw {
-		p4 = ipv4.NewPacketConn(conn)
-		if cfErr := p4.SetControlMessage(ipv4.FlagTTL, true); cfErr != nil {
-			p4 = nil // fall back to no TTL extraction
-		}
 	}
 
 	wm := icmp.Message{
@@ -231,29 +224,14 @@ func Ping(host string, timeout time.Duration) (latency float64, ttl int, err err
 	// Read loop: keep reading until we get a matching echo reply or timeout
 	rb := make([]byte, 1500)
 	for {
-		var n int
-		var readErr error
-		replyTTL := 0
-
-		if p4 != nil {
-			// Use ipv4.PacketConn for TTL via control messages
-			var cm *ipv4.ControlMessage
-			n, cm, _, readErr = p4.ReadFrom(rb)
-			if cm != nil {
-				replyTTL = cm.TTL
-			}
-		} else {
-			n, _, readErr = conn.ReadFrom(rb)
-		}
-
+		n, _, readErr := conn.ReadFrom(rb)
 		if readErr != nil {
 			return 0, 0, fmt.Errorf("icmp read from %s: %w", host, readErr)
 		}
 
 		elapsed := float64(time.Since(start).Nanoseconds()) / 1e6
 
-		// Protocol number for parsing: 1=ICMP (raw), 58=ICMPv6, for udp4 use iana.ProtocolICMP=1
-		rm, parseErr := icmp.ParseMessage(1, rb[:n])
+		rm, parseErr := icmp.ParseMessage(proto, rb[:n])
 		if parseErr != nil {
 			continue // unparseable, try next packet
 		}
@@ -268,7 +246,7 @@ func Ping(host string, timeout time.Duration) (latency float64, ttl int, err err
 			if echo.ID != id || echo.Seq != seq {
 				continue // stale or someone else's reply
 			}
-			return elapsed, replyTTL, nil
+			return elapsed, 0, nil
 
 		case ipv4.ICMPTypeDestinationUnreachable:
 			return 0, 0, fmt.Errorf("destination unreachable: %s", host)
@@ -283,9 +261,7 @@ func Ping(host string, timeout time.Duration) (latency float64, ttl int, err err
 }
 
 // newICMPConn creates an ICMP packet connection.
-// Tries raw socket ("ip4:icmp") first for real TTL access via control messages,
-// falls back to unprivileged UDP ICMP ("udp4") if raw fails.
-// Returns the connection, whether it's a raw socket, and any error.
+// Tries raw socket ("ip4:icmp") first, falls back to unprivileged UDP ICMP ("udp4").
 func newICMPConn() (conn net.PacketConn, isRaw bool, err error) {
 	// Try raw socket first — requires CAP_NET_RAW on Linux
 	conn, err = icmp.ListenPacket("ip4:icmp", "0.0.0.0")

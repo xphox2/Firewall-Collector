@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.8 - 2026-03-02
+
+### Fixed
+- **Ping panic on ipv4.PacketConn**: Removed `ipv4.NewPacketConn` wrapper that panicked when wrapping `icmp.PacketConn` from `icmp.ListenPacket("ip4:icmp")` — now uses plain `conn.ReadFrom()` for both raw and UDP sockets, returning TTL=0 (unavailable) instead of crashing
+
 ## 1.2.7 - 2026-03-02
 
 ### Fixed
