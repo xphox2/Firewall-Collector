@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.3 - 2026-03-02
+
+### Fixed
+- **Ping error messages**: When all pings fail, the error message now includes the actual underlying error (e.g., "socket: permission denied") instead of a generic "Request timeout", helping diagnose Docker permission issues
+
 ## 1.2.2 - 2026-03-02
 
 ### Added

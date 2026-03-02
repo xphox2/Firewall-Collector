@@ -112,10 +112,12 @@ func (p *PingCollector) pingDevice(dev relay.DeviceInfo, probeID uint) {
 	var totalLatency float64
 	var successCount int
 	var ttl int
+	var lastErr error
 
 	for i := 0; i < p.count; i++ {
 		latency, t, err := Ping(targetIP, p.timeout)
 		if err != nil {
+			lastErr = err
 			continue
 		}
 		totalLatency += latency
@@ -139,7 +141,11 @@ func (p *PingCollector) pingDevice(dev relay.DeviceInfo, probeID uint) {
 	} else {
 		result.Success = false
 		result.PacketLoss = 100.0
-		result.ErrorMessage = "Request timeout"
+		if lastErr != nil {
+			result.ErrorMessage = fmt.Sprintf("All %d pings failed: %v", p.count, lastErr)
+		} else {
+			result.ErrorMessage = "Request timeout"
+		}
 	}
 
 	if p.handler != nil {
