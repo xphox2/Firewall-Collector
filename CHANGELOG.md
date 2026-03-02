@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.11 - 2026-03-02
+
+### Fixed
+- **SNMP timeout fix**: Switched docker-compose.yml from bridge networking to `network_mode: host` — Docker's NAT bridge was dropping outbound SNMP (UDP 161) and ICMP packets, causing "request timeout" on all devices. Host networking lets the container use the host's network stack directly, eliminating the NAT layer that was blocking outbound polls.
+
+### Removed
+- Removed `ports:` section (not needed with host networking — all ports are directly accessible)
+
 ## 1.2.10 - 2026-03-02
 
 ### Added
