@@ -9,10 +9,17 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Extract version from source
+        id: version
+        run: |
+          VERSION=$(grep -oP 'const version = "\K[^"]+' cmd/collector/main.go)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected version: $VERSION"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -29,10 +36,10 @@ jobs:
         with:
           images: xphox/firewall-collector
           tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=sha,prefix=
+            type=semver,pattern={{version}},value=v${{ steps.version.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=v${{ steps.version.outputs.version }}
             type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=
 
       - name: Build and push
         uses: docker/build-push-action@v5
@@ -41,4 +48,6 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_VERSION=${{ steps.version.outputs.version }}
           platforms: linux/amd64

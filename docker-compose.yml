@@ -1,7 +1,7 @@
 services:
   firewall-collector:
-    build: .
-    image: firewall-collector:latest
+    image: xphox/firewall-collector:latest
+    # build: .  # Uncomment to build locally instead of pulling from Docker Hub
     restart: unless-stopped
     stop_grace_period: 30s
 

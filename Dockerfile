@@ -53,8 +53,9 @@ EXPOSE 514/udp
 # sFlow receiver
 EXPOSE 6343/udp
 
+ARG BUILD_VERSION=dev
 LABEL org.opencontainers.image.title="Firewall Collector" \
-      org.opencontainers.image.version="1.1.5" \
+      org.opencontainers.image.version="${BUILD_VERSION}" \
       org.opencontainers.image.description="Lightweight probe for collecting firewall stats" \
       com.technicallabs.ports.snmp="162/udp - SNMP Trap receiver" \
       com.technicallabs.ports.syslog="514/tcp+udp - Syslog receiver" \

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.8 - 2026-03-01
+
+### Fixed
+- **Docker image version tagging**: CI now extracts version from source and pushes semver tags (`1.1.8`, `1.1`) alongside `latest`, so container managers (Portainer, Watchtower) can detect available updates
+- **Dockerfile version label**: Version label is now set dynamically via build arg instead of being hardcoded (was stuck at 1.1.5)
+- **docker-compose.yml**: References Docker Hub image `xphox/firewall-collector:latest` instead of local-only `firewall-collector:latest`
+
 ## 1.1.7 - 2026-03-01
 
 ### Fixed
