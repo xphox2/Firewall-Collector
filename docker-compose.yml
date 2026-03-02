@@ -5,6 +5,21 @@ services:
     restart: unless-stopped
     stop_grace_period: 30s
 
+    # ------------------------------------------------------------------
+    # NETWORKING: Choose ONE of the two options below.
+    #
+    # Option A (default): Bridge mode with port mapping.
+    #   Inbound services (syslog, traps, sFlow) work via port mapping.
+    #   Outbound SNMP polling + ICMP ping use Docker NAT — requires that
+    #   the Docker host can route to your device management IPs.
+    #
+    # Option B: Host networking (recommended if SNMP polling times out).
+    #   The container shares the host's network stack directly.
+    #   SNMP, ICMP, and all listeners use the host's IP.
+    #   Uncomment the line below and COMMENT OUT the ports: section.
+    # ------------------------------------------------------------------
+    # network_mode: host
+
     # Required for ICMP ping to monitored devices
     cap_add:
       - NET_RAW

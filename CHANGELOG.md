@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.10 - 2026-03-02
+
+### Added
+- **SNMP startup diagnostic**: On startup, tests SNMP connectivity to the first enabled device and reports detailed results (success with stats, or failure with troubleshooting hints)
+- **Device list dump on startup**: Logs all assigned devices with IP, SNMP port, version, community (redacted), vendor, and enabled status for immediate config verification
+- **Immediate first poll**: SNMP polling now runs immediately on startup instead of waiting for the first ticker interval (60s delay eliminated)
+
+### Changed
+- Refactored SNMP polling loop into `runPollCycle()` for cleaner startup + ticker reuse
+- Added `network_mode: host` option (commented) to docker-compose.yml with documentation explaining when to use it for SNMP/ICMP outbound connectivity
+
 ## 1.2.9 - 2026-03-02
 
 ### Changed

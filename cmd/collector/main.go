@@ -17,7 +17,7 @@ import (
 	"firewall-collector/internal/syslog"
 )
 
-const version = "1.2.9"
+const version = "1.2.10"
 
 type Collector struct {
 	cfg           *config.ProbeConfig
@@ -104,8 +104,23 @@ func main() {
 		c.devices = devices
 		c.deviceMu.Unlock()
 		fmt.Printf("  -> %d devices assigned\n", len(devices))
+		for _, d := range devices {
+			community := d.SNMPCommunity
+			if len(community) > 2 {
+				community = community[:2] + "****"
+			}
+			enabledStr := "enabled"
+			if !d.Enabled {
+				enabledStr = "DISABLED"
+			}
+			fmt.Printf("     %s (id=%d) %s:%d v%s community=%s vendor=%s [%s]\n",
+				d.Name, d.ID, d.IPAddress, d.SNMPPort, d.SNMPVersion, community, d.Vendor, enabledStr)
+		}
 	}
 	fmt.Println()
+
+	// Run SNMP connectivity diagnostic on first enabled device
+	c.runStartupDiagnostic()
 
 	// Start SNMP polling + device refresh
 	fmt.Println("[4/6] Starting SNMP polling...")
@@ -202,39 +217,109 @@ func main() {
 	fmt.Println("Collector stopped")
 }
 
+func (c *Collector) runStartupDiagnostic() {
+	c.deviceMu.RLock()
+	devices := make([]relay.DeviceInfo, len(c.devices))
+	copy(devices, c.devices)
+	c.deviceMu.RUnlock()
+
+	var target *relay.DeviceInfo
+	for i := range devices {
+		if devices[i].Enabled {
+			target = &devices[i]
+			break
+		}
+	}
+
+	if target == nil {
+		fmt.Println("  [Diagnostic] No enabled devices — skipping SNMP connectivity test")
+		return
+	}
+
+	fmt.Printf("  [Diagnostic] Testing SNMP connectivity to %s (%s:%d)...\n", target.Name, target.IPAddress, target.SNMPPort)
+
+	var v3 *snmp.SNMPv3Config
+	if target.SNMPVersion == "3" {
+		v3 = &snmp.SNMPv3Config{
+			Username: target.SNMPV3Username,
+			AuthType: target.SNMPV3AuthType,
+			AuthPass: target.SNMPV3AuthPass,
+			PrivType: target.SNMPV3PrivType,
+			PrivPass: target.SNMPV3PrivPass,
+		}
+	}
+
+	client, err := snmp.NewSNMPClient(target.IPAddress, target.SNMPPort, target.SNMPCommunity, target.SNMPVersion, v3)
+	if err != nil {
+		fmt.Printf("  [Diagnostic] SNMP CONNECT FAILED: %v\n", err)
+		fmt.Println("  [Diagnostic] >>> Check: can this host reach", target.IPAddress, "on UDP port", target.SNMPPort, "?")
+		fmt.Println("  [Diagnostic] >>> If running in Docker, try network_mode: host in docker-compose.yml")
+		return
+	}
+	defer client.Close()
+
+	vendor := target.Vendor
+	if vendor == "" {
+		vendor = "fortigate"
+	}
+
+	start := time.Now()
+	status, err := client.GetSystemStatus(vendor)
+	elapsed := time.Since(start)
+	if err != nil {
+		fmt.Printf("  [Diagnostic] SNMP POLL FAILED (%v): %v\n", elapsed.Round(time.Millisecond), err)
+		fmt.Println("  [Diagnostic] >>> SNMP socket opened OK but no response from device")
+		fmt.Println("  [Diagnostic] >>> Check: SNMP enabled on device? Community string correct? Firewall blocking UDP 161?")
+		if elapsed >= 10*time.Second {
+			fmt.Println("  [Diagnostic] >>> Timeout reached — packets are being sent but no response received")
+			fmt.Println("  [Diagnostic] >>> This is almost always a NETWORK or FIREWALL issue, not a code bug")
+		}
+	} else {
+		fmt.Printf("  [Diagnostic] SNMP OK (%v): %s — CPU=%.1f%% Mem=%.1f%% Sessions=%d\n",
+			elapsed.Round(time.Millisecond), status.Hostname, status.CPUUsage, status.MemoryUsage, status.SessionCount)
+	}
+	fmt.Println()
+}
+
 func (c *Collector) snmpPollingLoop() {
+	// Poll immediately on startup (don't wait for first ticker)
+	c.runPollCycle()
+
 	ticker := time.NewTicker(c.cfg.PollInterval)
 	defer ticker.Stop()
-
-	sem := make(chan struct{}, 10) // Limit concurrent SNMP polls
 
 	for {
 		select {
 		case <-c.stopChan:
 			return
 		case <-ticker.C:
-			c.deviceMu.RLock()
-			devices := make([]relay.DeviceInfo, len(c.devices))
-			copy(devices, c.devices)
-			c.deviceMu.RUnlock()
-
-			enabledCount := 0
-			for _, dev := range devices {
-				if !dev.Enabled {
-					continue
-				}
-				enabledCount++
-				c.pollWg.Add(1)
-				sem <- struct{}{} // Acquire semaphore slot
-				go func(d relay.DeviceInfo) {
-					defer c.pollWg.Done()
-					defer func() { <-sem }() // Release semaphore slot
-					c.pollDevice(d)
-				}(dev)
-			}
-			log.Printf("[SNMP] Poll cycle: %d/%d devices enabled", enabledCount, len(devices))
+			c.runPollCycle()
 		}
 	}
+}
+
+func (c *Collector) runPollCycle() {
+	c.deviceMu.RLock()
+	devices := make([]relay.DeviceInfo, len(c.devices))
+	copy(devices, c.devices)
+	c.deviceMu.RUnlock()
+
+	sem := make(chan struct{}, 10) // Limit concurrent SNMP polls
+	enabledCount := 0
+	for _, dev := range devices {
+		if !dev.Enabled {
+			continue
+		}
+		enabledCount++
+		c.pollWg.Add(1)
+		sem <- struct{}{} // Acquire semaphore slot
+		go func(d relay.DeviceInfo) {
+			defer c.pollWg.Done()
+			defer func() { <-sem }() // Release semaphore slot
+			c.pollDevice(d)
+		}(dev)
+	}
+	log.Printf("[SNMP] Poll cycle: %d/%d devices enabled", enabledCount, len(devices))
 }
 
 func (c *Collector) pollDevice(dev relay.DeviceInfo) {
