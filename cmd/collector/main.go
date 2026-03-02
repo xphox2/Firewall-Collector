@@ -17,7 +17,7 @@ import (
 	"firewall-collector/internal/syslog"
 )
 
-const version = "1.1.5"
+const version = "1.1.6"
 
 type Collector struct {
 	cfg           *config.ProbeConfig
@@ -157,6 +157,9 @@ func main() {
 		sflowReceiver := sflow.NewSFlowReceiver(probeCfg.ListenAddr, probeCfg.SFlowPort)
 		if err := sflowReceiver.Start(func(sample *relay.FlowSample) {
 			sample.ProbeID = probeID
+			if sample.DeviceID == 0 {
+				sample.DeviceID = c.resolveDeviceByIP(sample.SamplerAddress)
+			}
 			relayClient.SendFlowSample(sample)
 		}); err != nil {
 			log.Printf("  -> sFlow failed to start: %v", err)
@@ -315,6 +318,18 @@ func (c *Collector) deviceRefreshLoop() {
 			}
 		}
 	}
+}
+
+// resolveDeviceByIP maps an sFlow agent IP to a device ID from the known device list.
+func (c *Collector) resolveDeviceByIP(ip string) uint {
+	c.deviceMu.RLock()
+	defer c.deviceMu.RUnlock()
+	for _, d := range c.devices {
+		if d.IPAddress == ip {
+			return d.ID
+		}
+	}
+	return 0
 }
 
 func (c *Collector) stop() {

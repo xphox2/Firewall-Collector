@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.6 - 2026-03-01
+
+### Fixed
+- **sFlow data empty**: Rewrote sFlow v5 parser to fully decode datagram headers, flow samples, and raw packet header records; extracts source/destination IP, ports, protocol, bytes, packets, TCP flags, and interface indices instead of only reading sequence number and agent IP
+- **sFlow device mapping**: Agent IP from sFlow datagrams is now resolved to a device ID by matching against the known device list, so flow data is correctly associated with devices
+
 ## 1.1.5 - 2026-03-01
 
 ### Added
