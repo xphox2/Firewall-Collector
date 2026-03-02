@@ -54,6 +54,7 @@ EXPOSE 514/udp
 EXPOSE 6343/udp
 
 LABEL org.opencontainers.image.title="Firewall Collector" \
+      org.opencontainers.image.version="1.1.5" \
       org.opencontainers.image.description="Lightweight probe for collecting firewall stats" \
       com.technicallabs.ports.snmp="162/udp - SNMP Trap receiver" \
       com.technicallabs.ports.syslog="514/tcp+udp - Syslog receiver" \
