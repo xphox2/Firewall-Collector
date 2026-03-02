@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.2 - 2026-03-02
+
+### Added
+- **Multi-vendor SNMP architecture**: New `VendorProfile` interface and registry (`internal/snmp/vendor.go`) with FortiGate profile (`vendor_fortigate.go`); all vendor-specific OIDs moved out of `snmp.go`
+- **Vendor field on DeviceInfo**: `relay.DeviceInfo` now includes `Vendor` string from server; polling methods pass vendor to SNMP calls
+
+### Changed
+- **SNMP refactoring**: `GetSystemStatus()`, `GetVPNStatus()`, `GetHardwareSensors()` now accept optional vendor parameter and delegate to vendor profiles
+- **Trap receiver**: Uses vendor profile registry for OID lookups instead of hardcoded FortiGate OIDs
+
 ## 1.2.1 - 2026-03-02
 
 ### Fixed

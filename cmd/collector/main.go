@@ -17,7 +17,7 @@ import (
 	"firewall-collector/internal/syslog"
 )
 
-const version = "1.2.1"
+const version = "1.2.2"
 
 type Collector struct {
 	cfg           *config.ProbeConfig
@@ -253,8 +253,13 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 	}
 	defer client.Close()
 
+	vendor := dev.Vendor
+	if vendor == "" {
+		vendor = "fortigate"
+	}
+
 	// Poll system status
-	status, err := client.GetSystemStatus()
+	status, err := client.GetSystemStatus(vendor)
 	if err != nil {
 		log.Printf("[SNMP] Poll failed for %s (%s): %v", dev.Name, dev.IPAddress, err)
 		return
@@ -283,7 +288,7 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 	}
 
 	// Collect VPN tunnel status (silently skip if device has no VPN)
-	vpnStatuses, vpnErr := client.GetVPNStatus()
+	vpnStatuses, vpnErr := client.GetVPNStatus(vendor)
 	if vpnErr == nil && len(vpnStatuses) > 0 {
 		for i := range vpnStatuses {
 			vpnStatuses[i].DeviceID = dev.ID
@@ -295,7 +300,7 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 	}
 
 	// Collect hardware sensors (silently skip if device doesn't support it)
-	sensors, sensorErr := client.GetHardwareSensors()
+	sensors, sensorErr := client.GetHardwareSensors(vendor)
 	if sensorErr == nil && len(sensors) > 0 {
 		for i := range sensors {
 			sensors[i].DeviceID = dev.ID

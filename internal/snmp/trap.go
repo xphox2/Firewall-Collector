@@ -112,20 +112,22 @@ func (t *TrapReceiver) parseTrap(packet *gosnmp.SnmpPacket, addr *net.UDPAddr) *
 		}
 	}
 
-	// Check if it's a known FortiGate trap
-	if trapOID != "" && strings.HasPrefix(trapOID, ".1.3.6.1.4.1.12356.101.2.0") {
-		trap.TrapOID = trapOID
-		trap.TrapType = getTrapType(trapOID)
-		trap.Severity = getTrapSeverity(trapOID)
+	// Check if it's a known vendor trap via registered profiles
+	if trapOID != "" {
+		if tt, sev := lookupTrapOID(trapOID); tt != "" {
+			trap.TrapOID = trapOID
+			trap.TrapType = tt
+			trap.Severity = sev
+		}
 	}
 
 	// Also scan varbind names as fallback (some devices put the trap OID as a varbind name)
 	if trap.TrapOID == "" {
 		for _, v := range packet.Variables {
-			if strings.HasPrefix(v.Name, ".1.3.6.1.4.1.12356.101.2.0") {
+			if tt, sev := lookupTrapOID(v.Name); tt != "" {
 				trap.TrapOID = v.Name
-				trap.TrapType = getTrapType(v.Name)
-				trap.Severity = getTrapSeverity(v.Name)
+				trap.TrapType = tt
+				trap.Severity = sev
 				break
 			}
 		}
@@ -194,43 +196,14 @@ func formatVarbindValue(v gosnmp.SnmpPDU) string {
 	return ""
 }
 
-func getTrapType(oid string) string {
-	switch oid {
-	case TrapVPNTunnelUp:
-		return "VPN_TUNNEL_UP"
-	case TrapVPNTunnelDown:
-		return "VPN_TUNNEL_DOWN"
-	case TrapHASwitch:
-		return "HA_SWITCH"
-	case TrapHAStateChange:
-		return "HA_STATE_CHANGE"
-	case TrapHAHBFail:
-		return "HA_HEARTBEAT_FAIL"
-	case TrapHAMemberDown:
-		return "HA_MEMBER_DOWN"
-	case TrapHAMemberUp:
-		return "HA_MEMBER_UP"
-	case TrapIPSSignature:
-		return "IPS_SIGNATURE"
-	case TrapIPSanomaly:
-		return "IPS_ANOMALY"
-	case TrapAVVirus:
-		return "AV_VIRUS"
-	case TrapAVOversize:
-		return "AV_OVERSIZE"
-	default:
-		return "UNKNOWN"
+// lookupTrapOID searches all registered vendor profiles for the given trap OID.
+func lookupTrapOID(oid string) (trapType string, severity string) {
+	vendorMu.RLock()
+	defer vendorMu.RUnlock()
+	for _, profile := range vendorRegistry {
+		if def, ok := profile.TrapOIDs()[oid]; ok {
+			return def.Type, def.Severity
+		}
 	}
-}
-
-func getTrapSeverity(oid string) string {
-	switch oid {
-	case TrapVPNTunnelDown, TrapHAHBFail, TrapHAMemberDown, TrapIPSSignature,
-		TrapIPSanomaly, TrapAVVirus:
-		return "critical"
-	case TrapHASwitch, TrapHAStateChange:
-		return "warning"
-	default:
-		return "info"
-	}
+	return "", ""
 }
