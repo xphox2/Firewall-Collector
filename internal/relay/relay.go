@@ -133,6 +133,16 @@ type FlowSample struct {
 	TCPFlags       uint8     `json:"tcp_flags"`
 }
 
+type HardwareSensor struct {
+	Timestamp time.Time `json:"timestamp"`
+	DeviceID  uint      `json:"device_id"`
+	Name      string    `json:"name"`
+	Type      string    `json:"type"`
+	Value     float64   `json:"value"`
+	Status    string    `json:"status"`
+	Unit      string    `json:"unit"`
+}
+
 type DeviceInfo struct {
 	ID             uint   `json:"id"`
 	Name           string `json:"name"`
@@ -519,6 +529,29 @@ func (c *Client) SendVPNStatuses(statuses []VPNStatus) error {
 		return nil
 	}
 	return fmt.Errorf("send VPN statuses returned status %d", resp.StatusCode)
+}
+
+func (c *Client) SendHardwareSensors(sensors []HardwareSensor) error {
+	if !c.approved.Load() {
+		return fmt.Errorf("probe not approved")
+	}
+
+	jsonData, err := json.Marshal(sensors)
+	if err != nil {
+		return fmt.Errorf("failed to marshal hardware sensors: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/api/probes/%d/hardware-sensors", c.Config.ServerURL, c.GetProbeID())
+	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
+	if err != nil {
+		return fmt.Errorf("failed to send hardware sensors: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return fmt.Errorf("send hardware sensors returned status %d", resp.StatusCode)
 }
 
 // --- FetchDevices ---

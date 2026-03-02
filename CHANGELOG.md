@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.0 - 2026-03-01
+
+### Added
+- **Hardware sensor polling**: Collector now polls FortiGate hardware sensors (fgHwSensorEntry MIB) via SNMP and sends them to the server's new `/api/probes/:id/hardware-sensors` endpoint, enabling the Hardware tab on device detail pages
+
 ## 1.1.9 - 2026-03-01
 
 ### Fixed

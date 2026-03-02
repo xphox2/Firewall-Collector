@@ -17,7 +17,7 @@ import (
 	"firewall-collector/internal/syslog"
 )
 
-const version = "1.1.9"
+const version = "1.2.0"
 
 type Collector struct {
 	cfg           *config.ProbeConfig
@@ -291,6 +291,18 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 		}
 		if err := c.relayClient.SendVPNStatuses(vpnStatuses); err != nil {
 			log.Printf("[SNMP] Failed to send VPN statuses for %s: %v", dev.Name, err)
+		}
+	}
+
+	// Collect hardware sensors (silently skip if device doesn't support it)
+	sensors, sensorErr := client.GetHardwareSensors()
+	if sensorErr == nil && len(sensors) > 0 {
+		for i := range sensors {
+			sensors[i].DeviceID = dev.ID
+			sensors[i].Timestamp = now
+		}
+		if err := c.relayClient.SendHardwareSensors(sensors); err != nil {
+			log.Printf("[SNMP] Failed to send hardware sensors for %s: %v", dev.Name, err)
 		}
 	}
 }

@@ -57,6 +57,12 @@ var (
 	OIDVPNTunnelOutOctets = ".1.3.6.1.4.1.12356.101.12.2.2.1.19"
 	OIDVPNTunnelStatus    = ".1.3.6.1.4.1.12356.101.12.2.2.1.20"
 
+	// FortiGate hardware sensor MIB
+	OIDHWSensorEntry = ".1.3.6.1.4.1.12356.101.4.3.2.1"
+	OIDHWSensorName  = ".1.3.6.1.4.1.12356.101.4.3.2.1.2"
+	OIDHWSensorValue = ".1.3.6.1.4.1.12356.101.4.3.2.1.3"
+	OIDHWSensorAlarm = ".1.3.6.1.4.1.12356.101.4.3.2.1.4"
+
 	// Trap OIDs
 	TrapVPNTunnelUp   = ".1.3.6.1.4.1.12356.101.2.0.301"
 	TrapVPNTunnelDown = ".1.3.6.1.4.1.12356.101.2.0.302"
@@ -513,4 +519,61 @@ func getOrCreateInterface(interfaces map[int]relay.InterfaceStats, index int) re
 		return iface
 	}
 	return relay.InterfaceStats{Index: index}
+}
+
+func (s *SNMPClient) GetHardwareSensors() ([]relay.HardwareSensor, error) {
+	pdus, err := s.client.WalkAll(OIDHWSensorEntry)
+	if err != nil {
+		return nil, fmt.Errorf("failed to walk hardware sensor table: %w", err)
+	}
+
+	sensorMap := make(map[int]*relay.HardwareSensor)
+
+	for _, pdu := range pdus {
+		name := pdu.Name
+		if strings.HasPrefix(name, OIDHWSensorName+".") {
+			idx := getIndexFromOID(name, OIDHWSensorName)
+			if idx < 0 {
+				continue
+			}
+			sensor := getOrCreateSensor(sensorMap, idx)
+			sensor.Name = safeString(pdu.Value)
+		} else if strings.HasPrefix(name, OIDHWSensorValue+".") {
+			idx := getIndexFromOID(name, OIDHWSensorValue)
+			if idx < 0 {
+				continue
+			}
+			sensor := getOrCreateSensor(sensorMap, idx)
+			sensor.Value = float64(gosnmp.ToBigInt(pdu.Value).Int64())
+		} else if strings.HasPrefix(name, OIDHWSensorAlarm+".") {
+			idx := getIndexFromOID(name, OIDHWSensorAlarm)
+			if idx < 0 {
+				continue
+			}
+			sensor := getOrCreateSensor(sensorMap, idx)
+			alarm := gosnmp.ToBigInt(pdu.Value).Int64()
+			if alarm == 0 {
+				sensor.Status = "normal"
+			} else {
+				sensor.Status = "alarm"
+			}
+		}
+	}
+
+	now := time.Now()
+	sensors := make([]relay.HardwareSensor, 0, len(sensorMap))
+	for _, sensor := range sensorMap {
+		sensor.Timestamp = now
+		sensors = append(sensors, *sensor)
+	}
+	return sensors, nil
+}
+
+func getOrCreateSensor(sensors map[int]*relay.HardwareSensor, index int) *relay.HardwareSensor {
+	if s, exists := sensors[index]; exists {
+		return s
+	}
+	s := &relay.HardwareSensor{}
+	sensors[index] = s
+	return s
 }
