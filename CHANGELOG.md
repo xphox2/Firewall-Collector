@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.9 - 2026-03-02
+
+### Changed
+- **Ping full rewrite**: Replaced entire ping implementation with clean, robust design:
+  - Uses `udp4` ICMP sockets exclusively — kernel filters replies to each socket, no cross-talk between concurrent goroutines, no raw socket edge cases
+  - One socket per device (reused across all count pings) instead of opening/closing per individual ping
+  - `sendEcho()` helper handles one echo request/reply cycle with proper ID+Seq validation
+  - Removed all raw socket (`ip4:icmp`) attempts and `ipv4.PacketConn` wrapping that caused panics
+  - Resolve and socket errors report proper results instead of silently dropping
+
 ## 1.2.8 - 2026-03-02
 
 ### Fixed
