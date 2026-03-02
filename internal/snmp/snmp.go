@@ -41,6 +41,7 @@ var (
 
 	// ifXTable (RFC 2863)
 	BaseOIDIfXTable  = ".1.3.6.1.2.1.31.1.1.1"
+	OIDIfName        = ".1.3.6.1.2.1.31.1.1.1.1"
 	OIDIfHCInOctets  = ".1.3.6.1.2.1.31.1.1.1.6"
 	OIDIfHCOutOctets = ".1.3.6.1.2.1.31.1.1.1.10"
 	OIDIfHighSpeed   = ".1.3.6.1.2.1.31.1.1.1.15"
@@ -358,7 +359,16 @@ func (s *SNMPClient) GetInterfaceStats() ([]relay.InterfaceStats, error) {
 	if xPdus, err := s.client.WalkAll(BaseOIDIfXTable); err == nil {
 		for _, pdu := range xPdus {
 			name := pdu.Name
-			if strings.HasPrefix(name, OIDIfAlias+".") {
+			if strings.HasPrefix(name, OIDIfName+".") {
+				idx := getIndexFromOID(name, OIDIfName)
+				if iface, ok := interfaces[idx]; ok {
+					ifName := safeString(pdu.Value)
+					if ifName != "" {
+						iface.Name = ifName
+					}
+					interfaces[idx] = iface
+				}
+			} else if strings.HasPrefix(name, OIDIfAlias+".") {
 				idx := getIndexFromOID(name, OIDIfAlias)
 				if iface, ok := interfaces[idx]; ok {
 					iface.Alias = safeString(pdu.Value)

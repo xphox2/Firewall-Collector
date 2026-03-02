@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.1 - 2026-03-02
+
+### Fixed
+- **Interface names missing**: SNMP ifXTable walk now reads `ifName` (`.1.3.6.1.2.1.31.1.1.1.1`) and uses it to override the generic `ifDescr` value; on FortiGate devices, `ifDescr` returns generic descriptions while `ifName` returns the actual interface names (`port1`, `wan1`, etc.)
+
 ## 1.2.0 - 2026-03-01
 
 ### Added
