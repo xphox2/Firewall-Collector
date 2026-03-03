@@ -839,24 +839,84 @@ func (c *Client) syncData() {
 	baseURL := fmt.Sprintf("%s/api/probes/%d", c.Config.ServerURL, probeID)
 
 	if len(traps) > 0 {
-		c.sendBatch(baseURL+"/traps", "traps", traps)
+		if !c.sendBatch(baseURL+"/traps", "traps", traps) {
+			c.requeueTraps(traps)
+		}
 	}
 	if len(pings) > 0 {
-		c.sendBatch(baseURL+"/pings", "pings", pings)
+		if !c.sendBatch(baseURL+"/pings", "pings", pings) {
+			c.requeuePings(pings)
+		}
 	}
 	if len(syslogs) > 0 {
-		c.sendBatch(baseURL+"/syslog", "syslog", syslogs)
+		if !c.sendBatch(baseURL+"/syslog", "syslog", syslogs) {
+			c.requeueSyslogs(syslogs)
+		}
 	}
 	if len(flows) > 0 {
-		c.sendBatch(baseURL+"/flows", "flows", flows)
+		if !c.sendBatch(baseURL+"/flows", "flows", flows) {
+			c.requeueFlows(flows)
+		}
 	}
 }
 
-func (c *Client) sendBatch(url, name string, data interface{}) {
+func (c *Client) requeueTraps(items []*TrapEvent) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	space := maxQueueSize - len(c.trapQueue)
+	if space > len(items) {
+		space = len(items)
+	}
+	if space > 0 {
+		c.trapQueue = append(items[:space], c.trapQueue...)
+		log.Printf("[Relay] Re-queued %d trap events", space)
+	}
+}
+
+func (c *Client) requeuePings(items []*PingResult) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	space := maxQueueSize - len(c.pingQueue)
+	if space > len(items) {
+		space = len(items)
+	}
+	if space > 0 {
+		c.pingQueue = append(items[:space], c.pingQueue...)
+		log.Printf("[Relay] Re-queued %d ping results", space)
+	}
+}
+
+func (c *Client) requeueSyslogs(items []*SyslogMessage) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	space := maxQueueSize - len(c.syslogQueue)
+	if space > len(items) {
+		space = len(items)
+	}
+	if space > 0 {
+		c.syslogQueue = append(items[:space], c.syslogQueue...)
+		log.Printf("[Relay] Re-queued %d syslog messages", space)
+	}
+}
+
+func (c *Client) requeueFlows(items []*FlowSample) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	space := maxQueueSize - len(c.flowQueue)
+	if space > len(items) {
+		space = len(items)
+	}
+	if space > 0 {
+		c.flowQueue = append(items[:space], c.flowQueue...)
+		log.Printf("[Relay] Re-queued %d flow samples", space)
+	}
+}
+
+func (c *Client) sendBatch(url, name string, data interface{}) bool {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		log.Printf("[Relay] Failed to marshal %s batch: %v", name, err)
-		return
+		return false
 	}
 
 	for attempt := 0; attempt < 3; attempt++ {
@@ -870,18 +930,19 @@ func (c *Client) sendBatch(url, name string, data interface{}) {
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			log.Printf("[Relay] Sent %s batch to server", name)
-			return
+			return true
 		}
 
 		if resp.StatusCode == 404 {
 			c.approved.Store(false)
 			log.Printf("[Relay] Probe no longer approved (404 on %s)", name)
-			return
+			return false
 		}
 
 		log.Printf("[Relay] Failed to send %s batch: status %d (attempt %d/3)", name, resp.StatusCode, attempt+1)
 		time.Sleep(time.Duration(attempt+1) * time.Second)
 	}
+	return false
 }
 
 // --- Shutdown ---

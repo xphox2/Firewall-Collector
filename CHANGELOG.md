@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.19 - 2026-03-03
+
+### Fixed
+- **Relay batch re-queue on failure**: `sendBatch` now returns a success flag; when all 3 retry attempts fail, queued data (traps, pings, syslog, flows) is re-queued for the next sync cycle instead of being silently dropped, bounded by `maxQueueSize` to prevent memory growth.
+
 ## 1.2.18 - 2026-03-02
 
 ### Added
