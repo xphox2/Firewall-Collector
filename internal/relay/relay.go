@@ -75,17 +75,21 @@ type InterfaceStats struct {
 }
 
 type VPNStatus struct {
-	Timestamp  time.Time `json:"timestamp"`
-	DeviceID   uint      `json:"device_id"`
-	TunnelName string    `json:"tunnel_name"`
-	TunnelType string    `json:"tunnel_type"` // "ipsec", "ipsec-dialup", "sslvpn"
-	RemoteIP   string    `json:"remote_ip"`
-	Status     string    `json:"status"`
-	BytesIn    uint64    `json:"bytes_in"`
-	BytesOut   uint64    `json:"bytes_out"`
-	PacketsIn  uint64    `json:"packets_in"`
-	PacketsOut uint64    `json:"packets_out"`
-	State      string    `json:"state"`
+	Timestamp    time.Time `json:"timestamp"`
+	DeviceID     uint      `json:"device_id"`
+	TunnelName   string    `json:"tunnel_name"`
+	TunnelType   string    `json:"tunnel_type"` // "ipsec", "ipsec-dialup", "sslvpn"
+	RemoteIP     string    `json:"remote_ip"`
+	Status       string    `json:"status"`
+	BytesIn      uint64    `json:"bytes_in"`
+	BytesOut     uint64    `json:"bytes_out"`
+	PacketsIn    uint64    `json:"packets_in"`
+	PacketsOut   uint64    `json:"packets_out"`
+	State        string    `json:"state"`
+	Phase1Name   string    `json:"phase1_name"`
+	LocalSubnet  string    `json:"local_subnet"`
+	RemoteSubnet string    `json:"remote_subnet"`
+	TunnelUptime uint64    `json:"tunnel_uptime"`
 }
 
 type TrapEvent struct {

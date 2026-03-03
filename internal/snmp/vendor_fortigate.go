@@ -2,6 +2,7 @@ package snmp
 
 import (
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -36,12 +37,18 @@ var (
 	fgOIDSSLVPNActive = ".1.3.6.1.4.1.12356.101.12.2.3.1.6.0"
 
 	// --- IPSec site-to-site VPN tunnel table ---
-	fgBaseOIDVPNTunnel      = ".1.3.6.1.4.1.12356.101.12.2.2.1"
-	fgOIDVPNTunnelName      = ".1.3.6.1.4.1.12356.101.12.2.2.1.3"
-	fgOIDVPNTunnelRemoteGW  = ".1.3.6.1.4.1.12356.101.12.2.2.1.4"
-	fgOIDVPNTunnelInOctets  = ".1.3.6.1.4.1.12356.101.12.2.2.1.18"
-	fgOIDVPNTunnelOutOctets = ".1.3.6.1.4.1.12356.101.12.2.2.1.19"
-	fgOIDVPNTunnelStatus    = ".1.3.6.1.4.1.12356.101.12.2.2.1.20"
+	fgBaseOIDVPNTunnel       = ".1.3.6.1.4.1.12356.101.12.2.2.1"
+	fgOIDVPNTunnelPhase1Name = ".1.3.6.1.4.1.12356.101.12.2.2.1.2"
+	fgOIDVPNTunnelName       = ".1.3.6.1.4.1.12356.101.12.2.2.1.3"
+	fgOIDVPNTunnelRemoteGW   = ".1.3.6.1.4.1.12356.101.12.2.2.1.4"
+	fgOIDVPNTunnelRemoteAddr = ".1.3.6.1.4.1.12356.101.12.2.2.1.5"
+	fgOIDVPNTunnelRemoteMask = ".1.3.6.1.4.1.12356.101.12.2.2.1.6"
+	fgOIDVPNTunnelLocalAddr  = ".1.3.6.1.4.1.12356.101.12.2.2.1.7"
+	fgOIDVPNTunnelLocalMask  = ".1.3.6.1.4.1.12356.101.12.2.2.1.8"
+	fgOIDVPNTunnelInOctets   = ".1.3.6.1.4.1.12356.101.12.2.2.1.18"
+	fgOIDVPNTunnelOutOctets  = ".1.3.6.1.4.1.12356.101.12.2.2.1.19"
+	fgOIDVPNTunnelStatus     = ".1.3.6.1.4.1.12356.101.12.2.2.1.20"
+	fgOIDVPNTunnelUpTime     = ".1.3.6.1.4.1.12356.101.12.2.2.1.21"
 
 	// fgVpnDialupTable — dial-up/dynamic VPN peers (hub-side of spoke/hub IPSec).
 	fgBaseOIDVPNDialup      = ".1.3.6.1.4.1.12356.101.12.2.1.1"
@@ -227,12 +234,24 @@ func (f *FortiGateProfile) VPNBaseOID() string { return fgBaseOIDVPNTunnel }
 
 func (f *FortiGateProfile) ParseVPNStatus(pdus []gosnmp.SnmpPDU) []relay.VPNStatus {
 	tunnelMap := make(map[int]*relay.VPNStatus)
+	localAddrs := make(map[int]string)
+	localMasks := make(map[int]string)
+	remoteAddrs := make(map[int]string)
+	remoteMasks := make(map[int]string)
+
 	for _, pdu := range pdus {
 		if !isValidPDU(pdu) {
 			continue
 		}
 		name := pdu.Name
-		if strings.HasPrefix(name, fgOIDVPNTunnelName+".") {
+		if strings.HasPrefix(name, fgOIDVPNTunnelPhase1Name+".") {
+			idx := getIndexFromOID(name, fgOIDVPNTunnelPhase1Name)
+			if idx < 0 {
+				continue
+			}
+			t := getOrCreateVPN(tunnelMap, idx)
+			t.Phase1Name = safeString(pdu.Value)
+		} else if strings.HasPrefix(name, fgOIDVPNTunnelName+".") {
 			idx := getIndexFromOID(name, fgOIDVPNTunnelName)
 			if idx < 0 {
 				continue
@@ -246,6 +265,26 @@ func (f *FortiGateProfile) ParseVPNStatus(pdus []gosnmp.SnmpPDU) []relay.VPNStat
 			}
 			t := getOrCreateVPN(tunnelMap, idx)
 			t.RemoteIP = safeString(pdu.Value)
+		} else if strings.HasPrefix(name, fgOIDVPNTunnelRemoteAddr+".") {
+			idx := getIndexFromOID(name, fgOIDVPNTunnelRemoteAddr)
+			if idx >= 0 {
+				remoteAddrs[idx] = safeString(pdu.Value)
+			}
+		} else if strings.HasPrefix(name, fgOIDVPNTunnelRemoteMask+".") {
+			idx := getIndexFromOID(name, fgOIDVPNTunnelRemoteMask)
+			if idx >= 0 {
+				remoteMasks[idx] = safeString(pdu.Value)
+			}
+		} else if strings.HasPrefix(name, fgOIDVPNTunnelLocalAddr+".") {
+			idx := getIndexFromOID(name, fgOIDVPNTunnelLocalAddr)
+			if idx >= 0 {
+				localAddrs[idx] = safeString(pdu.Value)
+			}
+		} else if strings.HasPrefix(name, fgOIDVPNTunnelLocalMask+".") {
+			idx := getIndexFromOID(name, fgOIDVPNTunnelLocalMask)
+			if idx >= 0 {
+				localMasks[idx] = safeString(pdu.Value)
+			}
 		} else if strings.HasPrefix(name, fgOIDVPNTunnelInOctets+".") {
 			idx := getIndexFromOID(name, fgOIDVPNTunnelInOctets)
 			if idx < 0 {
@@ -274,17 +313,46 @@ func (f *FortiGateProfile) ParseVPNStatus(pdus []gosnmp.SnmpPDU) []relay.VPNStat
 				t.Status = "down"
 				t.State = "inactive"
 			}
+		} else if strings.HasPrefix(name, fgOIDVPNTunnelUpTime+".") {
+			idx := getIndexFromOID(name, fgOIDVPNTunnelUpTime)
+			if idx < 0 {
+				continue
+			}
+			t := getOrCreateVPN(tunnelMap, idx)
+			t.TunnelUptime = uint64(gosnmp.ToBigInt(pdu.Value).Uint64())
 		}
 	}
 
 	now := time.Now()
 	result := make([]relay.VPNStatus, 0, len(tunnelMap))
-	for _, t := range tunnelMap {
+	for idx, t := range tunnelMap {
 		t.Timestamp = now
 		t.TunnelType = "ipsec"
+		t.LocalSubnet = buildCIDR(localAddrs[idx], localMasks[idx])
+		t.RemoteSubnet = buildCIDR(remoteAddrs[idx], remoteMasks[idx])
 		result = append(result, *t)
 	}
 	return result
+}
+
+// buildCIDR combines an IP address and subnet mask into CIDR notation (e.g., "10.0.0.0/24").
+func buildCIDR(addr, mask string) string {
+	if addr == "" || addr == "0.0.0.0" {
+		return ""
+	}
+	ip := net.ParseIP(addr)
+	if ip == nil {
+		return addr
+	}
+	if mask == "" || mask == "0.0.0.0" {
+		return addr
+	}
+	m := net.ParseIP(mask)
+	if m == nil {
+		return addr
+	}
+	ones, _ := net.IPMask(m.To4()).Size()
+	return fmt.Sprintf("%s/%d", addr, ones)
 }
 
 func (f *FortiGateProfile) DialupVPNBaseOID() string { return fgBaseOIDVPNDialup }
