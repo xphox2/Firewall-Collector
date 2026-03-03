@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.20 - 2026-03-03
+
+### Fixed
+- **TCP syslog connection WaitGroup**: Added `connWg sync.WaitGroup` to `SyslogReceiver` to properly track active TCP connections; `Stop()` now waits for all in-flight connection handlers to finish before returning, preventing goroutine leaks on shutdown
+
 ## 1.2.19 - 2026-03-03
 
 ### Fixed
