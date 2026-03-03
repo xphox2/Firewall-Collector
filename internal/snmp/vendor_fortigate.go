@@ -28,6 +28,13 @@ var (
 	fgOIDVPNTunnelOutOctets = ".1.3.6.1.4.1.12356.101.12.2.2.1.19"
 	fgOIDVPNTunnelStatus    = ".1.3.6.1.4.1.12356.101.12.2.2.1.20"
 
+	// fgVpnDialupTable — dial-up/dynamic VPN peers (hub-side of spoke/hub IPSec).
+	// Entries only appear while the tunnel is active (no explicit status column).
+	fgBaseOIDVPNDialup       = ".1.3.6.1.4.1.12356.101.12.2.1.1"
+	fgOIDVPNDialupGateway    = ".1.3.6.1.4.1.12356.101.12.2.1.1.2"
+	fgOIDVPNDialupInOctets   = ".1.3.6.1.4.1.12356.101.12.2.1.1.9"
+	fgOIDVPNDialupOutOctets  = ".1.3.6.1.4.1.12356.101.12.2.1.1.10"
+
 	fgOIDHWSensorEntry = ".1.3.6.1.4.1.12356.101.4.3.2.1"
 	fgOIDHWSensorName  = ".1.3.6.1.4.1.12356.101.4.3.2.1.2"
 	fgOIDHWSensorValue = ".1.3.6.1.4.1.12356.101.4.3.2.1.3"
@@ -166,6 +173,60 @@ func (f *FortiGateProfile) ParseVPNStatus(pdus []gosnmp.SnmpPDU) []relay.VPNStat
 	result := make([]relay.VPNStatus, 0, len(tunnelMap))
 	for _, t := range tunnelMap {
 		t.Timestamp = now
+		result = append(result, *t)
+	}
+	return result
+}
+
+func (f *FortiGateProfile) DialupVPNBaseOID() string { return fgBaseOIDVPNDialup }
+
+func (f *FortiGateProfile) ParseDialupVPNStatus(pdus []gosnmp.SnmpPDU) []relay.VPNStatus {
+	tunnelMap := make(map[int]*relay.VPNStatus)
+	for _, pdu := range pdus {
+		if !isValidPDU(pdu) {
+			continue
+		}
+		name := pdu.Name
+		if strings.HasPrefix(name, fgOIDVPNDialupGateway+".") {
+			idx := getIndexFromOID(name, fgOIDVPNDialupGateway)
+			if idx < 0 {
+				continue
+			}
+			t := getOrCreateVPN(tunnelMap, idx)
+			t.RemoteIP = safeString(pdu.Value)
+		} else if strings.HasPrefix(name, fgOIDVPNDialupInOctets+".") {
+			idx := getIndexFromOID(name, fgOIDVPNDialupInOctets)
+			if idx < 0 {
+				continue
+			}
+			t := getOrCreateVPN(tunnelMap, idx)
+			t.BytesIn = uint64(gosnmp.ToBigInt(pdu.Value).Uint64())
+		} else if strings.HasPrefix(name, fgOIDVPNDialupOutOctets+".") {
+			idx := getIndexFromOID(name, fgOIDVPNDialupOutOctets)
+			if idx < 0 {
+				continue
+			}
+			t := getOrCreateVPN(tunnelMap, idx)
+			t.BytesOut = uint64(gosnmp.ToBigInt(pdu.Value).Uint64())
+		}
+	}
+
+	now := time.Now()
+	result := make([]relay.VPNStatus, 0, len(tunnelMap))
+	for _, t := range tunnelMap {
+		t.Timestamp = now
+		// Presence in the dialup table means the tunnel is active —
+		// entries disappear when the peer disconnects.
+		t.Status = "up"
+		t.State = "active"
+		// The gen1 dialup table has no tunnel name column; use remote gateway IP.
+		if t.TunnelName == "" {
+			if t.RemoteIP != "" {
+				t.TunnelName = "dialup-" + t.RemoteIP
+			} else {
+				t.TunnelName = "dialup-unknown"
+			}
+		}
 		result = append(result, *t)
 	}
 	return result

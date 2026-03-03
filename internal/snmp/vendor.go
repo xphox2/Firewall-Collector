@@ -46,6 +46,14 @@ type VendorProfile interface {
 	TrapOIDs() map[string]TrapDef
 }
 
+// DialupVPNProvider is an optional interface for vendors that expose dial-up
+// (dynamic/hub-side) VPN peers in a separate SNMP table from the site-to-site
+// tunnel table. FortiGate uses fgVpnDialupTable for these.
+type DialupVPNProvider interface {
+	DialupVPNBaseOID() string
+	ParseDialupVPNStatus(pdus []gosnmp.SnmpPDU) []relay.VPNStatus
+}
+
 var (
 	vendorMu       sync.RWMutex
 	vendorRegistry = make(map[string]VendorProfile)

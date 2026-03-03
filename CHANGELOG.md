@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.14 - 2026-03-02
+
+### Added
+- **Dial-up VPN tunnel detection**: Hub-side FortiGates running dial-in IPSec (spoke/hub topology) now show connected VPN peers. Previously only the spoke side reported tunnels because the code only walked `fgVpnTunTable` (site-to-site). Now also walks `fgVpnDialupTable` which contains active dial-up peers, and merges both into the VPN status output.
+- `DialupVPNProvider` optional interface for vendor profiles that expose dial-up VPN peers in a separate SNMP table
+
 ## 1.2.13 - 2026-03-02
 
 ### Fixed

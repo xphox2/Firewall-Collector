@@ -17,7 +17,7 @@ import (
 	"firewall-collector/internal/syslog"
 )
 
-const version = "1.2.13"
+const version = "1.2.14"
 
 type Collector struct {
 	cfg           *config.ProbeConfig

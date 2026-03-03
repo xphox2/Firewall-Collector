@@ -419,17 +419,30 @@ func (s *SNMPClient) GetVPNStatus(vendor ...string) ([]relay.VPNStatus, error) {
 		return nil, fmt.Errorf("no vendor profile available")
 	}
 
+	var statuses []relay.VPNStatus
+
+	// Walk site-to-site (non-dial-up) tunnel table
 	baseOID := profile.VPNBaseOID()
-	if baseOID == "" {
-		return nil, nil
+	if baseOID != "" {
+		pdus, err := s.client.WalkAll(baseOID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to walk VPN tunnel table: %w", err)
+		}
+		statuses = profile.ParseVPNStatus(pdus)
 	}
 
-	pdus, err := s.client.WalkAll(baseOID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to walk VPN tunnel table: %w", err)
+	// Walk dial-up tunnel table if vendor supports it (e.g. FortiGate hub-side IPSec)
+	if dialupProvider, ok := profile.(DialupVPNProvider); ok {
+		dialupOID := dialupProvider.DialupVPNBaseOID()
+		if dialupOID != "" {
+			pdus, err := s.client.WalkAll(dialupOID)
+			if err == nil && len(pdus) > 0 {
+				statuses = append(statuses, dialupProvider.ParseDialupVPNStatus(pdus)...)
+			}
+		}
 	}
 
-	return profile.ParseVPNStatus(pdus), nil
+	return statuses, nil
 }
 
 func getOrCreateVPN(m map[int]*relay.VPNStatus, index int) *relay.VPNStatus {
