@@ -17,7 +17,7 @@ import (
 	"firewall-collector/internal/syslog"
 )
 
-const version = "1.2.11"
+const version = "1.2.12"
 
 type Collector struct {
 	cfg           *config.ProbeConfig
@@ -236,7 +236,31 @@ func (c *Collector) runStartupDiagnostic() {
 		return
 	}
 
-	fmt.Printf("  [Diagnostic] Testing SNMP connectivity to %s (%s:%d)...\n", target.Name, target.IPAddress, target.SNMPPort)
+	// Credential validation
+	fmt.Println("  [Diagnostic] === SNMP Credential Check ===")
+	fmt.Printf("  [Diagnostic] Target: %s (id=%d)\n", target.Name, target.ID)
+	fmt.Printf("  [Diagnostic] IP: %s  Port: %d  Version: %s\n", target.IPAddress, target.SNMPPort, target.SNMPVersion)
+	fmt.Printf("  [Diagnostic] Community length: %d chars\n", len(target.SNMPCommunity))
+	if target.SNMPCommunity == "" && target.SNMPVersion != "3" {
+		fmt.Println("  [Diagnostic] *** WARNING: SNMP community string is EMPTY! Device will not respond. ***")
+		fmt.Println("  [Diagnostic] *** Check device SNMP settings in the server admin panel. ***")
+		return
+	}
+	if target.SNMPPort == 0 {
+		fmt.Println("  [Diagnostic] *** WARNING: SNMP port is 0! Must be 161 (or valid port). ***")
+		return
+	}
+	if target.SNMPVersion == "" {
+		fmt.Println("  [Diagnostic] *** WARNING: SNMP version is empty! Defaulting to v2c. ***")
+	}
+	if target.SNMPVersion == "3" {
+		fmt.Printf("  [Diagnostic] V3 Username: %q  AuthType: %s  PrivType: %s\n",
+			target.SNMPV3Username, target.SNMPV3AuthType, target.SNMPV3PrivType)
+		if target.SNMPV3Username == "" {
+			fmt.Println("  [Diagnostic] *** WARNING: SNMPv3 username is EMPTY! ***")
+		}
+	}
+	fmt.Printf("  [Diagnostic] Vendor from server: %q\n", target.Vendor)
 
 	var v3 *snmp.SNMPv3Config
 	if target.SNMPVersion == "3" {
@@ -249,33 +273,52 @@ func (c *Collector) runStartupDiagnostic() {
 		}
 	}
 
+	fmt.Println()
+	fmt.Println("  [Diagnostic] === SNMP Connection Test ===")
 	client, err := snmp.NewSNMPClient(target.IPAddress, target.SNMPPort, target.SNMPCommunity, target.SNMPVersion, v3)
 	if err != nil {
-		fmt.Printf("  [Diagnostic] SNMP CONNECT FAILED: %v\n", err)
-		fmt.Println("  [Diagnostic] >>> Check: can this host reach", target.IPAddress, "on UDP port", target.SNMPPort, "?")
-		fmt.Println("  [Diagnostic] >>> If running in Docker, try network_mode: host in docker-compose.yml")
+		fmt.Printf("  [Diagnostic] CONNECT FAILED: %v\n", err)
 		return
 	}
 	defer client.Close()
+	fmt.Println("  [Diagnostic] UDP socket opened OK")
 
+	// Test 1: Vendor-neutral sysObjectID GET (works on ANY SNMP device)
+	fmt.Println()
+	fmt.Println("  [Diagnostic] === Test 1: Basic SNMP (sysObjectID — works on any device) ===")
+	start := time.Now()
+	basicResult, basicErr := client.GetRaw([]string{".1.3.6.1.2.1.1.2.0"})
+	elapsed := time.Since(start)
+	if basicErr != nil {
+		fmt.Printf("  [Diagnostic] BASIC SNMP FAILED (%v): %v\n", elapsed.Round(time.Millisecond), basicErr)
+		fmt.Println("  [Diagnostic] >>> Device is NOT responding to ANY SNMP request.")
+		fmt.Println("  [Diagnostic] >>> This means: wrong community string, SNMP disabled on device,")
+		fmt.Println("  [Diagnostic] >>> firewall blocking UDP 161, or device unreachable.")
+		if elapsed >= 10*time.Second {
+			fmt.Println("  [Diagnostic] >>> Timeout = no response. Packets sent but nothing came back.")
+		}
+	} else {
+		fmt.Printf("  [Diagnostic] BASIC SNMP OK (%v): sysObjectID = %v\n", elapsed.Round(time.Millisecond), basicResult)
+	}
+
+	// Test 2: Vendor-specific system status
 	vendor := target.Vendor
 	if vendor == "" {
 		vendor = "fortigate"
 	}
-
-	start := time.Now()
+	fmt.Println()
+	fmt.Printf("  [Diagnostic] === Test 2: Vendor-specific poll (vendor=%s) ===\n", vendor)
+	start = time.Now()
 	status, err := client.GetSystemStatus(vendor)
-	elapsed := time.Since(start)
+	elapsed = time.Since(start)
 	if err != nil {
-		fmt.Printf("  [Diagnostic] SNMP POLL FAILED (%v): %v\n", elapsed.Round(time.Millisecond), err)
-		fmt.Println("  [Diagnostic] >>> SNMP socket opened OK but no response from device")
-		fmt.Println("  [Diagnostic] >>> Check: SNMP enabled on device? Community string correct? Firewall blocking UDP 161?")
-		if elapsed >= 10*time.Second {
-			fmt.Println("  [Diagnostic] >>> Timeout reached — packets are being sent but no response received")
-			fmt.Println("  [Diagnostic] >>> This is almost always a NETWORK or FIREWALL issue, not a code bug")
+		fmt.Printf("  [Diagnostic] VENDOR POLL FAILED (%v): %v\n", elapsed.Round(time.Millisecond), err)
+		if basicErr == nil {
+			fmt.Println("  [Diagnostic] >>> Basic SNMP works but vendor OIDs fail!")
+			fmt.Println("  [Diagnostic] >>> This device may not be a FortiGate, or FortiGate MIB is not enabled.")
 		}
 	} else {
-		fmt.Printf("  [Diagnostic] SNMP OK (%v): %s — CPU=%.1f%% Mem=%.1f%% Sessions=%d\n",
+		fmt.Printf("  [Diagnostic] VENDOR POLL OK (%v): %s — CPU=%.1f%% Mem=%.1f%% Sessions=%d\n",
 			elapsed.Round(time.Millisecond), status.Hostname, status.CPUUsage, status.MemoryUsage, status.SessionCount)
 	}
 	fmt.Println()
@@ -323,6 +366,16 @@ func (c *Collector) runPollCycle() {
 }
 
 func (c *Collector) pollDevice(dev relay.DeviceInfo) {
+	// Credential guard: skip devices with obviously invalid SNMP settings
+	if dev.SNMPVersion != "3" && dev.SNMPCommunity == "" {
+		log.Printf("[SNMP] SKIP %s (%s): community string is EMPTY (check server device settings)", dev.Name, dev.IPAddress)
+		return
+	}
+	if dev.SNMPPort == 0 {
+		log.Printf("[SNMP] SKIP %s (%s): SNMP port is 0 (check server device settings)", dev.Name, dev.IPAddress)
+		return
+	}
+
 	var v3 *snmp.SNMPv3Config
 	if dev.SNMPVersion == "3" {
 		v3 = &snmp.SNMPv3Config{
@@ -336,7 +389,8 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 
 	client, err := snmp.NewSNMPClient(dev.IPAddress, dev.SNMPPort, dev.SNMPCommunity, dev.SNMPVersion, v3)
 	if err != nil {
-		log.Printf("[SNMP] Connect failed for %s (%s): %v", dev.Name, dev.IPAddress, err)
+		log.Printf("[SNMP] Connect failed for %s (%s:%d v%s community_len=%d): %v",
+			dev.Name, dev.IPAddress, dev.SNMPPort, dev.SNMPVersion, len(dev.SNMPCommunity), err)
 		return
 	}
 	defer client.Close()
@@ -349,7 +403,8 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 	// Poll system status
 	status, err := client.GetSystemStatus(vendor)
 	if err != nil {
-		log.Printf("[SNMP] Poll failed for %s (%s): %v", dev.Name, dev.IPAddress, err)
+		log.Printf("[SNMP] Poll failed for %s (%s:%d v%s community_len=%d vendor=%s): %v",
+			dev.Name, dev.IPAddress, dev.SNMPPort, dev.SNMPVersion, len(dev.SNMPCommunity), vendor, err)
 		return
 	}
 

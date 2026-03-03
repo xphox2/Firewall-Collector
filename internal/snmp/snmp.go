@@ -169,6 +169,26 @@ func (s *SNMPClient) Close() error {
 	return nil
 }
 
+// GetRaw performs a raw SNMP GET and returns the first value as a string for diagnostics.
+func (s *SNMPClient) GetRaw(oids []string) (string, error) {
+	result, err := s.client.Get(oids)
+	if err != nil {
+		return "", err
+	}
+	if len(result.Variables) == 0 {
+		return "(no variables returned)", nil
+	}
+	pdu := result.Variables[0]
+	switch pdu.Type {
+	case gosnmp.OctetString:
+		return string(pdu.Value.([]byte)), nil
+	case gosnmp.ObjectIdentifier:
+		return pdu.Value.(string), nil
+	default:
+		return fmt.Sprintf("%v (type=%d)", pdu.Value, pdu.Type), nil
+	}
+}
+
 func (s *SNMPClient) resolveVendor(vendor string) VendorProfile {
 	if vendor == "" {
 		vendor = "fortigate"
