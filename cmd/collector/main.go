@@ -29,6 +29,8 @@ type Collector struct {
 	pingCollector *ping.PingCollector
 	devices       []relay.DeviceInfo
 	deviceMu      sync.RWMutex
+	ifaceIPMap    map[string]uint // interface IP → device ID cache
+	ifaceIPMu    sync.RWMutex
 	stopChan      chan struct{}
 	pollWg        sync.WaitGroup
 }
@@ -442,6 +444,8 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 		if err := c.relayClient.SendInterfaceAddresses(ifAddrs); err != nil {
 			log.Printf("[SNMP] Failed to send interface addresses for %s: %v", dev.Name, err)
 		}
+		// Cache interface IPs for sFlow device resolution
+		c.cacheInterfaceAddresses(dev.ID, ifAddrs)
 	}
 
 	// Collect VPN tunnel status (silently skip if device has no VPN)
@@ -559,16 +563,40 @@ func (c *Collector) deviceRefreshLoop() {
 	}
 }
 
-// resolveDeviceByIP maps an sFlow agent IP to a device ID from the known device list.
+// resolveDeviceByIP maps an sFlow agent IP to a device ID from the known device list
+// and interface address cache.
 func (c *Collector) resolveDeviceByIP(ip string) uint {
+	// Check management IPs first
 	c.deviceMu.RLock()
-	defer c.deviceMu.RUnlock()
 	for _, d := range c.devices {
 		if d.IPAddress == ip {
+			c.deviceMu.RUnlock()
 			return d.ID
 		}
 	}
+	c.deviceMu.RUnlock()
+
+	// Check interface IP cache
+	c.ifaceIPMu.RLock()
+	defer c.ifaceIPMu.RUnlock()
+	if id, ok := c.ifaceIPMap[ip]; ok {
+		return id
+	}
 	return 0
+}
+
+// cacheInterfaceAddresses stores interface IPs for device resolution.
+func (c *Collector) cacheInterfaceAddresses(deviceID uint, addrs []relay.InterfaceAddress) {
+	c.ifaceIPMu.Lock()
+	defer c.ifaceIPMu.Unlock()
+	if c.ifaceIPMap == nil {
+		c.ifaceIPMap = make(map[string]uint)
+	}
+	for _, a := range addrs {
+		if a.IPAddress != "" && a.IPAddress != "0.0.0.0" && a.IPAddress != "127.0.0.1" {
+			c.ifaceIPMap[a.IPAddress] = deviceID
+		}
+	}
 }
 
 func (c *Collector) stop() {

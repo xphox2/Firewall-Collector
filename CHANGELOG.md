@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.17 - 2026-03-02
+
+### Fixed
+- **sFlow device resolution via interface IPs**: `resolveDeviceByIP()` now checks both management IPs and a cached interface IP→device map, resolving sFlow agents sending from non-management addresses
+- **Interface IP cache**: After each SNMP walk, collected interface addresses are cached locally for instant sFlow device mapping (excludes 0.0.0.0 and 127.0.0.1)
+
 ## 1.2.16 - 2026-03-02
 
 ### Added
