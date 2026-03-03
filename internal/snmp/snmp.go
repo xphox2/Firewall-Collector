@@ -442,6 +442,17 @@ func (s *SNMPClient) GetVPNStatus(vendor ...string) ([]relay.VPNStatus, error) {
 		}
 	}
 
+	// Walk SSL-VPN tunnel table if vendor supports it
+	if sslProvider, ok := profile.(SSLVPNProvider); ok {
+		sslOID := sslProvider.SSLVPNBaseOID()
+		if sslOID != "" {
+			pdus, err := s.client.WalkAll(sslOID)
+			if err == nil && len(pdus) > 0 {
+				statuses = append(statuses, sslProvider.ParseSSLVPNTunnels(pdus)...)
+			}
+		}
+	}
+
 	return statuses, nil
 }
 
@@ -526,4 +537,118 @@ func getOrCreateSensor(sensors map[int]*relay.HardwareSensor, index int) *relay.
 	s := &relay.HardwareSensor{}
 	sensors[index] = s
 	return s
+}
+
+func (s *SNMPClient) GetHAStatus(vendor ...string) ([]relay.HAStatus, error) {
+	v := ""
+	if len(vendor) > 0 {
+		v = vendor[0]
+	}
+	profile := s.resolveVendor(v)
+	if profile == nil {
+		return nil, nil
+	}
+	haProvider, ok := profile.(HAProvider)
+	if !ok {
+		return nil, nil
+	}
+
+	scalarOIDs := haProvider.HAScalarOIDs()
+	if len(scalarOIDs) == 0 {
+		return nil, nil
+	}
+
+	scalarResult, err := s.client.Get(scalarOIDs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get HA scalars: %w", err)
+	}
+
+	memberPDUs, err := s.client.WalkAll(haProvider.HAStatsBaseOID())
+	if err != nil {
+		// HA table may not exist on standalone units
+		memberPDUs = nil
+	}
+
+	return haProvider.ParseHAStatus(scalarResult.Variables, memberPDUs), nil
+}
+
+func (s *SNMPClient) GetSecurityStats(vendor ...string) (*relay.SecurityStats, error) {
+	v := ""
+	if len(vendor) > 0 {
+		v = vendor[0]
+	}
+	profile := s.resolveVendor(v)
+	if profile == nil {
+		return nil, nil
+	}
+	secProvider, ok := profile.(SecurityStatsProvider)
+	if !ok {
+		return nil, nil
+	}
+
+	oids := secProvider.SecurityStatsOIDs()
+	if len(oids) == 0 {
+		return nil, nil
+	}
+
+	result, err := s.client.Get(oids)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get security stats: %w", err)
+	}
+
+	return secProvider.ParseSecurityStats(result.Variables), nil
+}
+
+func (s *SNMPClient) GetSDWANHealth(vendor ...string) ([]relay.SDWANHealth, error) {
+	v := ""
+	if len(vendor) > 0 {
+		v = vendor[0]
+	}
+	profile := s.resolveVendor(v)
+	if profile == nil {
+		return nil, nil
+	}
+	sdwanProvider, ok := profile.(SDWANProvider)
+	if !ok {
+		return nil, nil
+	}
+
+	baseOID := sdwanProvider.SDWANHealthBaseOID()
+	if baseOID == "" {
+		return nil, nil
+	}
+
+	pdus, err := s.client.WalkAll(baseOID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to walk SD-WAN health table: %w", err)
+	}
+
+	return sdwanProvider.ParseSDWANHealth(pdus), nil
+}
+
+func (s *SNMPClient) GetLicenseInfo(vendor ...string) ([]relay.LicenseInfo, error) {
+	v := ""
+	if len(vendor) > 0 {
+		v = vendor[0]
+	}
+	profile := s.resolveVendor(v)
+	if profile == nil {
+		return nil, nil
+	}
+	licProvider, ok := profile.(LicenseProvider)
+	if !ok {
+		return nil, nil
+	}
+
+	baseOID := licProvider.LicenseBaseOID()
+	if baseOID == "" {
+		return nil, nil
+	}
+
+	pdus, err := s.client.WalkAll(baseOID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to walk license table: %w", err)
+	}
+
+	return licProvider.ParseLicenseInfo(pdus), nil
 }

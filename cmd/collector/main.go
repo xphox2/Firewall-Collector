@@ -17,7 +17,7 @@ import (
 	"firewall-collector/internal/syslog"
 )
 
-const version = "1.2.14"
+const version = "1.2.15"
 
 type Collector struct {
 	cfg           *config.ProbeConfig
@@ -465,6 +465,52 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 		}
 		if err := c.relayClient.SendProcessorStats(procStats); err != nil {
 			log.Printf("[SNMP] Failed to send processor stats for %s: %v", dev.Name, err)
+		}
+	}
+
+	// Collect HA cluster status (silently skip if standalone or unsupported)
+	haStatuses, haErr := client.GetHAStatus(vendor)
+	if haErr == nil && len(haStatuses) > 0 {
+		for i := range haStatuses {
+			haStatuses[i].DeviceID = dev.ID
+			haStatuses[i].Timestamp = now
+		}
+		if err := c.relayClient.SendHAStatuses(haStatuses); err != nil {
+			log.Printf("[SNMP] Failed to send HA status for %s: %v", dev.Name, err)
+		}
+	}
+
+	// Collect security stats (AV/IPS/WebFilter counters)
+	secStats, secErr := client.GetSecurityStats(vendor)
+	if secErr == nil && secStats != nil {
+		secStats.DeviceID = dev.ID
+		secStats.Timestamp = now
+		if err := c.relayClient.SendSecurityStats([]relay.SecurityStats{*secStats}); err != nil {
+			log.Printf("[SNMP] Failed to send security stats for %s: %v", dev.Name, err)
+		}
+	}
+
+	// Collect SD-WAN health checks (silently skip if no SD-WAN configured)
+	sdwanHealth, sdwanErr := client.GetSDWANHealth(vendor)
+	if sdwanErr == nil && len(sdwanHealth) > 0 {
+		for i := range sdwanHealth {
+			sdwanHealth[i].DeviceID = dev.ID
+			sdwanHealth[i].Timestamp = now
+		}
+		if err := c.relayClient.SendSDWANHealth(sdwanHealth); err != nil {
+			log.Printf("[SNMP] Failed to send SD-WAN health for %s: %v", dev.Name, err)
+		}
+	}
+
+	// Collect license/contract info (silently skip if unsupported)
+	licenses, licErr := client.GetLicenseInfo(vendor)
+	if licErr == nil && len(licenses) > 0 {
+		for i := range licenses {
+			licenses[i].DeviceID = dev.ID
+			licenses[i].Timestamp = now
+		}
+		if err := c.relayClient.SendLicenseInfo(licenses); err != nil {
+			log.Printf("[SNMP] Failed to send license info for %s: %v", dev.Name, err)
 		}
 	}
 }

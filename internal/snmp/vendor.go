@@ -54,6 +54,42 @@ type DialupVPNProvider interface {
 	ParseDialupVPNStatus(pdus []gosnmp.SnmpPDU) []relay.VPNStatus
 }
 
+// SSLVPNProvider is an optional interface for vendors that expose SSL-VPN
+// client tunnel sessions via SNMP.
+type SSLVPNProvider interface {
+	SSLVPNBaseOID() string
+	ParseSSLVPNTunnels(pdus []gosnmp.SnmpPDU) []relay.VPNStatus
+}
+
+// HAProvider is an optional interface for vendors that expose HA cluster
+// status and per-member stats via SNMP.
+type HAProvider interface {
+	HAScalarOIDs() []string
+	HAStatsBaseOID() string
+	ParseHAStatus(scalars []gosnmp.SnmpPDU, members []gosnmp.SnmpPDU) []relay.HAStatus
+}
+
+// SecurityStatsProvider is an optional interface for vendors that expose
+// AV/IPS/WebFilter counters via SNMP.
+type SecurityStatsProvider interface {
+	SecurityStatsOIDs() []string
+	ParseSecurityStats(pdus []gosnmp.SnmpPDU) *relay.SecurityStats
+}
+
+// SDWANProvider is an optional interface for vendors that expose SD-WAN
+// health check link metrics via SNMP.
+type SDWANProvider interface {
+	SDWANHealthBaseOID() string
+	ParseSDWANHealth(pdus []gosnmp.SnmpPDU) []relay.SDWANHealth
+}
+
+// LicenseProvider is an optional interface for vendors that expose
+// license/contract expiry information via SNMP.
+type LicenseProvider interface {
+	LicenseBaseOID() string
+	ParseLicenseInfo(pdus []gosnmp.SnmpPDU) []relay.LicenseInfo
+}
+
 var (
 	vendorMu       sync.RWMutex
 	vendorRegistry = make(map[string]VendorProfile)

@@ -35,6 +35,18 @@ type SystemStatus struct {
 	DiskTotal    uint64    `json:"disk_total"`
 	SessionCount int       `json:"session_count"`
 	Uptime       uint64    `json:"uptime"`
+	// Extended session/memory/signature telemetry (Part 1)
+	SessionRate1  int    `json:"session_rate_1"`
+	SessionRate10 int    `json:"session_rate_10"`
+	SessionRate30 int    `json:"session_rate_30"`
+	SessionRate60 int    `json:"session_rate_60"`
+	SessionCount6 int    `json:"session_count_6"`
+	LowMemUsage   int    `json:"low_mem_usage"`
+	LowMemCap     int    `json:"low_mem_cap"`
+	AVVersion     string `json:"av_version"`
+	IPSVersion    string `json:"ips_version"`
+	SSLVPNUsers   int    `json:"sslvpn_users"`
+	SSLVPNTunnels int    `json:"sslvpn_tunnels"`
 }
 
 type InterfaceStats struct {
@@ -66,6 +78,7 @@ type VPNStatus struct {
 	Timestamp  time.Time `json:"timestamp"`
 	DeviceID   uint      `json:"device_id"`
 	TunnelName string    `json:"tunnel_name"`
+	TunnelType string    `json:"tunnel_type"` // "ipsec", "ipsec-dialup", "sslvpn"
 	RemoteIP   string    `json:"remote_ip"`
 	Status     string    `json:"status"`
 	BytesIn    uint64    `json:"bytes_in"`
@@ -148,6 +161,65 @@ type ProcessorStats struct {
 	DeviceID  uint      `json:"device_id"`
 	Index     int       `json:"index"`
 	Usage     float64   `json:"usage"`
+}
+
+type HAStatus struct {
+	Timestamp      time.Time `json:"timestamp"`
+	DeviceID       uint      `json:"device_id"`
+	SystemMode     string    `json:"system_mode"`
+	GroupID        int       `json:"group_id"`
+	GroupName      string    `json:"group_name"`
+	MemberIndex    int       `json:"member_index"`
+	MemberSerial   string    `json:"member_serial"`
+	MemberHostname string    `json:"member_hostname"`
+	CPUUsage       float64   `json:"cpu_usage"`
+	MemoryUsage    float64   `json:"memory_usage"`
+	NetworkUsage   int       `json:"network_usage"`
+	SessionCount   int       `json:"session_count"`
+	PacketCount    uint64    `json:"packet_count"`
+	ByteCount      uint64    `json:"byte_count"`
+	SyncStatus     string    `json:"sync_status"`
+	MasterSerial   string    `json:"master_serial"`
+}
+
+type SecurityStats struct {
+	Timestamp      time.Time `json:"timestamp"`
+	DeviceID       uint      `json:"device_id"`
+	AVDetected     uint64    `json:"av_detected"`
+	AVBlocked      uint64    `json:"av_blocked"`
+	AVHTTPDetected uint64    `json:"av_http_detected"`
+	AVHTTPBlocked  uint64    `json:"av_http_blocked"`
+	AVSMTPDetected uint64    `json:"av_smtp_detected"`
+	AVSMTPBlocked  uint64    `json:"av_smtp_blocked"`
+	IPSDetected    uint64    `json:"ips_detected"`
+	IPSBlocked     uint64    `json:"ips_blocked"`
+	IPSCritical    uint64    `json:"ips_critical"`
+	IPSHigh        uint64    `json:"ips_high"`
+	IPSMedium      uint64    `json:"ips_medium"`
+	IPSLow         uint64    `json:"ips_low"`
+	IPSInfo        uint64    `json:"ips_info"`
+	WFHTTPBlocked  uint64    `json:"wf_http_blocked"`
+	WFHTTPSBlocked uint64    `json:"wf_https_blocked"`
+	WFURLBlocked   uint64    `json:"wf_url_blocked"`
+}
+
+type SDWANHealth struct {
+	Timestamp  time.Time `json:"timestamp"`
+	DeviceID   uint      `json:"device_id"`
+	Name       string    `json:"name"`
+	Interface  string    `json:"interface"`
+	State      string    `json:"state"`
+	Latency    float64   `json:"latency"`
+	PacketLoss float64   `json:"packet_loss"`
+	PacketSend uint64    `json:"packet_send"`
+	PacketRecv uint64    `json:"packet_recv"`
+}
+
+type LicenseInfo struct {
+	Timestamp   time.Time `json:"timestamp"`
+	DeviceID    uint      `json:"device_id"`
+	Description string    `json:"description"`
+	ExpiryDate  string    `json:"expiry_date"`
 }
 
 type DeviceInfo struct {
@@ -583,6 +655,86 @@ func (c *Client) SendProcessorStats(stats []ProcessorStats) error {
 		return nil
 	}
 	return fmt.Errorf("send processor stats returned status %d", resp.StatusCode)
+}
+
+func (c *Client) SendHAStatuses(statuses []HAStatus) error {
+	if !c.approved.Load() {
+		return fmt.Errorf("probe not approved")
+	}
+	jsonData, err := json.Marshal(statuses)
+	if err != nil {
+		return fmt.Errorf("failed to marshal HA statuses: %w", err)
+	}
+	url := fmt.Sprintf("%s/api/probes/%d/ha-status", c.Config.ServerURL, c.GetProbeID())
+	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
+	if err != nil {
+		return fmt.Errorf("failed to send HA statuses: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return fmt.Errorf("send HA statuses returned status %d", resp.StatusCode)
+}
+
+func (c *Client) SendSecurityStats(stats []SecurityStats) error {
+	if !c.approved.Load() {
+		return fmt.Errorf("probe not approved")
+	}
+	jsonData, err := json.Marshal(stats)
+	if err != nil {
+		return fmt.Errorf("failed to marshal security stats: %w", err)
+	}
+	url := fmt.Sprintf("%s/api/probes/%d/security-stats", c.Config.ServerURL, c.GetProbeID())
+	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
+	if err != nil {
+		return fmt.Errorf("failed to send security stats: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return fmt.Errorf("send security stats returned status %d", resp.StatusCode)
+}
+
+func (c *Client) SendSDWANHealth(health []SDWANHealth) error {
+	if !c.approved.Load() {
+		return fmt.Errorf("probe not approved")
+	}
+	jsonData, err := json.Marshal(health)
+	if err != nil {
+		return fmt.Errorf("failed to marshal SD-WAN health: %w", err)
+	}
+	url := fmt.Sprintf("%s/api/probes/%d/sdwan-health", c.Config.ServerURL, c.GetProbeID())
+	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
+	if err != nil {
+		return fmt.Errorf("failed to send SD-WAN health: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return fmt.Errorf("send SD-WAN health returned status %d", resp.StatusCode)
+}
+
+func (c *Client) SendLicenseInfo(licenses []LicenseInfo) error {
+	if !c.approved.Load() {
+		return fmt.Errorf("probe not approved")
+	}
+	jsonData, err := json.Marshal(licenses)
+	if err != nil {
+		return fmt.Errorf("failed to marshal license info: %w", err)
+	}
+	url := fmt.Sprintf("%s/api/probes/%d/license-info", c.Config.ServerURL, c.GetProbeID())
+	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
+	if err != nil {
+		return fmt.Errorf("failed to send license info: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return fmt.Errorf("send license info returned status %d", resp.StatusCode)
 }
 
 // --- FetchDevices ---
