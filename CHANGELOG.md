@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.16 - 2026-03-02
+
+### Added
+- **Interface IP address collection**: New `GetInterfaceAddresses()` SNMP method walks standard IP-MIB `ipAddrTable` to collect all IP addresses assigned to device interfaces (vendor-neutral, works on FortiGate, Palo Alto, Cisco, etc.)
+- **`InterfaceAddress` relay DTO**: New data type with timestamp, device_id, if_index, ip_address, net_mask
+- **`SendInterfaceAddresses()` relay method**: Sends collected interface addresses to server via `POST /api/probes/:id/interface-addresses`
+- Interface address collection integrated into `pollDevice()` — runs after interface stats, before VPN status
+
 ## 1.2.15 - 2026-03-02
 
 ### Added

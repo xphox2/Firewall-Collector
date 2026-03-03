@@ -222,6 +222,14 @@ type LicenseInfo struct {
 	ExpiryDate  string    `json:"expiry_date"`
 }
 
+type InterfaceAddress struct {
+	Timestamp time.Time `json:"timestamp"`
+	DeviceID  uint      `json:"device_id"`
+	IfIndex   int       `json:"if_index"`
+	IPAddress string    `json:"ip_address"`
+	NetMask   string    `json:"net_mask"`
+}
+
 type DeviceInfo struct {
 	ID             uint   `json:"id"`
 	Name           string `json:"name"`
@@ -735,6 +743,26 @@ func (c *Client) SendLicenseInfo(licenses []LicenseInfo) error {
 		return nil
 	}
 	return fmt.Errorf("send license info returned status %d", resp.StatusCode)
+}
+
+func (c *Client) SendInterfaceAddresses(addrs []InterfaceAddress) error {
+	if !c.approved.Load() {
+		return fmt.Errorf("probe not approved")
+	}
+	jsonData, err := json.Marshal(addrs)
+	if err != nil {
+		return fmt.Errorf("failed to marshal interface addresses: %w", err)
+	}
+	url := fmt.Sprintf("%s/api/probes/%d/interface-addresses", c.Config.ServerURL, c.GetProbeID())
+	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
+	if err != nil {
+		return fmt.Errorf("failed to send interface addresses: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return fmt.Errorf("send interface addresses returned status %d", resp.StatusCode)
 }
 
 // --- FetchDevices ---

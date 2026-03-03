@@ -432,6 +432,18 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 		log.Printf("[SNMP] Failed to send interface stats for %s: %v", dev.Name, err)
 	}
 
+	// Collect interface IP addresses (standard IP-MIB, vendor-neutral)
+	ifAddrs, ifAddrErr := client.GetInterfaceAddresses()
+	if ifAddrErr == nil && len(ifAddrs) > 0 {
+		for i := range ifAddrs {
+			ifAddrs[i].DeviceID = dev.ID
+			ifAddrs[i].Timestamp = now
+		}
+		if err := c.relayClient.SendInterfaceAddresses(ifAddrs); err != nil {
+			log.Printf("[SNMP] Failed to send interface addresses for %s: %v", dev.Name, err)
+		}
+	}
+
 	// Collect VPN tunnel status (silently skip if device has no VPN)
 	vpnStatuses, vpnErr := client.GetVPNStatus(vendor)
 	if vpnErr == nil && len(vpnStatuses) > 0 {
