@@ -113,6 +113,9 @@ func (f *FortiGateProfile) VPNBaseOID() string { return fgBaseOIDVPNTunnel }
 func (f *FortiGateProfile) ParseVPNStatus(pdus []gosnmp.SnmpPDU) []relay.VPNStatus {
 	tunnelMap := make(map[int]*relay.VPNStatus)
 	for _, pdu := range pdus {
+		if !isValidPDU(pdu) {
+			continue
+		}
 		name := pdu.Name
 		if strings.HasPrefix(name, fgOIDVPNTunnelName+".") {
 			idx := getIndexFromOID(name, fgOIDVPNTunnelName)
@@ -173,6 +176,9 @@ func (f *FortiGateProfile) HWSensorBaseOID() string { return fgOIDHWSensorEntry 
 func (f *FortiGateProfile) ParseHardwareSensors(pdus []gosnmp.SnmpPDU) []relay.HardwareSensor {
 	sensorMap := make(map[int]*relay.HardwareSensor)
 	for _, pdu := range pdus {
+		if !isValidPDU(pdu) {
+			continue
+		}
 		name := pdu.Name
 		if strings.HasPrefix(name, fgOIDHWSensorName+".") {
 			idx := getIndexFromOID(name, fgOIDHWSensorName)
@@ -241,6 +247,9 @@ func (f *FortiGateProfile) ParseProcessorStats(pdus []gosnmp.SnmpPDU) []relay.Pr
 	now := time.Now()
 	var result []relay.ProcessorStats
 	for _, pdu := range pdus {
+		if !isValidPDU(pdu) {
+			continue
+		}
 		if strings.HasPrefix(pdu.Name, fgOIDProcessorUsage+".") {
 			idx := getIndexFromOID(pdu.Name, fgOIDProcessorUsage)
 			if idx < 0 {

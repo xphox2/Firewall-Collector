@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -147,7 +146,6 @@ func (p *PingCollector) pingDevice(dev relay.DeviceInfo, probeID uint) {
 	}
 	defer conn.Close()
 
-	id := os.Getpid() & 0xffff
 	dst := &net.UDPAddr{IP: ip.IP}
 
 	var totalLatency float64
@@ -158,7 +156,7 @@ func (p *PingCollector) pingDevice(dev relay.DeviceInfo, probeID uint) {
 		if i > 0 {
 			time.Sleep(100 * time.Millisecond)
 		}
-		latency, err := sendEcho(conn, id, dst, dev.IPAddress, p.timeout)
+		latency, err := sendEcho(conn, dst, dev.IPAddress, p.timeout)
 		if err != nil {
 			lastErr = err
 			continue
@@ -171,6 +169,7 @@ func (p *PingCollector) pingDevice(dev relay.DeviceInfo, probeID uint) {
 		result.Success = true
 		result.Latency = totalLatency / float64(successCount)
 		result.PacketLoss = float64(p.count-successCount) / float64(p.count) * 100
+		log.Printf("[Ping] %s (%s): latency=%.1fms loss=%.0f%%", dev.Name, dev.IPAddress, result.Latency, result.PacketLoss)
 	} else {
 		result.PacketLoss = 100
 		if lastErr != nil {
@@ -178,6 +177,7 @@ func (p *PingCollector) pingDevice(dev relay.DeviceInfo, probeID uint) {
 		} else {
 			result.ErrorMessage = "Request timeout"
 		}
+		log.Printf("[Ping] %s (%s): FAILED — %s", dev.Name, dev.IPAddress, result.ErrorMessage)
 	}
 
 	p.emit(result)
@@ -191,7 +191,9 @@ func (p *PingCollector) emit(result *relay.PingResult) {
 
 // sendEcho sends one ICMP echo request on conn and waits for the matching reply.
 // Returns latency in milliseconds.
-func sendEcho(conn *icmp.PacketConn, id int, dst *net.UDPAddr, host string, timeout time.Duration) (float64, error) {
+// With udp4 sockets, the kernel filters replies to the correct socket — only
+// matching replies arrive, so we only need to check the sequence number.
+func sendEcho(conn *icmp.PacketConn, dst *net.UDPAddr, host string, timeout time.Duration) (float64, error) {
 	seq := int(atomic.AddUint32(&seqCounter, 1) & 0xffff)
 
 	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
@@ -202,7 +204,7 @@ func sendEcho(conn *icmp.PacketConn, id int, dst *net.UDPAddr, host string, time
 		Type: ipv4.ICMPTypeEcho,
 		Code: 0,
 		Body: &icmp.Echo{
-			ID:   id,
+			ID:   0, // kernel overwrites ID for udp4 sockets
 			Seq:  seq,
 			Data: make([]byte, 56),
 		},
@@ -231,7 +233,7 @@ func sendEcho(conn *icmp.PacketConn, id int, dst *net.UDPAddr, host string, time
 		switch rm.Type {
 		case ipv4.ICMPTypeEchoReply:
 			echo, ok := rm.Body.(*icmp.Echo)
-			if !ok || echo.ID != id || echo.Seq != seq {
+			if !ok || echo.Seq != seq {
 				continue
 			}
 			return float64(time.Since(start).Nanoseconds()) / 1e6, nil
@@ -263,8 +265,7 @@ func Ping(host string, timeout time.Duration) (latency float64, ttl int, err err
 	defer conn.Close()
 
 	dst := &net.UDPAddr{IP: ip.IP}
-	id := os.Getpid() & 0xffff
 
-	lat, pingErr := sendEcho(conn, id, dst, host, timeout)
+	lat, pingErr := sendEcho(conn, dst, host, timeout)
 	return lat, 0, pingErr
 }
