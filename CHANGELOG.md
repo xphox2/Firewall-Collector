@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.21 - 2026-03-03
+
+### Fixed
+- **buildCIDR wildcard subnets**: Preserve `0.0.0.0/0` for Phase 2 wildcard selectors instead of discarding them as empty — fixes VXLAN carrier tunnels and "any" selectors reporting empty subnets to server
+
 ## 1.2.20 - 2026-03-03
 
 ### Fixed
