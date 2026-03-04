@@ -51,10 +51,15 @@ var (
 	fgOIDVPNTunnelUpTime     = ".1.3.6.1.4.1.12356.101.12.2.2.1.21"
 
 	// fgVpnDialupTable — dial-up/dynamic VPN peers (hub-side of spoke/hub IPSec).
-	fgBaseOIDVPNDialup      = ".1.3.6.1.4.1.12356.101.12.2.1.1"
-	fgOIDVPNDialupGateway   = ".1.3.6.1.4.1.12356.101.12.2.1.1.2"
-	fgOIDVPNDialupInOctets  = ".1.3.6.1.4.1.12356.101.12.2.1.1.9"
-	fgOIDVPNDialupOutOctets = ".1.3.6.1.4.1.12356.101.12.2.1.1.10"
+	fgBaseOIDVPNDialup       = ".1.3.6.1.4.1.12356.101.12.2.1.1"
+	fgOIDVPNDialupGateway    = ".1.3.6.1.4.1.12356.101.12.2.1.1.2"
+	fgOIDVPNDialupLifetime   = ".1.3.6.1.4.1.12356.101.12.2.1.1.3"
+	fgOIDVPNDialupSrcBegin   = ".1.3.6.1.4.1.12356.101.12.2.1.1.5"
+	fgOIDVPNDialupSrcEnd     = ".1.3.6.1.4.1.12356.101.12.2.1.1.6"
+	fgOIDVPNDialupDstBegin   = ".1.3.6.1.4.1.12356.101.12.2.1.1.7"
+	fgOIDVPNDialupDstEnd     = ".1.3.6.1.4.1.12356.101.12.2.1.1.8"
+	fgOIDVPNDialupInOctets   = ".1.3.6.1.4.1.12356.101.12.2.1.1.9"
+	fgOIDVPNDialupOutOctets  = ".1.3.6.1.4.1.12356.101.12.2.1.1.10"
 
 	// --- SSL-VPN tunnel table (Part 2) ---
 	fgBaseOIDSSLVPNTunnel      = ".1.3.6.1.4.1.12356.101.12.2.4.1"
@@ -366,6 +371,11 @@ func (f *FortiGateProfile) DialupVPNBaseOID() string { return fgBaseOIDVPNDialup
 
 func (f *FortiGateProfile) ParseDialupVPNStatus(pdus []gosnmp.SnmpPDU) []relay.VPNStatus {
 	tunnelMap := make(map[int]*relay.VPNStatus)
+	srcBegin := make(map[int]string)
+	srcEnd := make(map[int]string)
+	dstBegin := make(map[int]string)
+	dstEnd := make(map[int]string)
+
 	for _, pdu := range pdus {
 		if !isValidPDU(pdu) {
 			continue
@@ -378,6 +388,33 @@ func (f *FortiGateProfile) ParseDialupVPNStatus(pdus []gosnmp.SnmpPDU) []relay.V
 			}
 			t := getOrCreateVPN(tunnelMap, idx)
 			t.RemoteIP = safeString(pdu.Value)
+		} else if strings.HasPrefix(name, fgOIDVPNDialupLifetime+".") {
+			idx := getIndexFromOID(name, fgOIDVPNDialupLifetime)
+			if idx < 0 {
+				continue
+			}
+			t := getOrCreateVPN(tunnelMap, idx)
+			t.TunnelUptime = uint64(gosnmp.ToBigInt(pdu.Value).Uint64())
+		} else if strings.HasPrefix(name, fgOIDVPNDialupSrcBegin+".") {
+			idx := getIndexFromOID(name, fgOIDVPNDialupSrcBegin)
+			if idx >= 0 {
+				srcBegin[idx] = safeString(pdu.Value)
+			}
+		} else if strings.HasPrefix(name, fgOIDVPNDialupSrcEnd+".") {
+			idx := getIndexFromOID(name, fgOIDVPNDialupSrcEnd)
+			if idx >= 0 {
+				srcEnd[idx] = safeString(pdu.Value)
+			}
+		} else if strings.HasPrefix(name, fgOIDVPNDialupDstBegin+".") {
+			idx := getIndexFromOID(name, fgOIDVPNDialupDstBegin)
+			if idx >= 0 {
+				dstBegin[idx] = safeString(pdu.Value)
+			}
+		} else if strings.HasPrefix(name, fgOIDVPNDialupDstEnd+".") {
+			idx := getIndexFromOID(name, fgOIDVPNDialupDstEnd)
+			if idx >= 0 {
+				dstEnd[idx] = safeString(pdu.Value)
+			}
 		} else if strings.HasPrefix(name, fgOIDVPNDialupInOctets+".") {
 			idx := getIndexFromOID(name, fgOIDVPNDialupInOctets)
 			if idx < 0 {
@@ -397,13 +434,16 @@ func (f *FortiGateProfile) ParseDialupVPNStatus(pdus []gosnmp.SnmpPDU) []relay.V
 
 	now := time.Now()
 	result := make([]relay.VPNStatus, 0, len(tunnelMap))
-	for _, t := range tunnelMap {
+	for idx, t := range tunnelMap {
 		t.Timestamp = now
 		// Presence in the dialup table means the tunnel is active —
 		// entries disappear when the peer disconnects.
 		t.Status = "up"
 		t.State = "active"
 		t.TunnelType = "ipsec-dialup"
+		// Dialup table uses IP range selectors (begin/end) instead of addr/mask.
+		t.LocalSubnet = rangeToCIDR(srcBegin[idx], srcEnd[idx])
+		t.RemoteSubnet = rangeToCIDR(dstBegin[idx], dstEnd[idx])
 		// The gen1 dialup table has no tunnel name column; use remote gateway IP.
 		if t.TunnelName == "" {
 			if t.RemoteIP != "" {
@@ -415,6 +455,63 @@ func (f *FortiGateProfile) ParseDialupVPNStatus(pdus []gosnmp.SnmpPDU) []relay.V
 		result = append(result, *t)
 	}
 	return result
+}
+
+// rangeToCIDR converts an IP range (begin, end) to CIDR notation.
+// FortiGate dialup VPN table uses range selectors instead of addr/mask.
+// e.g. (10.0.0.0, 10.0.0.255) → "10.0.0.0/24"
+func rangeToCIDR(begin, end string) string {
+	if begin == "" {
+		return ""
+	}
+	// Wildcard: 0.0.0.0 → 0.0.0.0 means "any"
+	if begin == "0.0.0.0" {
+		return "0.0.0.0/0"
+	}
+	bIP := net.ParseIP(begin).To4()
+	if bIP == nil {
+		return begin
+	}
+	if end == "" || end == begin {
+		return begin + "/32"
+	}
+	eIP := net.ParseIP(end).To4()
+	if eIP == nil {
+		return begin
+	}
+	// XOR begin and end to find host portion
+	xor := make([]byte, 4)
+	for i := 0; i < 4; i++ {
+		xor[i] = bIP[i] ^ eIP[i]
+	}
+	// Valid CIDR range: XOR should be 0...0 then 1...1 (contiguous host bits)
+	// Count prefix bits (leading zeros in XOR)
+	prefixLen := 0
+	for i := 0; i < 4; i++ {
+		for bit := 7; bit >= 0; bit-- {
+			if xor[i]&(1<<uint(bit)) == 0 {
+				prefixLen++
+			} else {
+				// Verify remaining bits are all 1s
+				for j := i; j < 4; j++ {
+					startBit := 0
+					if j == i {
+						startBit = bit
+					} else {
+						startBit = 7
+					}
+					for b := startBit; b >= 0; b-- {
+						if xor[j]&(1<<uint(b)) == 0 {
+							// Not a clean CIDR — return as range
+							return begin + "-" + end
+						}
+					}
+				}
+				return fmt.Sprintf("%s/%d", begin, prefixLen)
+			}
+		}
+	}
+	return fmt.Sprintf("%s/%d", begin, prefixLen)
 }
 
 func (f *FortiGateProfile) HWSensorBaseOID() string { return fgOIDHWSensorEntry }

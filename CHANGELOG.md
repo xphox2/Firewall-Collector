@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.22 - 2026-03-04
+
+### Added
+- **Dialup VPN Phase 2 selectors & uptime**: Parse missing FortiGate dialup VPN table OIDs — `.3` (lifetime/uptime), `.5-.8` (source/dest IP range selectors) — so hub-side dialup tunnels now report `local_subnet`, `remote_subnet`, and `tunnel_uptime` to the server
+- **rangeToCIDR helper**: Converts IP range selectors (begin/end) to CIDR notation for dialup VPN Phase 2 subnets
+
 ## 1.2.21 - 2026-03-03
 
 ### Fixed
