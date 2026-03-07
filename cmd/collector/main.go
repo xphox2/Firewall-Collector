@@ -197,6 +197,8 @@ func main() {
 
 		pingCollector := ping.NewPingCollector(probeCfg.PingInterval, probeCfg.PingTimeout, probeCfg.PingCount)
 		pingCollector.Start(devices, probeID, func(result *relay.PingResult) {
+			log.Printf("[Collector] Ping result: device=%d target=%s latency=%.2f loss=%.0f%% success=%v",
+				result.DeviceID, result.TargetIP, result.Latency, result.PacketLoss, result.Success)
 			relayClient.SendPingResult(result)
 		})
 		c.pingCollector = pingCollector
