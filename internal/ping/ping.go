@@ -1,21 +1,17 @@
 package ping
 
 import (
-	"fmt"
+	"context"
 	"log"
-	"net"
+	"os/exec"
+	"regexp"
+	"strconv"
+	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"firewall-collector/internal/relay"
-
-	"golang.org/x/net/icmp"
-	"golang.org/x/net/ipv4"
 )
-
-// seqCounter provides globally unique ICMP sequence numbers across all goroutines.
-var seqCounter uint32
 
 type PingCollector struct {
 	interval time.Duration
@@ -127,63 +123,39 @@ func (p *PingCollector) pingDevice(dev relay.DeviceInfo, probeID uint) {
 		TargetIP:  dev.IPAddress,
 	}
 
-	ip, err := net.ResolveIPAddr("ip4", dev.IPAddress)
-	if err != nil {
+	// Use system ping command - much more reliable than Go ICMP
+	ctx, cancel := context.WithTimeout(context.Background(), p.timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "ping", "-c", "1", "-W", "1", dev.IPAddress)
+	output, err := cmd.Output()
+
+	if ctx.Err() == context.DeadlineExceeded {
 		result.PacketLoss = 100
-		result.ErrorMessage = fmt.Sprintf("resolve %s: %v", dev.IPAddress, err)
-		p.emit(result)
-		return
-	}
-
-	conn, err := icmp.ListenPacket("ip4:icmp", "0.0.0.0:0")
-	if err != nil {
-		// Fall back to UDP ICMP if raw ICMP fails (no NET_RAW capability)
-		conn, err = icmp.ListenPacket("udp4", "0.0.0.0:0")
-		if err != nil {
-			result.PacketLoss = 100
-			result.ErrorMessage = fmt.Sprintf("icmp socket: %v", err)
-			p.emit(result)
-			return
-		}
-		defer conn.Close()
-	} else {
-		defer conn.Close()
-	}
-
-	dst := &net.UDPAddr{IP: ip.IP}
-
-	var totalLatency float64
-	var successCount int
-	var lastErr error
-
-	for i := 0; i < p.count; i++ {
-		if i > 0 {
-			time.Sleep(100 * time.Millisecond)
-		}
-		latency, err := sendEcho(conn, dst, dev.IPAddress, p.timeout)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		totalLatency += latency
-		successCount++
-	}
-
-	if successCount > 0 {
-		result.Success = true
-		result.Latency = totalLatency / float64(successCount)
-		result.PacketLoss = float64(p.count-successCount) / float64(p.count) * 100
-		log.Printf("[Ping] %s (%s): latency=%.1fms loss=%.0f%%", dev.Name, dev.IPAddress, result.Latency, result.PacketLoss)
-	} else {
+		result.ErrorMessage = "Request timeout"
+	} else if err != nil {
 		result.PacketLoss = 100
-		if lastErr != nil {
-			result.ErrorMessage = fmt.Sprintf("All %d pings failed: %v", p.count, lastErr)
+		result.ErrorMessage = err.Error()
+	} else {
+		// Parse output: "64 bytes from x.x.x.x: icmp_seq=0 ttl=255 time=0.243 ms"
+		outputStr := string(output)
+		if strings.Contains(outputStr, "bytes from") {
+			// Extract latency
+			re := regexp.MustCompile(`time=(\d+\.?\d*)\s*ms`)
+			matches := re.FindStringSubmatch(outputStr)
+			if len(matches) > 1 {
+				latency, _ := strconv.ParseFloat(matches[1], 64)
+				result.Latency = latency
+				result.Success = true
+				result.PacketLoss = 0
+			}
 		} else {
-			result.ErrorMessage = "Request timeout"
+			result.PacketLoss = 100
+			result.ErrorMessage = "No response"
 		}
-		log.Printf("[Ping] %s (%s): FAILED — %s", dev.Name, dev.IPAddress, result.ErrorMessage)
 	}
 
+	log.Printf("[Ping] %s (%s): latency=%.2fms loss=%.0f%%", dev.Name, dev.IPAddress, result.Latency, result.PacketLoss)
 	p.emit(result)
 }
 
@@ -191,85 +163,4 @@ func (p *PingCollector) emit(result *relay.PingResult) {
 	if p.handler != nil {
 		p.handler(result)
 	}
-}
-
-// sendEcho sends one ICMP echo request on conn and waits for the matching reply.
-// Returns latency in milliseconds.
-// With udp4 sockets, the kernel filters replies to the correct socket — only
-// matching replies arrive, so we only need to check the sequence number.
-func sendEcho(conn *icmp.PacketConn, dst *net.UDPAddr, host string, timeout time.Duration) (float64, error) {
-	seq := int(atomic.AddUint32(&seqCounter, 1) & 0xffff)
-
-	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
-		return 0, fmt.Errorf("set deadline: %w", err)
-	}
-
-	wb, err := (&icmp.Message{
-		Type: ipv4.ICMPTypeEcho,
-		Code: 0,
-		Body: &icmp.Echo{
-			ID:   0, // kernel overwrites ID for udp4 sockets
-			Seq:  seq,
-			Data: make([]byte, 56),
-		},
-	}).Marshal(nil)
-	if err != nil {
-		return 0, fmt.Errorf("marshal: %w", err)
-	}
-
-	start := time.Now()
-	if _, err := conn.WriteTo(wb, dst); err != nil {
-		return 0, fmt.Errorf("send to %s: %w", host, err)
-	}
-
-	rb := make([]byte, 1500)
-	for {
-		n, _, err := conn.ReadFrom(rb)
-		if err != nil {
-			return 0, fmt.Errorf("read from %s: %w", host, err)
-		}
-
-		rm, err := icmp.ParseMessage(1, rb[:n])
-		if err != nil {
-			continue
-		}
-
-		switch rm.Type {
-		case ipv4.ICMPTypeEchoReply:
-			echo, ok := rm.Body.(*icmp.Echo)
-			if !ok || echo.Seq != seq {
-				continue
-			}
-			return float64(time.Since(start).Nanoseconds()) / 1e6, nil
-
-		case ipv4.ICMPTypeDestinationUnreachable:
-			return 0, fmt.Errorf("destination unreachable: %s", host)
-
-		case ipv4.ICMPTypeTimeExceeded:
-			return 0, fmt.Errorf("TTL expired: %s", host)
-
-		default:
-			continue
-		}
-	}
-}
-
-// Ping sends a single ICMP echo request to host and waits for a reply.
-// Returns latency in milliseconds, TTL (always 0 for UDP ICMP), and error.
-func Ping(host string, timeout time.Duration) (latency float64, ttl int, err error) {
-	ip, err := net.ResolveIPAddr("ip4", host)
-	if err != nil {
-		return 0, 0, fmt.Errorf("resolve %s: %w", host, err)
-	}
-
-	conn, err := icmp.ListenPacket("udp4", "0.0.0.0:0")
-	if err != nil {
-		return 0, 0, fmt.Errorf("icmp listen: %w", err)
-	}
-	defer conn.Close()
-
-	dst := &net.UDPAddr{IP: ip.IP}
-
-	lat, pingErr := sendEcho(conn, dst, host, timeout)
-	return lat, 0, pingErr
 }
