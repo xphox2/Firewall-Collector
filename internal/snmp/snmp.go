@@ -473,8 +473,13 @@ func getOrCreateVPN(m map[int]*relay.VPNStatus, index int) *relay.VPNStatus {
 func getIndexFromOID(oid, base string) int {
 	partial := strings.TrimPrefix(oid, base+".")
 	parts := strings.Split(partial, ".")
-	if len(parts) > 0 {
+	if len(parts) >= 1 {
+		// Handle OIDs like .1.2.3.4.1.3.1.1 where index is the LAST element
 		var index int
+		if n, _ := fmt.Sscanf(parts[len(parts)-1], "%d", &index); n == 1 {
+			return index
+		}
+		// Fallback to first element for simpler OIDs
 		if n, _ := fmt.Sscanf(parts[0], "%d", &index); n == 1 {
 			return index
 		}
