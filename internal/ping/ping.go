@@ -135,16 +135,20 @@ func (p *PingCollector) pingDevice(dev relay.DeviceInfo, probeID uint) {
 		return
 	}
 
-	// One UDP ICMP socket per device, reused across all count pings.
-	// The kernel filters replies to this specific socket — no cross-talk.
-	conn, err := icmp.ListenPacket("udp4", "0.0.0.0:0")
+	conn, err := icmp.ListenPacket("ip4:icmp", "0.0.0.0:0")
 	if err != nil {
-		result.PacketLoss = 100
-		result.ErrorMessage = fmt.Sprintf("icmp socket: %v", err)
-		p.emit(result)
-		return
+		// Fall back to UDP ICMP if raw ICMP fails (no NET_RAW capability)
+		conn, err = icmp.ListenPacket("udp4", "0.0.0.0:0")
+		if err != nil {
+			result.PacketLoss = 100
+			result.ErrorMessage = fmt.Sprintf("icmp socket: %v", err)
+			p.emit(result)
+			return
+		}
+		defer conn.Close()
+	} else {
+		defer conn.Close()
 	}
-	defer conn.Close()
 
 	dst := &net.UDPAddr{IP: ip.IP}
 
