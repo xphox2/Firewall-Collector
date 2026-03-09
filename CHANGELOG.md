@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.24 - 2026-03-09
+
+### Added
+- **pfSense vendor profile**: SNMP vendor profile for pfSense firewalls (FreeBSD-based). Uses UCD-SNMP-MIB for CPU/memory, BEGEMOT-PF-MIB for active PF state count (mapped to session count), HOST-RESOURCES-MIB for per-CPU load, and SNMPv2-MIB for system info
+- **OPNsense vendor profile**: SNMP vendor profile for OPNsense firewalls. Same FreeBSD/BEGEMOT-PF-MIB stack as pfSense with OPNsense-specific version parsing
+- Both profiles include PF firewall state count as session metric (unique to pf-based firewalls)
+- VPN, HA, security stats, and hardware sensors gracefully return empty (not available via SNMP on these platforms)
+
 ## 1.2.23 - 2026-03-09
 
 ### Added
