@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.23 - 2026-03-09
+
+### Added
+- **Firewalla vendor profile**: New SNMP vendor profile for Firewalla devices (Ubuntu Linux-based). Uses standard Linux MIBs since Firewalla has no enterprise-specific OIDs
+  - CPU usage via UCD-SNMP-MIB (ssCpuUser + ssCpuSystem + ssCpuIdle)
+  - Memory usage via UCD-SNMP-MIB (memTotalReal, memAvailReal, memBuffer, memCached) with proper Linux memory accounting
+  - System info via SNMPv2-MIB (sysName, sysDescr, sysUpTime)
+  - Per-CPU load via HOST-RESOURCES-MIB (hrProcessorLoad)
+  - Hardware temperature/fan sensors via lm-sensors NET-SNMP extension MIB
+  - Interface statistics work out of the box via standard IF-MIB
+  - VPN, HA, security stats, SD-WAN, and license info gracefully return empty (not available via SNMP on Firewalla)
+
 ## 1.2.22 - 2026-03-04
 
 ### Added
