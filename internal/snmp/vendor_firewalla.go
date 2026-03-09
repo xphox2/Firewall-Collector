@@ -159,13 +159,14 @@ func extractFirewallaVersion(sysDescr string) string {
 	return sysDescr
 }
 
-// VPN: Firewalla uses WireGuard/OpenVPN which don't expose SNMP data.
-// Return empty OID and nil results — the polling loop gracefully skips.
+// VPN: Detected via IF-MIB interface name patterns.
+// WireGuard (wg*), OpenVPN (tun*/tap*), and IPSec VTI (vti*) interfaces
+// are real OS interfaces on Linux with status and traffic counters.
 
-func (f *FirewallaProfile) VPNBaseOID() string { return "" }
+func (f *FirewallaProfile) VPNBaseOID() string { return BaseOIDInterface }
 
 func (f *FirewallaProfile) ParseVPNStatus(pdus []gosnmp.SnmpPDU) []relay.VPNStatus {
-	return nil
+	return parseLinuxVPNFromInterfaces(pdus)
 }
 
 // Hardware sensors: use lm-sensors via NET-SNMP extension MIB.
