@@ -146,12 +146,14 @@ func extractOPNsenseVersion(sysDescr string) string {
 	return sysDescr
 }
 
-// VPN: OPNsense VPN tunnels are not exposed via SNMP.
+// VPN: Detected via IF-MIB interface name patterns.
+// OpenVPN (ovpns*/ovpnc*), WireGuard (wg*/tun_wg*), and route-based IPSec
+// (ipsec*) interfaces are real OS interfaces with status and traffic counters.
 
-func (o *OPNsenseProfile) VPNBaseOID() string { return "" }
+func (o *OPNsenseProfile) VPNBaseOID() string { return BaseOIDInterface }
 
 func (o *OPNsenseProfile) ParseVPNStatus(pdus []gosnmp.SnmpPDU) []relay.VPNStatus {
-	return nil
+	return parseBSDVPNFromInterfaces(pdus)
 }
 
 // Hardware sensors: not available via bsnmpd without extend scripts.
