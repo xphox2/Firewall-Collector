@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.28 - 2026-03-15
+
+### Fixed
+- Add retry logic (3 attempts, 2s delay) to all direct Send methods — previously only batched sends retried
+- Add approval-revocation handling on direct Sends — 401/403/404 now sets probe as unapproved (matching sendBatch behavior)
+- Refactor 10 duplicate Send methods into shared `doDirectSend` helper
+- Add circuit breaker for failed device polls — after 3 consecutive failures, device enters backoff mode (polled every 5th cycle)
+- Fix ping count not used — was hardcoded to `-c 1`, now uses configured count
+- Track deviceRefreshLoop goroutine in WaitGroup for proper graceful shutdown
+- Add jitter to heartbeat retry backoff to prevent thundering herd when multiple probes reconnect simultaneously
+
 ## 1.2.27 - 2026-03-09
 
 ### Added

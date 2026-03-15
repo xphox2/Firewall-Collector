@@ -33,6 +33,9 @@ type Collector struct {
 	ifaceIPMu    sync.RWMutex
 	stopChan      chan struct{}
 	pollWg        sync.WaitGroup
+	// Circuit breaker: consecutive failure counts per device
+	failCount     map[uint]int
+	failCountMu   sync.Mutex
 }
 
 func main() {
@@ -81,6 +84,7 @@ func main() {
 		cfg:         probeCfg,
 		relayClient: relayClient,
 		stopChan:    make(chan struct{}),
+		failCount:   make(map[uint]int),
 	}
 
 	// Start heartbeat + data sync loops
@@ -127,7 +131,11 @@ func main() {
 	// Start SNMP polling + device refresh
 	fmt.Println("[4/6] Starting SNMP polling...")
 	go c.snmpPollingLoop()
-	go c.deviceRefreshLoop()
+	c.pollWg.Add(1)
+	go func() {
+		defer c.pollWg.Done()
+		c.deviceRefreshLoop()
+	}()
 	fmt.Printf("  -> Polling every %v, device refresh every %v\n\n", probeCfg.PollInterval, probeCfg.DeviceRefreshInterval)
 
 	// Conditionally start receivers
@@ -353,9 +361,24 @@ func (c *Collector) runPollCycle() {
 
 	sem := make(chan struct{}, 10) // Limit concurrent SNMP polls
 	enabledCount := 0
+	skippedCount := 0
 	for _, dev := range devices {
 		if !dev.Enabled {
 			continue
+		}
+		// Circuit breaker: skip devices with 3+ consecutive failures (backoff for 4 cycles)
+		c.failCountMu.Lock()
+		failures := c.failCount[dev.ID]
+		c.failCountMu.Unlock()
+		if failures >= 3 {
+			// Poll every 5th cycle (skip 4 cycles) when in failure state
+			if failures%5 != 0 {
+				c.failCountMu.Lock()
+				c.failCount[dev.ID]++
+				c.failCountMu.Unlock()
+				skippedCount++
+				continue
+			}
 		}
 		enabledCount++
 		c.pollWg.Add(1)
@@ -366,7 +389,11 @@ func (c *Collector) runPollCycle() {
 			c.pollDevice(d)
 		}(dev)
 	}
-	log.Printf("[SNMP] Poll cycle: %d/%d devices enabled", enabledCount, len(devices))
+	if skippedCount > 0 {
+		log.Printf("[SNMP] Poll cycle: %d/%d devices enabled, %d skipped (backoff)", enabledCount, len(devices), skippedCount)
+	} else {
+		log.Printf("[SNMP] Poll cycle: %d/%d devices enabled", enabledCount, len(devices))
+	}
 }
 
 func (c *Collector) pollDevice(dev relay.DeviceInfo) {
@@ -395,6 +422,7 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 	if err != nil {
 		log.Printf("[SNMP] Connect failed for %s (%s:%d v%s community_len=%d): %v",
 			dev.Name, dev.IPAddress, dev.SNMPPort, dev.SNMPVersion, len(dev.SNMPCommunity), err)
+		c.recordPollFailure(dev.ID)
 		return
 	}
 	defer client.Close()
@@ -409,9 +437,12 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 	if err != nil {
 		log.Printf("[SNMP] Poll failed for %s (%s:%d v%s community_len=%d vendor=%s): %v",
 			dev.Name, dev.IPAddress, dev.SNMPPort, dev.SNMPVersion, len(dev.SNMPCommunity), vendor, err)
+		c.recordPollFailure(dev.ID)
 		return
 	}
 
+	// Success — reset circuit breaker
+	c.recordPollSuccess(dev.ID)
 	status.DeviceID = dev.ID
 	status.Timestamp = time.Now()
 	log.Printf("[SNMP] %s (%s) [device_id=%d]: CPU=%.1f%% Mem=%.1f%% Disk=%.1f%%/%dMB Sessions=%d",
@@ -531,6 +562,24 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 			log.Printf("[SNMP] Failed to send license info for %s: %v", dev.Name, err)
 		}
 	}
+}
+
+func (c *Collector) recordPollFailure(deviceID uint) {
+	c.failCountMu.Lock()
+	c.failCount[deviceID]++
+	count := c.failCount[deviceID]
+	c.failCountMu.Unlock()
+	if count == 3 {
+		log.Printf("[SNMP] Device %d: 3 consecutive failures — entering backoff mode", deviceID)
+	}
+}
+
+func (c *Collector) recordPollSuccess(deviceID uint) {
+	c.failCountMu.Lock()
+	if c.failCount[deviceID] > 0 {
+		c.failCount[deviceID] = 0
+	}
+	c.failCountMu.Unlock()
 }
 
 func (c *Collector) deviceRefreshLoop() {

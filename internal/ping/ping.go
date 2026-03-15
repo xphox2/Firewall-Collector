@@ -127,7 +127,7 @@ func (p *PingCollector) pingDevice(dev relay.DeviceInfo, probeID uint) {
 	ctx, cancel := context.WithTimeout(context.Background(), p.timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "ping", "-c", "1", "-W", "1", dev.IPAddress)
+	cmd := exec.CommandContext(ctx, "ping", "-c", strconv.Itoa(p.count), "-W", "1", dev.IPAddress)
 	output, err := cmd.Output()
 
 	if ctx.Err() == context.DeadlineExceeded {

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	mrand "math/rand"
 	"net/http"
 	"os"
 	"strings"
@@ -500,7 +501,7 @@ func (c *Client) sendHeartbeatWithStatus(status string) error {
 			return fmt.Errorf("max re-registration attempts (%d) reached, giving up", maxReregisterAttempts)
 		}
 
-		backoff := time.Duration(1<<uint(attempts)) * 10 * time.Second
+		backoff := time.Duration(1<<uint(attempts))*10*time.Second + time.Duration(mrand.Intn(5000))*time.Millisecond
 		log.Printf("Probe unauthorized (attempt %d/%d), retrying registration in %v...",
 			attempts+1, maxReregisterAttempts, backoff)
 		time.Sleep(backoff)
@@ -554,219 +555,87 @@ func (c *Client) SendFlowSample(sample *FlowSample) {
 
 // --- Direct send (SNMP poll results sent immediately) ---
 
-func (c *Client) SendSystemStatuses(statuses []SystemStatus) error {
+// doDirectSend is a helper for direct Send methods with retry and approval-revocation handling.
+func (c *Client) doDirectSend(endpoint string, name string, payload interface{}) error {
 	if !c.approved.Load() {
 		return fmt.Errorf("probe not approved")
 	}
 
-	jsonData, err := json.Marshal(statuses)
+	jsonData, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("failed to marshal system statuses: %w", err)
+		return fmt.Errorf("failed to marshal %s: %w", name, err)
 	}
 
-	url := fmt.Sprintf("%s/api/probes/%d/system-status", c.Config.ServerURL, c.GetProbeID())
-	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
-	if err != nil {
-		return fmt.Errorf("failed to send system statuses: %w", err)
-	}
-	defer resp.Body.Close()
+	url := fmt.Sprintf("%s/api/probes/%d/%s", c.Config.ServerURL, c.GetProbeID(), endpoint)
 
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return nil
+	for attempt := 0; attempt < 3; attempt++ {
+		resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
+		if err != nil {
+			if attempt < 2 {
+				time.Sleep(2 * time.Second)
+				continue
+			}
+			return fmt.Errorf("failed to send %s: %w", name, err)
+		}
+		resp.Body.Close()
+
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return nil
+		}
+
+		// Revoke approval on auth/not-found errors
+		if resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 404 {
+			c.approved.Store(false)
+			return fmt.Errorf("probe no longer approved (%d on %s)", resp.StatusCode, name)
+		}
+
+		if attempt < 2 {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		return fmt.Errorf("send %s returned status %d", name, resp.StatusCode)
 	}
-	return fmt.Errorf("send system statuses returned status %d", resp.StatusCode)
+	return nil
+}
+
+func (c *Client) SendSystemStatuses(statuses []SystemStatus) error {
+	return c.doDirectSend("system-status", "system statuses", statuses)
 }
 
 func (c *Client) SendInterfaceStats(stats []InterfaceStats) error {
-	if !c.approved.Load() {
-		return fmt.Errorf("probe not approved")
-	}
-
-	jsonData, err := json.Marshal(stats)
-	if err != nil {
-		return fmt.Errorf("failed to marshal interface stats: %w", err)
-	}
-
-	url := fmt.Sprintf("%s/api/probes/%d/interface-stats", c.Config.ServerURL, c.GetProbeID())
-	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
-	if err != nil {
-		return fmt.Errorf("failed to send interface stats: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return nil
-	}
-	return fmt.Errorf("send interface stats returned status %d", resp.StatusCode)
+	return c.doDirectSend("interface-stats", "interface stats", stats)
 }
 
 func (c *Client) SendVPNStatuses(statuses []VPNStatus) error {
-	if !c.approved.Load() {
-		return fmt.Errorf("probe not approved")
-	}
-
-	jsonData, err := json.Marshal(statuses)
-	if err != nil {
-		return fmt.Errorf("failed to marshal VPN statuses: %w", err)
-	}
-
-	url := fmt.Sprintf("%s/api/probes/%d/vpn-status", c.Config.ServerURL, c.GetProbeID())
-	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
-	if err != nil {
-		return fmt.Errorf("failed to send VPN statuses: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return nil
-	}
-	return fmt.Errorf("send VPN statuses returned status %d", resp.StatusCode)
+	return c.doDirectSend("vpn-status", "VPN statuses", statuses)
 }
 
 func (c *Client) SendHardwareSensors(sensors []HardwareSensor) error {
-	if !c.approved.Load() {
-		return fmt.Errorf("probe not approved")
-	}
-
-	jsonData, err := json.Marshal(sensors)
-	if err != nil {
-		return fmt.Errorf("failed to marshal hardware sensors: %w", err)
-	}
-
-	url := fmt.Sprintf("%s/api/probes/%d/hardware-sensors", c.Config.ServerURL, c.GetProbeID())
-	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
-	if err != nil {
-		return fmt.Errorf("failed to send hardware sensors: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return nil
-	}
-	return fmt.Errorf("send hardware sensors returned status %d", resp.StatusCode)
+	return c.doDirectSend("hardware-sensors", "hardware sensors", sensors)
 }
 
 func (c *Client) SendProcessorStats(stats []ProcessorStats) error {
-	if !c.approved.Load() {
-		return fmt.Errorf("probe not approved")
-	}
-
-	jsonData, err := json.Marshal(stats)
-	if err != nil {
-		return fmt.Errorf("failed to marshal processor stats: %w", err)
-	}
-
-	url := fmt.Sprintf("%s/api/probes/%d/processor-stats", c.Config.ServerURL, c.GetProbeID())
-	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
-	if err != nil {
-		return fmt.Errorf("failed to send processor stats: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return nil
-	}
-	return fmt.Errorf("send processor stats returned status %d", resp.StatusCode)
+	return c.doDirectSend("processor-stats", "processor stats", stats)
 }
 
 func (c *Client) SendHAStatuses(statuses []HAStatus) error {
-	if !c.approved.Load() {
-		return fmt.Errorf("probe not approved")
-	}
-	jsonData, err := json.Marshal(statuses)
-	if err != nil {
-		return fmt.Errorf("failed to marshal HA statuses: %w", err)
-	}
-	url := fmt.Sprintf("%s/api/probes/%d/ha-status", c.Config.ServerURL, c.GetProbeID())
-	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
-	if err != nil {
-		return fmt.Errorf("failed to send HA statuses: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return nil
-	}
-	return fmt.Errorf("send HA statuses returned status %d", resp.StatusCode)
+	return c.doDirectSend("ha-status", "HA statuses", statuses)
 }
 
 func (c *Client) SendSecurityStats(stats []SecurityStats) error {
-	if !c.approved.Load() {
-		return fmt.Errorf("probe not approved")
-	}
-	jsonData, err := json.Marshal(stats)
-	if err != nil {
-		return fmt.Errorf("failed to marshal security stats: %w", err)
-	}
-	url := fmt.Sprintf("%s/api/probes/%d/security-stats", c.Config.ServerURL, c.GetProbeID())
-	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
-	if err != nil {
-		return fmt.Errorf("failed to send security stats: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return nil
-	}
-	return fmt.Errorf("send security stats returned status %d", resp.StatusCode)
+	return c.doDirectSend("security-stats", "security stats", stats)
 }
 
 func (c *Client) SendSDWANHealth(health []SDWANHealth) error {
-	if !c.approved.Load() {
-		return fmt.Errorf("probe not approved")
-	}
-	jsonData, err := json.Marshal(health)
-	if err != nil {
-		return fmt.Errorf("failed to marshal SD-WAN health: %w", err)
-	}
-	url := fmt.Sprintf("%s/api/probes/%d/sdwan-health", c.Config.ServerURL, c.GetProbeID())
-	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
-	if err != nil {
-		return fmt.Errorf("failed to send SD-WAN health: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return nil
-	}
-	return fmt.Errorf("send SD-WAN health returned status %d", resp.StatusCode)
+	return c.doDirectSend("sdwan-health", "SD-WAN health", health)
 }
 
 func (c *Client) SendLicenseInfo(licenses []LicenseInfo) error {
-	if !c.approved.Load() {
-		return fmt.Errorf("probe not approved")
-	}
-	jsonData, err := json.Marshal(licenses)
-	if err != nil {
-		return fmt.Errorf("failed to marshal license info: %w", err)
-	}
-	url := fmt.Sprintf("%s/api/probes/%d/license-info", c.Config.ServerURL, c.GetProbeID())
-	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
-	if err != nil {
-		return fmt.Errorf("failed to send license info: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return nil
-	}
-	return fmt.Errorf("send license info returned status %d", resp.StatusCode)
+	return c.doDirectSend("license-info", "license info", licenses)
 }
 
 func (c *Client) SendInterfaceAddresses(addrs []InterfaceAddress) error {
-	if !c.approved.Load() {
-		return fmt.Errorf("probe not approved")
-	}
-	jsonData, err := json.Marshal(addrs)
-	if err != nil {
-		return fmt.Errorf("failed to marshal interface addresses: %w", err)
-	}
-	url := fmt.Sprintf("%s/api/probes/%d/interface-addresses", c.Config.ServerURL, c.GetProbeID())
-	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
-	if err != nil {
-		return fmt.Errorf("failed to send interface addresses: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return nil
-	}
-	return fmt.Errorf("send interface addresses returned status %d", resp.StatusCode)
+	return c.doDirectSend("interface-addresses", "interface addresses", addrs)
 }
 
 // --- FetchDevices ---
