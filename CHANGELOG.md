@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.29 - 2026-03-18
+
+### Fixed
+- Remove `.claude/settings.local.json` from tracking — local Claude Code permissions should not be in a public repo
+- Expand `.gitignore` with standard Go, IDE, OS, and secrets patterns
+- Add `.claude` and `*.exe` to `.dockerignore`
+
 ## 1.2.28 - 2026-03-15
 
 ### Fixed

@@ -1,2 +1,37 @@
+# Binaries
 *.exe
+*.exe~
+*.dll
+*.so
+*.dylib
 firewall-collector
+
+# Go build/test artifacts
+*.test
+*.out
+*.prof
+coverage.html
+
+# Dependency directories
+vendor/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Claude Code local settings
+.claude/
+
+# Environment / secrets
+.env
+.env.*
+*.pem
+*.key
