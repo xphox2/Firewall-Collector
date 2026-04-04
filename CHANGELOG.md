@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.30 - 2026-04-04
+
+### Fixed
+- Add automatic re-registration recovery when probe loses approval — previously a single 404/401/403 response (e.g., from a transient server restart) permanently killed data collection with no recovery mechanism
+- `syncData()` now re-queues data instead of silently dropping it when probe is unapproved
+- `doDirectSend()` and `sendBatch()` now attempt re-registration before giving up on auth/not-found errors
+- `FetchDevices()` and pre-send approval checks now attempt re-registration instead of immediately failing
+- Re-registration is rate-limited (60s between attempts) with exponential backoff; after 5 consecutive failures, enters 10-minute cooldown then resets — probe keeps retrying indefinitely until server returns
+
 ## 1.2.29 - 2026-03-18
 
 ### Fixed

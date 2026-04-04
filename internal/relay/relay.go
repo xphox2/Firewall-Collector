@@ -291,7 +291,8 @@ type Client struct {
 	stopOnce           sync.Once
 	probeID            uint
 	probeName          string
-	reregisterAttempts int
+	reregisterAttempts   int
+	lastReregisterAttempt time.Time
 
 	// Data queues
 	trapQueue   []*TrapEvent
@@ -427,6 +428,48 @@ func (c *Client) Register() error {
 	return nil
 }
 
+// tryReregister attempts to re-register with the server when approval is lost.
+// Rate-limited to once per 60 seconds to avoid spamming the server.
+// After maxReregisterAttempts failures, enters a 10-minute cooldown before
+// resetting the counter and trying again — so the probe can recover from
+// extended outages without manual restart.
+func (c *Client) tryReregister() bool {
+	c.mu.Lock()
+	elapsed := time.Since(c.lastReregisterAttempt)
+	attempts := c.reregisterAttempts
+
+	if attempts >= maxReregisterAttempts {
+		// After exhausting all attempts, wait 10 minutes then reset and try again
+		if elapsed < 10*time.Minute {
+			c.mu.Unlock()
+			return false
+		}
+		log.Println("[Relay] Re-registration cooldown expired, resetting attempt counter")
+		c.reregisterAttempts = 0
+		attempts = 0
+	} else if elapsed < 60*time.Second {
+		c.mu.Unlock()
+		return false
+	}
+
+	c.lastReregisterAttempt = time.Now()
+	c.reregisterAttempts++
+	c.mu.Unlock()
+
+	backoff := time.Duration(1<<uint(attempts))*10*time.Second + time.Duration(mrand.Intn(5000))*time.Millisecond
+	log.Printf("[Relay] Probe lost approval, attempting re-registration (attempt %d/%d) in %v...",
+		attempts+1, maxReregisterAttempts, backoff)
+	time.Sleep(backoff)
+
+	if err := c.Register(); err != nil {
+		log.Printf("[Relay] Re-registration failed: %v", err)
+		return false
+	}
+
+	log.Println("[Relay] Re-registration successful, probe approved again")
+	return true
+}
+
 func (c *Client) GetProbeID() uint {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -558,7 +601,9 @@ func (c *Client) SendFlowSample(sample *FlowSample) {
 // doDirectSend is a helper for direct Send methods with retry and approval-revocation handling.
 func (c *Client) doDirectSend(endpoint string, name string, payload interface{}) error {
 	if !c.approved.Load() {
-		return fmt.Errorf("probe not approved")
+		if !c.tryReregister() {
+			return fmt.Errorf("probe not approved")
+		}
 	}
 
 	jsonData, err := json.Marshal(payload)
@@ -583,9 +628,13 @@ func (c *Client) doDirectSend(endpoint string, name string, payload interface{})
 			return nil
 		}
 
-		// Revoke approval on auth/not-found errors
+		// Attempt re-registration on auth/not-found errors
 		if resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 404 {
+			log.Printf("[Relay] Probe rejected (%d on %s), attempting re-registration...", resp.StatusCode, name)
 			c.approved.Store(false)
+			if c.tryReregister() {
+				continue // retry the send after successful re-registration
+			}
 			return fmt.Errorf("probe no longer approved (%d on %s)", resp.StatusCode, name)
 		}
 
@@ -642,7 +691,9 @@ func (c *Client) SendInterfaceAddresses(addrs []InterfaceAddress) error {
 
 func (c *Client) FetchDevices() ([]DeviceInfo, error) {
 	if !c.approved.Load() {
-		return nil, fmt.Errorf("probe not approved")
+		if !c.tryReregister() {
+			return nil, fmt.Errorf("probe not approved")
+		}
 	}
 
 	url := fmt.Sprintf("%s/api/probes/%d/devices", c.Config.ServerURL, c.GetProbeID())
@@ -701,7 +752,17 @@ func (c *Client) syncData() {
 	c.mu.Unlock()
 
 	if !c.approved.Load() {
-		return
+		log.Println("[Relay] Probe not approved, attempting re-registration before sync...")
+		if !c.tryReregister() {
+			// Re-queue the data so it's not lost
+			c.mu.Lock()
+			c.trapQueue = append(traps, c.trapQueue...)
+			c.pingQueue = append(pings, c.pingQueue...)
+			c.syslogQueue = append(syslogs, c.syslogQueue...)
+			c.flowQueue = append(flows, c.flowQueue...)
+			c.mu.Unlock()
+			return
+		}
 	}
 
 	probeID := c.GetProbeID()
@@ -803,8 +864,11 @@ func (c *Client) sendBatch(url, name string, data interface{}) bool {
 		}
 
 		if resp.StatusCode == 404 {
+			log.Printf("[Relay] Probe not found (404 on %s), attempting re-registration...", name)
 			c.approved.Store(false)
-			log.Printf("[Relay] Probe no longer approved (404 on %s)", name)
+			if c.tryReregister() {
+				continue // retry the send after successful re-registration
+			}
 			return false
 		}
 
