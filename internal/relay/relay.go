@@ -8,11 +8,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math/big"
 	mrand "math/rand"
 	"net/http"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,7 +22,29 @@ import (
 )
 
 const maxReregisterAttempts = 5
-const maxQueueSize = 10000
+
+var (
+	maxQueueSize = 10000
+	maxBatchSize = 1000
+)
+
+func ConfigureLimits(queueSize, batchSize int) {
+	if queueSize > 0 {
+		maxQueueSize = queueSize
+	}
+	if batchSize > 0 {
+		maxBatchSize = batchSize
+	}
+}
+
+type BatchLimitError struct {
+	BatchSize int
+	MaxSize   int
+}
+
+func (e *BatchLimitError) Error() string {
+	return fmt.Sprintf("batch size %d exceeds max %d", e.BatchSize, e.MaxSize)
+}
 
 // --- DTOs matching server JSON tags ---
 
@@ -267,6 +291,7 @@ type Config struct {
 	SyncInterval       time.Duration
 	HeartbeatInterval  time.Duration
 	InsecureSkipVerify bool
+	MaxBatchSize       int
 }
 
 type RegisterRequest struct {
@@ -282,16 +307,16 @@ type RegisterResponse struct {
 }
 
 type Client struct {
-	Config             Config
-	httpClient         *http.Client
-	approved           atomic.Bool
-	mu                 sync.Mutex
-	stopChan           chan struct{}
-	done               chan struct{}
-	stopOnce           sync.Once
-	probeID            uint
-	probeName          string
-	reregisterAttempts   int
+	Config                Config
+	httpClient            *http.Client
+	approved              atomic.Bool
+	mu                    sync.Mutex
+	stopChan              chan struct{}
+	done                  chan struct{}
+	stopOnce              sync.Once
+	probeID               uint
+	probeName             string
+	reregisterAttempts    int
 	lastReregisterAttempt time.Time
 
 	// Data queues
@@ -331,8 +356,13 @@ func NewClient(cfg Config) *Client {
 	return &Client{
 		Config: cfg,
 		httpClient: &http.Client{
-			Timeout:   30 * time.Second,
-			Transport: &http.Transport{TLSClientConfig: tlsConfig},
+			Timeout: 60 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig:     tlsConfig,
+				MaxIdleConns:        25,
+				MaxIdleConnsPerHost: 10,
+				IdleConnTimeout:     90 * time.Second,
+			},
 		},
 		stopChan: make(chan struct{}),
 		done:     make(chan struct{}),
@@ -754,7 +784,6 @@ func (c *Client) syncData() {
 	if !c.approved.Load() {
 		log.Println("[Relay] Probe not approved, attempting re-registration before sync...")
 		if !c.tryReregister() {
-			// Re-queue the data so it's not lost
 			c.mu.Lock()
 			c.trapQueue = append(traps, c.trapQueue...)
 			c.pingQueue = append(pings, c.pingQueue...)
@@ -769,23 +798,124 @@ func (c *Client) syncData() {
 	baseURL := fmt.Sprintf("%s/api/probes/%d", c.Config.ServerURL, probeID)
 
 	if len(traps) > 0 {
-		if !c.sendBatch(baseURL+"/traps", "traps", traps) {
-			c.requeueTraps(traps)
-		}
+		c.sendBatchesSequential(baseURL+"/traps", "traps", traps)
+		time.Sleep(500 * time.Millisecond)
 	}
 	if len(pings) > 0 {
-		if !c.sendBatch(baseURL+"/pings", "pings", pings) {
-			c.requeuePings(pings)
-		}
+		c.sendBatchesSequential(baseURL+"/pings", "pings", pings)
+		time.Sleep(500 * time.Millisecond)
 	}
 	if len(syslogs) > 0 {
-		if !c.sendBatch(baseURL+"/syslog", "syslog", syslogs) {
-			c.requeueSyslogs(syslogs)
-		}
+		c.sendBatchesSequential(baseURL+"/syslog", "syslog", syslogs)
+		time.Sleep(500 * time.Millisecond)
 	}
 	if len(flows) > 0 {
-		if !c.sendBatch(baseURL+"/flows", "flows", flows) {
-			c.requeueFlows(flows)
+		c.sendBatchesSequential(baseURL+"/flows", "flows", flows)
+	}
+}
+
+func splitIntoChunks(items interface{}, chunkSize int) []interface{} {
+	if chunkSize <= 0 {
+		chunkSize = 1
+	}
+	value := reflect.ValueOf(items)
+	length := value.Len()
+
+	chunks := make([]interface{}, 0, (length+chunkSize-1)/chunkSize)
+	for i := 0; i < length; i += chunkSize {
+		end := i + chunkSize
+		if end > length {
+			end = length
+		}
+		chunk := value.Slice(i, end).Interface()
+		chunks = append(chunks, chunk)
+	}
+	return chunks
+}
+
+func (c *Client) sendBatchesSequential(url, name string, items interface{}) {
+	actualBatchSize := c.Config.MaxBatchSize
+	if actualBatchSize <= 0 {
+		actualBatchSize = maxBatchSize
+	}
+
+	chunks := splitIntoChunks(items, actualBatchSize)
+	totalChunks := len(chunks)
+
+	for i, chunk := range chunks {
+		if i > 0 {
+			time.Sleep(200 * time.Millisecond)
+		}
+		if !c.sendBatch(url, name, chunk) {
+			switch name {
+			case "traps":
+				if items2, ok := chunk.([]*TrapEvent); ok {
+					c.requeueTraps(items2)
+				}
+			case "pings":
+				if items2, ok := chunk.([]*PingResult); ok {
+					c.requeuePings(items2)
+				}
+			case "syslog":
+				if items2, ok := chunk.([]*SyslogMessage); ok {
+					c.requeueSyslogs(items2)
+				}
+			case "flows":
+				if items2, ok := chunk.([]*FlowSample); ok {
+					c.requeueFlows(items2)
+				}
+			default:
+				log.Printf("[Relay] ERROR: Unknown batch name %q - attempting generic requeue", name)
+				c.requeueGeneric(name, chunk)
+			}
+			log.Printf("[Relay] Failed to send %s batch chunk %d/%d", name, i+1, totalChunks)
+			return
+		}
+		log.Printf("[Relay] Sent %s batch chunk %d/%d (%d items)", name, i+1, totalChunks, reflect.ValueOf(chunk).Len())
+	}
+}
+
+func (c *Client) requeueGeneric(name string, chunk interface{}) {
+	v := reflect.ValueOf(chunk)
+	length := v.Len()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch name {
+	case "traps":
+		space := maxQueueSize - len(c.trapQueue)
+		if space > 0 {
+			if space >= length {
+				c.trapQueue = append(c.trapQueue, chunk.([]*TrapEvent)...)
+			} else {
+				c.trapQueue = append(c.trapQueue, v.Slice(0, space).Interface().([]*TrapEvent)...)
+			}
+		}
+	case "pings":
+		space := maxQueueSize - len(c.pingQueue)
+		if space > 0 {
+			if space >= length {
+				c.pingQueue = append(c.pingQueue, chunk.([]*PingResult)...)
+			} else {
+				c.pingQueue = append(c.pingQueue, v.Slice(0, space).Interface().([]*PingResult)...)
+			}
+		}
+	case "syslog":
+		space := maxQueueSize - len(c.syslogQueue)
+		if space > 0 {
+			if space >= length {
+				c.syslogQueue = append(c.syslogQueue, chunk.([]*SyslogMessage)...)
+			} else {
+				c.syslogQueue = append(c.syslogQueue, v.Slice(0, space).Interface().([]*SyslogMessage)...)
+			}
+		}
+	case "flows":
+		space := maxQueueSize - len(c.flowQueue)
+		if space > 0 {
+			if space >= length {
+				c.flowQueue = append(c.flowQueue, chunk.([]*FlowSample)...)
+			} else {
+				c.flowQueue = append(c.flowQueue, v.Slice(0, space).Interface().([]*FlowSample)...)
+			}
 		}
 	}
 }
@@ -800,6 +930,8 @@ func (c *Client) requeueTraps(items []*TrapEvent) {
 	if space > 0 {
 		c.trapQueue = append(items[:space], c.trapQueue...)
 		log.Printf("[Relay] Re-queued %d trap events", space)
+	} else {
+		log.Printf("[Relay] WARNING: Could not requeue %d traps - queue full", len(items))
 	}
 }
 
@@ -813,6 +945,8 @@ func (c *Client) requeuePings(items []*PingResult) {
 	if space > 0 {
 		c.pingQueue = append(items[:space], c.pingQueue...)
 		log.Printf("[Relay] Re-queued %d ping results", space)
+	} else {
+		log.Printf("[Relay] WARNING: Could not requeue %d pings - queue full", len(items))
 	}
 }
 
@@ -826,6 +960,8 @@ func (c *Client) requeueSyslogs(items []*SyslogMessage) {
 	if space > 0 {
 		c.syslogQueue = append(items[:space], c.syslogQueue...)
 		log.Printf("[Relay] Re-queued %d syslog messages", space)
+	} else {
+		log.Printf("[Relay] WARNING: Could not requeue %d syslog messages - queue full", len(items))
 	}
 }
 
@@ -839,6 +975,17 @@ func (c *Client) requeueFlows(items []*FlowSample) {
 	if space > 0 {
 		c.flowQueue = append(items[:space], c.flowQueue...)
 		log.Printf("[Relay] Re-queued %d flow samples", space)
+	} else {
+		log.Printf("[Relay] WARNING: Could not requeue %d flow samples - queue full", len(items))
+	}
+}
+
+func isRetryableStatus(statusCode int) bool {
+	switch statusCode {
+	case 400, 401, 403, 404, 405, 409, 410, 422, 429:
+		return false
+	default:
+		return true
 	}
 }
 
@@ -853,8 +1000,13 @@ func (c *Client) sendBatch(url, name string, data interface{}) bool {
 		resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
 		if err != nil {
 			log.Printf("[Relay] Failed to send %s batch (attempt %d/3): %v", name, attempt+1, err)
-			time.Sleep(time.Duration(attempt+1) * time.Second)
+			time.Sleep(time.Duration(1<<uint(attempt)) * time.Second)
 			continue
+		}
+
+		bodyBytes, err := io.ReadAll(resp.Body)
+		if err != nil {
+			log.Printf("[Relay] Warning: failed to read %s response body: %v", name, err)
 		}
 		resp.Body.Close()
 
@@ -863,17 +1015,27 @@ func (c *Client) sendBatch(url, name string, data interface{}) bool {
 			return true
 		}
 
-		if resp.StatusCode == 404 {
-			log.Printf("[Relay] Probe not found (404 on %s), attempting re-registration...", name)
+		if resp.StatusCode == 404 || resp.StatusCode == 401 || resp.StatusCode == 403 {
+			log.Printf("[Relay] Probe not found/auth failed (%d on %s), attempting re-registration...", resp.StatusCode, name)
 			c.approved.Store(false)
 			if c.tryReregister() {
-				continue // retry the send after successful re-registration
+				continue
 			}
 			return false
 		}
 
-		log.Printf("[Relay] Failed to send %s batch: status %d (attempt %d/3)", name, resp.StatusCode, attempt+1)
-		time.Sleep(time.Duration(attempt+1) * time.Second)
+		if resp.StatusCode == 400 {
+			log.Printf("[Relay] Bad request (400) for %s batch: %s - not retrying", name, string(bodyBytes))
+			return false
+		}
+
+		if !isRetryableStatus(resp.StatusCode) {
+			log.Printf("[Relay] Non-retryable status %d for %s batch: %s", resp.StatusCode, name, string(bodyBytes))
+			return false
+		}
+
+		log.Printf("[Relay] Failed to send %s batch: status %d (attempt %d/3): %s", name, resp.StatusCode, attempt+1, string(bodyBytes))
+		time.Sleep(time.Duration(1<<uint(attempt)) * time.Second)
 	}
 	return false
 }

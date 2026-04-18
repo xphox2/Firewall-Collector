@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.2.31 - 2026-04-18
+
+### Fixed
+- Fix syslog queue full causing network spikes and 400 errors: add batch size limiting and sequential sending with 500ms stagger between queues
+- Add `splitIntoChunks()` to split large queues into configurable batch sizes (default 1000) to prevent server 400 errors
+- Add `sendBatchesSequential()` to replace parallel batch sends with sequential chunks, reducing traffic spikes
+- Add proper 400 error handling — stop retrying immediately and log response body for debugging
+- Add `isRetryableStatus()` to avoid retrying non-retryable errors (400, 401, 403, 404, 405, 409, 410, 422, 429, 502, 503, 504)
+- Add warning logs when requeue cannot fit all items (was silently dropping data)
+- Fix division by zero in `splitIntoChunks()` if chunkSize <= 0
+- Fix `io.ReadAll` error being silently discarded — now logs warning
+- Add `requeueGeneric()` fallback for unknown batch names to prevent silent data loss
+- Add default case in sendBatchesSequential switch with error logging
+
+### Changed
+- `SyncInterval` now uses exponential backoff (2^attempt) instead of linear for batch send retries
+- HTTP client timeout increased from 30s to 60s for large batch uploads
+- HTTP transport tuned: MaxIdleConns=25, MaxIdleConnsPerHost=10, IdleConnTimeout=90s
+
+### Added
+- New env vars: `PROBE_MAX_QUEUE_SIZE` (default 10000) and `PROBE_MAX_BATCH_SIZE` (default 1000)
+- Added `MaxBatchSize` to relay.Config struct for configurable batch sizes
+- Added `ConfigureLimits()` function to set global queue and batch limits
+- Added `requeueGeneric()` for type-agnostic requeue fallback
+
 ## 1.2.30 - 2026-04-04
 
 ### Fixed

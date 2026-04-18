@@ -30,12 +30,12 @@ type Collector struct {
 	devices       []relay.DeviceInfo
 	deviceMu      sync.RWMutex
 	ifaceIPMap    map[string]uint // interface IP → device ID cache
-	ifaceIPMu    sync.RWMutex
+	ifaceIPMu     sync.RWMutex
 	stopChan      chan struct{}
 	pollWg        sync.WaitGroup
 	// Circuit breaker: consecutive failure counts per device
-	failCount     map[uint]int
-	failCountMu   sync.Mutex
+	failCount   map[uint]int
+	failCountMu sync.Mutex
 }
 
 func main() {
@@ -62,6 +62,8 @@ func main() {
 	fmt.Println("========================================")
 	fmt.Println()
 
+	relay.ConfigureLimits(probeCfg.MaxQueueSize, probeCfg.MaxBatchSize)
+
 	relayClient := relay.NewClient(relay.Config{
 		ServerURL:          probeCfg.ServerURL,
 		RegistrationKey:    probeCfg.RegistrationKey,
@@ -71,6 +73,7 @@ func main() {
 		TLSKeyFile:         probeCfg.TLSKeyFile,
 		CACertFile:         probeCfg.CACertFile,
 		InsecureSkipVerify: probeCfg.InsecureSkipVerify,
+		MaxBatchSize:       probeCfg.MaxBatchSize,
 	})
 
 	// Register with server

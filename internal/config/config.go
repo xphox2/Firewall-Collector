@@ -20,13 +20,13 @@ type ProbeConfig struct {
 	InsecureSkipVerify bool
 
 	// Intervals
-	HeartbeatInterval      time.Duration
-	SyncInterval           time.Duration
-	PollInterval           time.Duration
-	DeviceRefreshInterval  time.Duration
-	PingInterval           time.Duration
-	PingTimeout            time.Duration
-	PingCount              int
+	HeartbeatInterval     time.Duration
+	SyncInterval          time.Duration
+	PollInterval          time.Duration
+	DeviceRefreshInterval time.Duration
+	PingInterval          time.Duration
+	PingTimeout           time.Duration
+	PingCount             int
 
 	// Listener config
 	ListenAddr    string
@@ -34,6 +34,10 @@ type ProbeConfig struct {
 	SyslogPort    int
 	SFlowPort     int
 	TrapCommunity string
+
+	// Queue & batch limits
+	MaxQueueSize int
+	MaxBatchSize int
 
 	// Feature toggles
 	SNMPTrapEnabled bool
@@ -68,6 +72,10 @@ func Load() *Config {
 			SyslogPort:    parseInt("PROBE_SYSLOG_PORT", 514),
 			SFlowPort:     parseInt("PROBE_SFLOW_PORT", 6343),
 			TrapCommunity: os.Getenv("PROBE_SNMP_TRAP_COMMUNITY"),
+
+			// Queue & batch limits
+			MaxQueueSize: parseInt("PROBE_MAX_QUEUE_SIZE", 10000),
+			MaxBatchSize: parseInt("PROBE_MAX_BATCH_SIZE", 1000),
 
 			// Feature toggles (default enabled)
 			SNMPTrapEnabled: parseBool("PROBE_SNMP_TRAP_ENABLED", true),
