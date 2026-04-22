@@ -11,8 +11,9 @@ import (
 )
 
 var (
-	checksumRegex     = regexp.MustCompile(`(?i)is\s+([a-fA-F0-9]{32}|[a-fA-F0-9]{40})`)
-	hexChecksumFinder = regexp.MustCompile(`([a-fA-F0-9]{32}|[a-fA-F0-9]{40})`)
+	checksumRegex      = regexp.MustCompile(`(?i)is\s+([a-fA-F0-9]{32}|[a-fA-F0-9]{40})`)
+	hexChecksumFinder  = regexp.MustCompile(`([a-fA-F0-9]{32}|[a-fA-F0-9]{40})`)
+	imageChecksumRegex = regexp.MustCompile(`(?i)image:\s*([a-fA-F0-9]{2}(?:\s+[a-fA-F0-9]{2}){15})`)
 )
 
 type FortiGateClient struct {
@@ -111,27 +112,31 @@ func (c *FortiGateClient) GetConfigChecksum() (string, error) {
 		return "", err
 	}
 
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, "image:") {
+			parts := strings.Fields(line)
+			for i, part := range parts {
+				if part == "image:" && i+16 < len(parts) {
+					var checksumBuilder strings.Builder
+					for j := 1; j <= 16; j++ {
+						checksumBuilder.WriteString(strings.TrimSpace(parts[i+j]))
+					}
+					checksum := checksumBuilder.String()
+					if len(checksum) == 32 {
+						return checksum, nil
+					}
+				}
+			}
+		}
+	}
+
 	matches := checksumRegex.FindStringSubmatch(output)
 	if len(matches) >= 2 {
 		checksum := strings.ToLower(matches[1])
 		if len(checksum) == 32 || len(checksum) == 40 {
 			return checksum, nil
-		}
-	}
-
-	lines := strings.Split(output, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.Contains(line, "is") {
-			parts := strings.Fields(line)
-			for i := len(parts) - 1; i >= 0; i-- {
-				if parts[i] == "is" && i+1 < len(parts) {
-					checksum := parts[i+1]
-					if isHexString(checksum) {
-						return checksum, nil
-					}
-				}
-			}
 		}
 	}
 
