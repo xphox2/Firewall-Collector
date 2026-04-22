@@ -14,6 +14,7 @@ import (
 	"firewall-collector/internal/relay"
 	"firewall-collector/internal/sflow"
 	"firewall-collector/internal/snmp"
+	"firewall-collector/internal/ssh"
 	"firewall-collector/internal/syslog"
 )
 
@@ -140,6 +141,11 @@ func main() {
 		c.deviceRefreshLoop()
 	}()
 	fmt.Printf("  -> Polling every %v, device refresh every %v\n\n", probeCfg.PollInterval, probeCfg.DeviceRefreshInterval)
+
+	// Start SSH polling for FortiGate devices
+	fmt.Println("[5/6] Starting SSH polling...")
+	go c.sshPollingLoop()
+	fmt.Printf("  -> SSH polling every %v\n\n", 5*time.Minute)
 
 	// Conditionally start receivers
 	fmt.Println("[5/6] Starting receivers...")
@@ -396,6 +402,126 @@ func (c *Collector) runPollCycle() {
 		log.Printf("[SNMP] Poll cycle: %d/%d devices enabled, %d skipped (backoff)", enabledCount, len(devices), skippedCount)
 	} else {
 		log.Printf("[SNMP] Poll cycle: %d/%d devices enabled", enabledCount, len(devices))
+	}
+}
+
+func (c *Collector) sshPollingLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-c.stopChan:
+			return
+		case <-ticker.C:
+			c.runSSHPollCycle()
+		}
+	}
+}
+
+func (c *Collector) runSSHPollCycle() {
+	c.deviceMu.RLock()
+	devices := make([]relay.DeviceInfo, len(c.devices))
+	copy(devices, c.devices)
+	c.deviceMu.RUnlock()
+
+	for _, dev := range devices {
+		if !dev.Enabled || !dev.SSHPollEnabled || dev.SSHUsername == "" || dev.SSHPassword == "" {
+			continue
+		}
+		go c.sshPollDevice(dev)
+	}
+}
+
+func (c *Collector) sshPollDevice(dev relay.DeviceInfo) {
+	sshClient := ssh.NewFortiGateClient(dev.IPAddress, dev.SSHPort, dev.SSHUsername, dev.SSHPassword)
+	if err := sshClient.Connect(); err != nil {
+		log.Printf("[SSH] Connect failed for %s (%s): %v", dev.Name, dev.IPAddress, err)
+		return
+	}
+	defer sshClient.Close()
+
+	checksum, err := sshClient.GetConfigChecksum()
+	if err != nil {
+		log.Printf("[SSH] Config checksum failed for %s: %v", dev.Name, err)
+	} else {
+		c.checkAndSendConfigRevision(dev, checksum, sshClient)
+	}
+
+	processOutput, err := sshClient.GetProcessTop()
+	if err == nil {
+		c.sendProcessSnapshot(dev, processOutput)
+	}
+
+	interfaceOutput, err := sshClient.GetInterfaceList()
+	if err == nil {
+		c.sendInterfaceErrors(dev, interfaceOutput)
+	}
+}
+
+func (c *Collector) checkAndSendConfigRevision(dev relay.DeviceInfo, checksum string, client *ssh.FortiGateClient) {
+	config, err := client.GetConfig()
+	if err != nil {
+		log.Printf("[SSH] Get config failed for %s: %v", dev.Name, err)
+		return
+	}
+
+	rev := relay.ConfigRevision{
+		DeviceID:   dev.ID,
+		Timestamp:  time.Now(),
+		Checksum:   checksum,
+		ConfigText: config,
+		Length:     len(config),
+	}
+	if err := c.relayClient.SendConfigRevision(&rev); err != nil {
+		log.Printf("[SSH] Failed to send config revision for %s: %v", dev.Name, err)
+	}
+}
+
+func (c *Collector) sendProcessSnapshot(dev relay.DeviceInfo, output string) {
+	processes := ssh.ParseProcessTop(output)
+	if len(processes) == 0 {
+		return
+	}
+	relayProcesses := make([]relay.ProcessInfo, len(processes))
+	for i, p := range processes {
+		relayProcesses[i] = relay.ProcessInfo{
+			Name:    p.Name,
+			PID:     p.PID,
+			CPU:     p.CPU,
+			Memory:  p.Memory,
+			Command: p.Command,
+		}
+	}
+	snap := relay.ProcessSnapshot{
+		DeviceID:  dev.ID,
+		Timestamp: time.Now(),
+		Processes: relayProcesses,
+	}
+	if err := c.relayClient.SendProcessSnapshot(&snap); err != nil {
+		log.Printf("[SSH] Failed to send process snapshot for %s: %v", dev.Name, err)
+	}
+}
+
+func (c *Collector) sendInterfaceErrors(dev relay.DeviceInfo, output string) {
+	interfaces := ssh.ParseInterfaceList(output)
+	if len(interfaces) == 0 {
+		return
+	}
+	now := time.Now()
+	for _, iface := range interfaces {
+		snap := relay.InterfaceErrorSnapshot{
+			DeviceID:    dev.ID,
+			Timestamp:   now,
+			Interface:   iface.Name,
+			InErrors:    iface.InErrors,
+			InDiscards:  iface.InDiscards,
+			OutErrors:   iface.OutErrors,
+			OutDiscards: iface.OutDiscards,
+		}
+		if err := c.relayClient.SendInterfaceErrorSnapshot(&snap); err != nil {
+			log.Printf("[SSH] Failed to send interface errors for %s/%s: %v", dev.Name, iface.Name, err)
+		}
 	}
 }
 

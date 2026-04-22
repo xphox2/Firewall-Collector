@@ -260,19 +260,24 @@ type InterfaceAddress struct {
 }
 
 type DeviceInfo struct {
-	ID             uint   `json:"id"`
-	Name           string `json:"name"`
-	IPAddress      string `json:"ip_address"`
-	SNMPPort       int    `json:"snmp_port"`
-	SNMPCommunity  string `json:"snmp_community"`
-	SNMPVersion    string `json:"snmp_version"`
-	SNMPV3Username string `json:"snmpv3_username"`
-	SNMPV3AuthType string `json:"snmpv3_auth_type"`
-	SNMPV3AuthPass string `json:"snmpv3_auth_pass"`
-	SNMPV3PrivType string `json:"snmpv3_priv_type"`
-	SNMPV3PrivPass string `json:"snmpv3_priv_pass"`
-	Enabled        bool   `json:"enabled"`
-	Vendor         string `json:"vendor"`
+	ID              uint   `json:"id"`
+	Name            string `json:"name"`
+	IPAddress       string `json:"ip_address"`
+	SNMPPort        int    `json:"snmp_port"`
+	SNMPCommunity   string `json:"snmp_community"`
+	SNMPVersion     string `json:"snmp_version"`
+	SNMPV3Username  string `json:"snmpv3_username"`
+	SNMPV3AuthType  string `json:"snmpv3_auth_type"`
+	SNMPV3AuthPass  string `json:"snmpv3_auth_pass"`
+	SNMPV3PrivType  string `json:"snmpv3_priv_type"`
+	SNMPV3PrivPass  string `json:"snmpv3_priv_pass"`
+	Enabled         bool   `json:"enabled"`
+	Vendor          string `json:"vendor"`
+	SSHUsername     string `json:"ssh_username"`
+	SSHPassword     string `json:"ssh_password"`
+	SSHPort         int    `json:"ssh_port"`
+	SSHPollEnabled  bool   `json:"ssh_poll_enabled"`
+	SSHPollInterval int    `json:"ssh_poll_interval"`
 }
 
 type DevicesResponse struct {
@@ -1058,4 +1063,99 @@ func (c *Client) Stop() {
 			log.Printf("Failed to send offline heartbeat: %v", err)
 		}
 	})
+}
+
+type ConfigRevision struct {
+	ID         uint      `json:"id"`
+	DeviceID   uint      `json:"device_id"`
+	Timestamp  time.Time `json:"timestamp"`
+	Checksum   string    `json:"checksum"`
+	ConfigText string    `json:"config_text"`
+	Length     int       `json:"length"`
+}
+
+type ProcessSnapshot struct {
+	ID        uint          `json:"id"`
+	DeviceID  uint          `json:"device_id"`
+	Timestamp time.Time     `json:"timestamp"`
+	Processes []ProcessInfo `json:"processes"`
+}
+
+type ProcessInfo struct {
+	Name    string  `json:"name"`
+	PID     int     `json:"pid"`
+	CPU     float64 `json:"cpu"`
+	Memory  float64 `json:"mem"`
+	Command string  `json:"command"`
+}
+
+type InterfaceErrorSnapshot struct {
+	ID          uint      `json:"id"`
+	DeviceID    uint      `json:"device_id"`
+	Timestamp   time.Time `json:"timestamp"`
+	Interface   string    `json:"interface"`
+	InErrors    uint64    `json:"in_errors"`
+	InDiscards  uint64    `json:"in_discards"`
+	OutErrors   uint64    `json:"out_errors"`
+	OutDiscards uint64    `json:"out_discards"`
+}
+
+func (c *Client) SendConfigRevision(rev *ConfigRevision) error {
+	if !c.approved.Load() {
+		return fmt.Errorf("probe not approved")
+	}
+	jsonData, err := json.Marshal(rev)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config revision: %w", err)
+	}
+	url := c.Config.ServerURL + "/api/probes/" + fmt.Sprint(c.probeID) + "/config-revision"
+	resp, err := c.httpClient.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("failed to send config revision: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return fmt.Errorf("send config revision returned status %d", resp.StatusCode)
+}
+
+func (c *Client) SendProcessSnapshot(snap *ProcessSnapshot) error {
+	if !c.approved.Load() {
+		return fmt.Errorf("probe not approved")
+	}
+	jsonData, err := json.Marshal(snap)
+	if err != nil {
+		return fmt.Errorf("failed to marshal process snapshot: %w", err)
+	}
+	url := c.Config.ServerURL + "/api/probes/" + fmt.Sprint(c.probeID) + "/process-snapshot"
+	resp, err := c.httpClient.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("failed to send process snapshot: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return fmt.Errorf("send process snapshot returned status %d", resp.StatusCode)
+}
+
+func (c *Client) SendInterfaceErrorSnapshot(snap *InterfaceErrorSnapshot) error {
+	if !c.approved.Load() {
+		return fmt.Errorf("probe not approved")
+	}
+	jsonData, err := json.Marshal(snap)
+	if err != nil {
+		return fmt.Errorf("failed to marshal interface error snapshot: %w", err)
+	}
+	url := c.Config.ServerURL + "/api/probes/" + fmt.Sprint(c.probeID) + "/interface-errors"
+	resp, err := c.httpClient.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("failed to send interface error snapshot: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return fmt.Errorf("send interface error snapshot returned status %d", resp.StatusCode)
 }
