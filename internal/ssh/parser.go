@@ -272,17 +272,14 @@ func ParseSensorInfo(output string) []SensorDetailInfo {
 }
 
 var (
-	licenseTypeRegex    = regexp.MustCompile(`(?i)^(\w[\w\s]+):\s*$`)
-	licenseStatusRegex  = regexp.MustCompile(`(?i)^\s*Status:\s*(\w+)`)
-	licenseExpiresRegex = regexp.MustCompile(`(?i)^\s*Expires?:\s*(.+)`)
-	licenseDetailsRegex = regexp.MustCompile(`(?i)^\s*(Version|Account|Support|Support Level):\s*(.+)`)
+	licenseStatusRegex = regexp.MustCompile(`(?i)^(?:License|VM License|SSL-VPN|SSLVPN|Explicit Proxy|FortiCare|FortiGuard|Antivirus|IPS|Web Filter|Email Filter|Application Control|Geo IP|IoT Detection|SD-WAN|Threat Feed|Virtual Domain)\s*[:.]*\s*(\w+)`)
+	licenseDetailRegex = regexp.MustCompile(`(?i)^(License|VM License|SSL-VPN|SSLVPN|Explicit Proxy|FortiCare|FortiGuard|Antivirus|IPS|Web Filter|Email Filter|Application Control|Geo IP|IoT Detection|SD-WAN|Threat Feed|Virtual Domain)\s*[:.]*\s*(.+)`)
+	versionRegex       = regexp.MustCompile(`(?i)^(?:Version|Firmware)\s*[:.]\s*(.+)`)
 )
 
 func ParseLicenseStatus(output string) []LicenseDetailInfo {
 	var licenses []LicenseDetailInfo
 	scanner := bufio.NewScanner(strings.NewReader(output))
-
-	var currentType, currentStatus, currentExpires, currentDetails string
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -291,51 +288,48 @@ func ParseLicenseStatus(output string) []LicenseDetailInfo {
 			continue
 		}
 
-		typeMatch := licenseTypeRegex.FindStringSubmatch(line)
-		if len(typeMatch) >= 2 {
-			if currentType != "" {
-				licenses = append(licenses, LicenseDetailInfo{
-					LicenseType: currentType,
-					Status:      currentStatus,
-					Expires:     currentExpires,
-					Details:     currentDetails,
-				})
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		detailMatch := licenseDetailRegex.FindStringSubmatch(line)
+		if len(detailMatch) >= 3 {
+			desc := strings.TrimSpace(detailMatch[1])
+			value := strings.TrimSpace(detailMatch[2])
+
+			lic := LicenseDetailInfo{
+				LicenseType: desc,
+				Status:      "unknown",
+				Expires:     "",
+				Details:     value,
 			}
-			currentType = strings.TrimSpace(typeMatch[1])
-			currentStatus = "unknown"
-			currentExpires = ""
-			currentDetails = ""
+
+			if strings.EqualFold(value, "valid") || strings.EqualFold(value, "enabled") {
+				lic.Status = "licensed"
+			} else if strings.EqualFold(value, "expired") || strings.EqualFold(value, "disabled") {
+				lic.Status = "expired"
+			} else if strings.Contains(strings.ToLower(value), "none") {
+				lic.Status = "no_license"
+			} else {
+				lic.Status = value
+			}
+
+			licenses = append(licenses, lic)
 			continue
 		}
 
 		statusMatch := licenseStatusRegex.FindStringSubmatch(line)
-		if len(statusMatch) >= 2 {
-			currentStatus = strings.TrimSpace(statusMatch[1])
-			continue
-		}
-
-		expiresMatch := licenseExpiresRegex.FindStringSubmatch(line)
-		if len(expiresMatch) >= 2 {
-			currentExpires = strings.TrimSpace(expiresMatch[1])
-			continue
-		}
-
-		detailsMatch := licenseDetailsRegex.FindStringSubmatch(line)
-		if len(detailsMatch) >= 3 {
-			if currentDetails != "" {
-				currentDetails += "; "
+		if len(statusMatch) >= 2 && len(licenses) > 0 {
+			status := strings.TrimSpace(statusMatch[1])
+			if strings.EqualFold(status, "valid") || strings.EqualFold(status, "enabled") {
+				licenses[len(licenses)-1].Status = "licensed"
+			} else if strings.EqualFold(status, "expired") || strings.EqualFold(status, "disabled") {
+				licenses[len(licenses)-1].Status = "expired"
+			} else if strings.Contains(strings.ToLower(status), "none") {
+				licenses[len(licenses)-1].Status = "no_license"
 			}
-			currentDetails += detailsMatch[1] + ": " + strings.TrimSpace(detailsMatch[2])
 		}
-	}
-
-	if currentType != "" {
-		licenses = append(licenses, LicenseDetailInfo{
-			LicenseType: currentType,
-			Status:      currentStatus,
-			Expires:     currentExpires,
-			Details:     currentDetails,
-		})
 	}
 
 	return licenses
