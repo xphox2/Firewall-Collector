@@ -68,6 +68,16 @@ func (c *FortiGateClient) Execute(command string) (string, error) {
 	}
 	defer session.Close()
 
+	session.Stdout = nil
+	session.Stderr = nil
+
+	if err := session.RequestPty("vt100", 80, 40, nil); err != nil {
+	}
+
+	if err := session.Shell(); err != nil {
+		return "", fmt.Errorf("shell start failed: %w", err)
+	}
+
 	out, err := session.CombinedOutput(command)
 	if err != nil {
 		return "", fmt.Errorf("execute failed: %w", err)
