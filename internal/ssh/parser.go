@@ -23,6 +23,20 @@ type InterfaceErrorInfo struct {
 	OutDiscards uint64
 }
 
+type SensorDetailInfo struct {
+	Name   string
+	Value  float64
+	Unit   string
+	Status string
+}
+
+type LicenseDetailInfo struct {
+	LicenseType string
+	Status      string
+	Expires     string
+	Details     string
+}
+
 var processTopRegex = regexp.MustCompile(`^\s*(\S+)\s+(\d+)\s+(\d+\.?\d*)%\s+(\d+\.?\d*)%\s+(.*)`)
 
 func ParseProcessTop(output string) []ProcessInfo {
@@ -188,4 +202,141 @@ func splitByWhitespace(s string) []string {
 	}
 
 	return result
+}
+
+var (
+	sensorNameRegex   = regexp.MustCompile(`(?i)^\s*Sensor\s+\d+:\s+(.+)$`)
+	sensorValueRegex  = regexp.MustCompile(`(?i)^\s*Value:\s*([\d.]+)\s*(\w+)`)
+	sensorStatusRegex = regexp.MustCompile(`(?i)^\s*Status:\s*(\w+)`)
+)
+
+func ParseSensorInfo(output string) []SensorDetailInfo {
+	var sensors []SensorDetailInfo
+	scanner := bufio.NewScanner(strings.NewReader(output))
+
+	var currentName, currentUnit, currentStatus string
+	var currentValue float64
+	valueFound := false
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		if strings.Contains(line, "--More--") {
+			continue
+		}
+
+		nameMatch := sensorNameRegex.FindStringSubmatch(line)
+		if len(nameMatch) >= 2 {
+			if currentName != "" && valueFound {
+				sensors = append(sensors, SensorDetailInfo{
+					Name:   currentName,
+					Value:  currentValue,
+					Unit:   currentUnit,
+					Status: currentStatus,
+				})
+			}
+			currentName = strings.TrimSpace(nameMatch[1])
+			currentUnit = ""
+			currentStatus = "unknown"
+			currentValue = 0
+			valueFound = false
+			continue
+		}
+
+		valueMatch := sensorValueRegex.FindStringSubmatch(line)
+		if len(valueMatch) >= 3 {
+			if v, err := strconv.ParseFloat(valueMatch[1], 64); err == nil {
+				currentValue = v
+			}
+			currentUnit = strings.TrimSpace(valueMatch[2])
+			valueFound = true
+			continue
+		}
+
+		statusMatch := sensorStatusRegex.FindStringSubmatch(line)
+		if len(statusMatch) >= 2 {
+			currentStatus = strings.TrimSpace(statusMatch[1])
+		}
+	}
+
+	if currentName != "" && valueFound {
+		sensors = append(sensors, SensorDetailInfo{
+			Name:   currentName,
+			Value:  currentValue,
+			Unit:   currentUnit,
+			Status: currentStatus,
+		})
+	}
+
+	return sensors
+}
+
+var (
+	licenseTypeRegex    = regexp.MustCompile(`(?i)^(\w[\w\s]+):\s*$`)
+	licenseStatusRegex  = regexp.MustCompile(`(?i)^\s*Status:\s*(\w+)`)
+	licenseExpiresRegex = regexp.MustCompile(`(?i)^\s*Expires?:\s*(.+)`)
+	licenseDetailsRegex = regexp.MustCompile(`(?i)^\s*(Version|Account|Support|Support Level):\s*(.+)`)
+)
+
+func ParseLicenseStatus(output string) []LicenseDetailInfo {
+	var licenses []LicenseDetailInfo
+	scanner := bufio.NewScanner(strings.NewReader(output))
+
+	var currentType, currentStatus, currentExpires, currentDetails string
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		if strings.Contains(line, "--More--") {
+			continue
+		}
+
+		typeMatch := licenseTypeRegex.FindStringSubmatch(line)
+		if len(typeMatch) >= 2 {
+			if currentType != "" {
+				licenses = append(licenses, LicenseDetailInfo{
+					LicenseType: currentType,
+					Status:      currentStatus,
+					Expires:     currentExpires,
+					Details:     currentDetails,
+				})
+			}
+			currentType = strings.TrimSpace(typeMatch[1])
+			currentStatus = "unknown"
+			currentExpires = ""
+			currentDetails = ""
+			continue
+		}
+
+		statusMatch := licenseStatusRegex.FindStringSubmatch(line)
+		if len(statusMatch) >= 2 {
+			currentStatus = strings.TrimSpace(statusMatch[1])
+			continue
+		}
+
+		expiresMatch := licenseExpiresRegex.FindStringSubmatch(line)
+		if len(expiresMatch) >= 2 {
+			currentExpires = strings.TrimSpace(expiresMatch[1])
+			continue
+		}
+
+		detailsMatch := licenseDetailsRegex.FindStringSubmatch(line)
+		if len(detailsMatch) >= 3 {
+			if currentDetails != "" {
+				currentDetails += "; "
+			}
+			currentDetails += detailsMatch[1] + ": " + strings.TrimSpace(detailsMatch[2])
+		}
+	}
+
+	if currentType != "" {
+		licenses = append(licenses, LicenseDetailInfo{
+			LicenseType: currentType,
+			Status:      currentStatus,
+			Expires:     currentExpires,
+			Details:     currentDetails,
+		})
+	}
+
+	return licenses
 }

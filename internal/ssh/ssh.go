@@ -177,3 +177,11 @@ func (c *FortiGateClient) GetProcessTop() (string, error) {
 func (c *FortiGateClient) GetInterfaceList() (string, error) {
 	return c.Execute("diagnose netlink interface list")
 }
+
+func (c *FortiGateClient) GetSensorInfo() (string, error) {
+	return c.Execute("diagnose sys sensor info")
+}
+
+func (c *FortiGateClient) GetLicenseStatus() (string, error) {
+	return c.Execute("diagnose license status")
+}

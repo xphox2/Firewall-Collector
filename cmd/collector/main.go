@@ -482,6 +482,16 @@ func (c *Collector) sshPollDevice(dev relay.DeviceInfo) {
 	if err == nil {
 		c.sendInterfaceErrors(dev, interfaceOutput)
 	}
+
+	sensorOutput, err := sshClient.GetSensorInfo()
+	if err == nil {
+		c.sendSensorDetails(dev, sensorOutput)
+	}
+
+	licenseOutput, err := sshClient.GetLicenseStatus()
+	if err == nil {
+		c.sendLicenseDetails(dev, licenseOutput)
+	}
 }
 
 func (c *Collector) checkAndSendConfigRevision(dev relay.DeviceInfo, checksum string, client *ssh.FortiGateClient) {
@@ -548,6 +558,50 @@ func (c *Collector) sendInterfaceErrors(dev relay.DeviceInfo, output string) {
 	}
 	if err := c.relayClient.SendInterfaceErrorSnapshots(snaps); err != nil {
 		log.Printf("[SSH] Failed to send interface errors for %s: %v", dev.Name, err)
+	}
+}
+
+func (c *Collector) sendSensorDetails(dev relay.DeviceInfo, output string) {
+	sensors := ssh.ParseSensorInfo(output)
+	if len(sensors) == 0 {
+		return
+	}
+	now := time.Now()
+	details := make([]relay.SensorDetail, 0, len(sensors))
+	for _, s := range sensors {
+		details = append(details, relay.SensorDetail{
+			DeviceID:  dev.ID,
+			Timestamp: now,
+			Name:      s.Name,
+			Value:     s.Value,
+			Unit:      s.Unit,
+			Status:    s.Status,
+		})
+	}
+	if err := c.relayClient.SendSensorDetails(details); err != nil {
+		log.Printf("[SSH] Failed to send sensor details for %s: %v", dev.Name, err)
+	}
+}
+
+func (c *Collector) sendLicenseDetails(dev relay.DeviceInfo, output string) {
+	licenses := ssh.ParseLicenseStatus(output)
+	if len(licenses) == 0 {
+		return
+	}
+	now := time.Now()
+	details := make([]relay.LicenseDetail, 0, len(licenses))
+	for _, l := range licenses {
+		details = append(details, relay.LicenseDetail{
+			DeviceID:    dev.ID,
+			Timestamp:   now,
+			LicenseType: l.LicenseType,
+			Status:      l.Status,
+			Expires:     l.Expires,
+			Details:     l.Details,
+		})
+	}
+	if err := c.relayClient.SendLicenseDetails(details); err != nil {
+		log.Printf("[SSH] Failed to send license details for %s: %v", dev.Name, err)
 	}
 }
 

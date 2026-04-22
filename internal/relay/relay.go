@@ -1100,6 +1100,26 @@ type InterfaceErrorSnapshot struct {
 	OutDiscards uint64    `json:"out_discards"`
 }
 
+type SensorDetail struct {
+	ID        uint      `json:"id"`
+	DeviceID  uint      `json:"device_id"`
+	Timestamp time.Time `json:"timestamp"`
+	Name      string    `json:"name"`
+	Value     float64   `json:"value"`
+	Unit      string    `json:"unit"`
+	Status    string    `json:"status"`
+}
+
+type LicenseDetail struct {
+	ID          uint      `json:"id"`
+	DeviceID    uint      `json:"device_id"`
+	Timestamp   time.Time `json:"timestamp"`
+	LicenseType string    `json:"license_type"`
+	Status      string    `json:"status"`
+	Expires     string    `json:"expires"`
+	Details     string    `json:"details"`
+}
+
 func (c *Client) SendConfigRevision(rev *ConfigRevision) error {
 	if !c.approved.Load() {
 		return fmt.Errorf("probe not approved")
@@ -1181,4 +1201,50 @@ func (c *Client) SendInterfaceErrorSnapshots(snaps []InterfaceErrorSnapshot) err
 		return nil
 	}
 	return fmt.Errorf("send interface error snapshots returned status %d", resp.StatusCode)
+}
+
+func (c *Client) SendSensorDetails(sensors []SensorDetail) error {
+	if !c.approved.Load() {
+		return fmt.Errorf("probe not approved")
+	}
+	if len(sensors) == 0 {
+		return nil
+	}
+	jsonData, err := json.Marshal(sensors)
+	if err != nil {
+		return fmt.Errorf("failed to marshal sensor details: %w", err)
+	}
+	url := c.Config.ServerURL + "/api/probes/" + fmt.Sprint(c.probeID) + "/sensor-details"
+	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
+	if err != nil {
+		return fmt.Errorf("failed to send sensor details: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return fmt.Errorf("send sensor details returned status %d", resp.StatusCode)
+}
+
+func (c *Client) SendLicenseDetails(licenses []LicenseDetail) error {
+	if !c.approved.Load() {
+		return fmt.Errorf("probe not approved")
+	}
+	if len(licenses) == 0 {
+		return nil
+	}
+	jsonData, err := json.Marshal(licenses)
+	if err != nil {
+		return fmt.Errorf("failed to marshal license details: %w", err)
+	}
+	url := c.Config.ServerURL + "/api/probes/" + fmt.Sprint(c.probeID) + "/license-details"
+	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
+	if err != nil {
+		return fmt.Errorf("failed to send license details: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return fmt.Errorf("send license details returned status %d", resp.StatusCode)
 }
