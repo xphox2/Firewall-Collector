@@ -11,9 +11,8 @@ import (
 )
 
 var (
-	checksumRegex      = regexp.MustCompile(`(?i)is\s+([a-fA-F0-9]{32}|[a-fA-F0-9]{40})`)
-	hexChecksumFinder  = regexp.MustCompile(`([a-fA-F0-9]{32}|[a-fA-F0-9]{40})`)
-	imageChecksumRegex = regexp.MustCompile(`(?i)image:\s*([a-fA-F0-9]{2}(?:\s+[a-fA-F0-9]{2}){15})`)
+	checksumRegex     = regexp.MustCompile(`(?i)is\s+([a-fA-F0-9]{32}|[a-fA-F0-9]{40})`)
+	hexChecksumFinder = regexp.MustCompile(`([a-fA-F0-9]{32}|[a-fA-F0-9]{40})`)
 )
 
 type FortiGateClient struct {
@@ -107,7 +106,7 @@ func cleanOutput(output string) string {
 }
 
 func (c *FortiGateClient) GetConfigChecksum() (string, error) {
-	output, err := c.Execute("diagnose sys checksum conf")
+	output, err := c.Execute("diagnose sys csum")
 	if err != nil {
 		return "", err
 	}
@@ -118,10 +117,10 @@ func (c *FortiGateClient) GetConfigChecksum() (string, error) {
 		if strings.Contains(line, "image:") {
 			parts := strings.Fields(line)
 			for i, part := range parts {
-				if part == "image:" && i+16 < len(parts) {
+				if part == "image:" && i+16 <= len(parts) {
 					var checksumBuilder strings.Builder
-					for j := 1; j <= 16; j++ {
-						checksumBuilder.WriteString(strings.TrimSpace(parts[i+j]))
+					for j := 0; j < 16; j++ {
+						checksumBuilder.WriteString(strings.TrimSpace(parts[i+1+j]))
 					}
 					checksum := checksumBuilder.String()
 					if len(checksum) == 32 {
@@ -132,23 +131,7 @@ func (c *FortiGateClient) GetConfigChecksum() (string, error) {
 		}
 	}
 
-	matches := checksumRegex.FindStringSubmatch(output)
-	if len(matches) >= 2 {
-		checksum := strings.ToLower(matches[1])
-		if len(checksum) == 32 || len(checksum) == 40 {
-			return checksum, nil
-		}
-	}
-
-	lines = strings.Split(output, "\n")
-	for _, line := range lines {
-		checksum := extractHexChecksum(line)
-		if checksum != "" {
-			return checksum, nil
-		}
-	}
-
-	return "", fmt.Errorf("could not parse checksum from output")
+	return "", fmt.Errorf("could not parse checksum from output: %s", output)
 }
 
 func isHexString(s string) bool {
