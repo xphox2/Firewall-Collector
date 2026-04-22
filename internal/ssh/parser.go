@@ -23,16 +23,24 @@ type InterfaceErrorInfo struct {
 	OutDiscards uint64
 }
 
+var processTopRegex = regexp.MustCompile(`^\s*(\S+)\s+(\d+)\s+(\d+\.?\d*)%\s+(\d+\.?\d*)%\s+(.*)`)
+
 func ParseProcessTop(output string) []ProcessInfo {
 	var processes []ProcessInfo
 	scanner := bufio.NewScanner(strings.NewReader(output))
-	lineNum := 0
+	inProcessList := false
 
 	for scanner.Scan() {
 		line := scanner.Text()
-		lineNum++
+		if strings.Contains(line, "Run Time:") {
+			inProcessList = true
+			continue
+		}
+		if strings.Contains(line, "--More--") {
+			continue
+		}
 
-		if lineNum < 5 {
+		if !inProcessList {
 			continue
 		}
 
@@ -41,42 +49,51 @@ func ParseProcessTop(output string) []ProcessInfo {
 			continue
 		}
 
-		parts := splitByWhitespace(line)
-		if len(parts) < 6 {
-			continue
+		matches := processTopRegex.FindStringSubmatch(line)
+		if len(matches) >= 6 {
+			name := matches[1]
+			if name == "process" || name == "CPU" || name == "MEM" {
+				continue
+			}
+
+			pid, err := strconv.Atoi(matches[2])
+			if err != nil {
+				continue
+			}
+
+			cpu, err := strconv.ParseFloat(matches[3], 64)
+			if err != nil {
+				cpu = 0
+			}
+
+			mem, err := strconv.ParseFloat(matches[4], 64)
+			if err != nil {
+				mem = 0
+			}
+
+			command := strings.TrimSpace(matches[5])
+			if command == "" {
+				command = name
+			}
+
+			processes = append(processes, ProcessInfo{
+				Name:    name,
+				PID:     pid,
+				CPU:     cpu,
+				Memory:  mem,
+				Command: command,
+			})
 		}
-
-		name := parts[0]
-		pid, err := strconv.Atoi(parts[1])
-		if err != nil {
-			continue
-		}
-
-		cpuStr := strings.TrimSuffix(parts[2], "%")
-		cpu, err := strconv.ParseFloat(cpuStr, 64)
-		if err != nil {
-			cpu = 0
-		}
-
-		memStr := strings.TrimSuffix(parts[3], "%")
-		mem, err := strconv.ParseFloat(memStr, 64)
-		if err != nil {
-			mem = 0
-		}
-
-		command := strings.Join(parts[5:], " ")
-
-		processes = append(processes, ProcessInfo{
-			Name:    name,
-			PID:     pid,
-			CPU:     cpu,
-			Memory:  mem,
-			Command: command,
-		})
 	}
 
 	return processes
 }
+
+var (
+	ifaceNameRegex  = regexp.MustCompile(`(?i)^name:\s*(\S+)`)
+	ifaceStatsRegex = regexp.MustCompile(`(?i)(RX|TX)\s+bytes\s+(\d+).*?errors\s+(\d+).*?discards\s+(\d+)`)
+	ifaceErrorRegex = regexp.MustCompile(`(?i)errors[:\s]+(\d+).*?discards[:\s]+(\d+)`)
+)
 
 func ParseInterfaceList(output string) []InterfaceErrorInfo {
 	var interfaces []InterfaceErrorInfo
@@ -85,12 +102,15 @@ func ParseInterfaceList(output string) []InterfaceErrorInfo {
 	var currentName string
 	var currentInErrors, currentInDiscards, currentOutErrors, currentOutDiscards uint64
 
-	inStats := false
-
 	for scanner.Scan() {
 		line := scanner.Text()
 
-		if strings.HasPrefix(line, "==") || strings.HasPrefix(line, "name:") {
+		if strings.Contains(line, "--More--") {
+			continue
+		}
+
+		nameMatch := ifaceNameRegex.FindStringSubmatch(line)
+		if len(nameMatch) >= 2 {
 			if currentName != "" {
 				interfaces = append(interfaces, InterfaceErrorInfo{
 					Name:        currentName,
@@ -100,48 +120,32 @@ func ParseInterfaceList(output string) []InterfaceErrorInfo {
 					OutDiscards: currentOutDiscards,
 				})
 			}
-
-			if strings.HasPrefix(line, "name:") {
-				parts := strings.SplitN(line, ":", 2)
-				if len(parts) == 2 {
-					currentName = strings.TrimSpace(parts[1])
-				}
-				currentInErrors = 0
-				currentInDiscards = 0
-				currentOutErrors = 0
-				currentOutDiscards = 0
-				inStats = false
-			}
+			currentName = nameMatch[1]
+			currentInErrors = 0
+			currentInDiscards = 0
+			currentOutErrors = 0
+			currentOutDiscards = 0
 			continue
 		}
 
-		if strings.Contains(line, "RX") || strings.Contains(line, "TX") || inStats {
-			if strings.Contains(line, "errors:") {
-				inStats = true
-				re := regexp.MustCompile(`errors[:\s]+(\d+)`)
-				matches := re.FindAllStringSubmatch(line, -1)
-				if len(matches) >= 1 {
-					if v, err := strconv.ParseUint(matches[0][1], 10, 64); err == nil {
-						currentInErrors = v
+		line = strings.ToLower(line)
+		if strings.Contains(line, "rx") && strings.Contains(line, "errors") {
+			matches := ifaceErrorRegex.FindAllStringSubmatch(line, -1)
+			for _, m := range matches {
+				if len(m) >= 3 {
+					if v, err := strconv.ParseUint(m[1], 10, 64); err == nil {
+						if strings.Contains(line, "rx") {
+							currentInErrors = v
+						} else if strings.Contains(line, "tx") {
+							currentOutErrors = v
+						}
 					}
-				}
-				if len(matches) >= 2 {
-					if v, err := strconv.ParseUint(matches[1][1], 10, 64); err == nil {
-						currentOutErrors = v
-					}
-				}
-			}
-			if strings.Contains(line, "discards:") {
-				re := regexp.MustCompile(`discards[:\s]+(\d+)`)
-				matches := re.FindAllStringSubmatch(line, -1)
-				if len(matches) >= 1 {
-					if v, err := strconv.ParseUint(matches[0][1], 10, 64); err == nil {
-						currentInDiscards = v
-					}
-				}
-				if len(matches) >= 2 {
-					if v, err := strconv.ParseUint(matches[1][1], 10, 64); err == nil {
-						currentOutDiscards = v
+					if v, err := strconv.ParseUint(m[2], 10, 64); err == nil {
+						if strings.Contains(line, "rx") {
+							currentInDiscards = v
+						} else if strings.Contains(line, "tx") {
+							currentOutDiscards = v
+						}
 					}
 				}
 			}

@@ -3,10 +3,16 @@ package ssh
 import (
 	"fmt"
 	"net"
+	"regexp"
 	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
+)
+
+var (
+	checksumRegex     = regexp.MustCompile(`(?i)is\s+([a-fA-F0-9]{32}|[a-fA-F0-9]{40})`)
+	hexChecksumFinder = regexp.MustCompile(`([a-fA-F0-9]{32}|[a-fA-F0-9]{40})`)
 )
 
 type FortiGateClient struct {
@@ -83,13 +89,44 @@ func (c *FortiGateClient) Execute(command string) (string, error) {
 		return "", fmt.Errorf("execute failed: %w", err)
 	}
 
-	return string(out), nil
+	return cleanOutput(string(out)), nil
+}
+
+func cleanOutput(output string) string {
+	lines := strings.Split(output, "\n")
+	cleaned := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.Contains(line, "--More--") {
+			continue
+		}
+		if strings.Contains(line, " # ") {
+			idx := strings.Index(line, " # ")
+			line = line[idx+3:]
+		}
+		if strings.Contains(line, "# ") {
+			idx := strings.Index(line, "# ")
+			line = line[idx+2:]
+		}
+		line = strings.TrimSpace(line)
+		if line != "" {
+			cleaned = append(cleaned, line)
+		}
+	}
+	return strings.Join(cleaned, "\n")
 }
 
 func (c *FortiGateClient) GetConfigChecksum() (string, error) {
 	output, err := c.Execute("diagnose sys checksum conf")
 	if err != nil {
 		return "", err
+	}
+
+	matches := checksumRegex.FindStringSubmatch(output)
+	if len(matches) >= 2 {
+		checksum := strings.ToLower(matches[1])
+		if len(checksum) == 32 || len(checksum) == 40 {
+			return checksum, nil
+		}
 	}
 
 	lines := strings.Split(output, "\n")
@@ -108,11 +145,15 @@ func (c *FortiGateClient) GetConfigChecksum() (string, error) {
 		}
 	}
 
-	checksum := strings.TrimSpace(output)
-	if len(checksum) > 32 {
-		checksum = checksum[len(checksum)-32:]
+	lines = strings.Split(output, "\n")
+	for _, line := range lines {
+		checksum := extractHexChecksum(line)
+		if checksum != "" {
+			return checksum, nil
+		}
 	}
-	return checksum, nil
+
+	return "", fmt.Errorf("could not parse checksum from output")
 }
 
 func isHexString(s string) bool {
@@ -125,6 +166,14 @@ func isHexString(s string) bool {
 		}
 	}
 	return true
+}
+
+func extractHexChecksum(line string) string {
+	matches := hexChecksumFinder.FindStringSubmatch(line)
+	if len(matches) >= 1 {
+		return strings.ToLower(matches[1])
+	}
+	return ""
 }
 
 func (c *FortiGateClient) GetConfig() (string, error) {
