@@ -106,7 +106,7 @@ func (c *FortiGateClient) Execute(command string) (string, error) {
 		return "", fmt.Errorf("write failed: %w", err)
 	}
 
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(1 * time.Second)
 
 	buf, err := io.ReadAll(stdout)
 	if err != nil && err != io.EOF {
@@ -131,8 +131,19 @@ func cleanOutput(output string) string {
 			idx := strings.Index(line, "# ")
 			line = line[idx+2:]
 		}
+		if strings.Contains(line, " $ ") {
+			idx := strings.Index(line, " $ ")
+			line = line[idx+3:]
+		}
+		if strings.Contains(line, "$ ") {
+			idx := strings.Index(line, "$ ")
+			line = line[idx+2:]
+		}
+		if strings.Contains(line, "$") && !strings.Contains(line, "Unknown action") {
+			line = strings.SplitAfterN(line, "$", 2)[0]
+		}
 		line = strings.TrimSpace(line)
-		if line != "" {
+		if line != "" && !strings.Contains(line, "Unknown action") {
 			cleaned = append(cleaned, line)
 		}
 	}
