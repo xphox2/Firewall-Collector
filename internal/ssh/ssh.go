@@ -1,9 +1,8 @@
 package ssh
 
 import (
-	"bufio"
+	"bytes"
 	"fmt"
-	"io"
 	"net"
 	"regexp"
 	"strings"
@@ -76,64 +75,31 @@ func (c *FortiGateClient) Execute(command string) (string, error) {
 	}
 	defer session.Close()
 
-	stdin, err := session.StdinPipe()
-	if err != nil {
-		return "", fmt.Errorf("stdin pipe failed: %w", err)
-	}
-
-	stdout, err := session.StdoutPipe()
-	if err != nil {
-		return "", fmt.Errorf("stdout pipe failed: %w", err)
-	}
-
 	modes := ssh.TerminalModes{
-		ssh.ECHO:          1,
+		ssh.ECHO:          0,
 		ssh.TTY_OP_ISPEED: 14400,
 		ssh.TTY_OP_OSPEED: 14400,
 	}
 
-	if err := session.RequestPty("vt100", 80, 40, modes); err != nil {
+	if err := session.RequestPty("xterm", 80, 40, modes); err != nil {
 		return "", fmt.Errorf("pty request failed: %w", err)
 	}
 
-	if err := session.Shell(); err != nil {
-		return "", fmt.Errorf("shell start failed: %w", err)
+	if err := session.Start(command); err != nil {
+		return "", fmt.Errorf("command start failed: %w", err)
 	}
 
-	time.Sleep(500 * time.Millisecond)
+	var buf bytes.Buffer
+	session.Stdout = &buf
 
-	reader := bufio.NewReader(stdout)
+	err = session.Wait()
+	output := buf.String()
 
-	_, err = stdin.Write([]byte(command + "\n"))
-	if err != nil {
-		return "", fmt.Errorf("write failed: %w", err)
+	if err != nil && err.Error() != "exit status 255" {
+		return cleanOutput(output), err
 	}
 
-	var output []byte
-	buf := make([]byte, 4096)
-	done := time.After(5 * time.Second)
-
-	for {
-		select {
-		case <-done:
-			n, _ := reader.Read(buf)
-			if n > 0 {
-				output = append(output, buf[:n]...)
-			}
-			return cleanOutput(string(output)), nil
-		default:
-			n, err := reader.Read(buf)
-			if n > 0 {
-				output = append(output, buf[:n]...)
-			}
-			if err != nil {
-				if err == io.EOF {
-					return cleanOutput(string(output)), nil
-				}
-			}
-			time.Sleep(50 * time.Millisecond)
-		}
-	}
+	return cleanOutput(output), nil
 }
 
 func cleanOutput(output string) string {
