@@ -37,7 +37,7 @@ type LicenseDetailInfo struct {
 	Details     string
 }
 
-var processTopRegex = regexp.MustCompile(`^\s*(\S+)\s+(\d+)\s+(\d+\.?\d*)%\s+(\d+\.?\d*)%\s+(.*)`)
+var processTopRegex = regexp.MustCompile(`^\s*(\S+)\s+(\d+)\s+(\S)\s+(\d+\.?\d*)\s+(\d+\.?\d*)\s+(\d+)`)
 
 func ParseProcessTop(output string) []ProcessInfo {
 	var processes []ProcessInfo
@@ -66,7 +66,7 @@ func ParseProcessTop(output string) []ProcessInfo {
 		matches := processTopRegex.FindStringSubmatch(line)
 		if len(matches) >= 6 {
 			name := matches[1]
-			if name == "process" || name == "CPU" || name == "MEM" {
+			if name == "process" || name == "CPU" || name == "MEM" || name == "node" {
 				continue
 			}
 
@@ -75,19 +75,16 @@ func ParseProcessTop(output string) []ProcessInfo {
 				continue
 			}
 
-			cpu, err := strconv.ParseFloat(matches[3], 64)
+			state := matches[3]
+
+			cpu, err := strconv.ParseFloat(matches[4], 64)
 			if err != nil {
 				cpu = 0
 			}
 
-			mem, err := strconv.ParseFloat(matches[4], 64)
+			mem, err := strconv.ParseFloat(matches[5], 64)
 			if err != nil {
 				mem = 0
-			}
-
-			command := strings.TrimSpace(matches[5])
-			if command == "" {
-				command = name
 			}
 
 			processes = append(processes, ProcessInfo{
@@ -95,7 +92,7 @@ func ParseProcessTop(output string) []ProcessInfo {
 				PID:     pid,
 				CPU:     cpu,
 				Memory:  mem,
-				Command: command,
+				Command: name + " (" + state + ")",
 			})
 		}
 	}

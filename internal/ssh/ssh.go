@@ -1,7 +1,6 @@
 package ssh
 
 import (
-	"bytes"
 	"fmt"
 	"net"
 	"regexp"
@@ -75,55 +74,34 @@ func (c *FortiGateClient) Execute(command string) (string, error) {
 	}
 	defer session.Close()
 
-	modes := ssh.TerminalModes{
-		ssh.ECHO:          0,
-		ssh.TTY_OP_ISPEED: 14400,
-		ssh.TTY_OP_OSPEED: 14400,
+	out, err := session.CombinedOutput(command)
+	if err != nil {
+		return "", fmt.Errorf("execute failed: %w", err)
 	}
 
-	if err := session.RequestPty("xterm", 80, 40, modes); err != nil {
-		return "", fmt.Errorf("pty request failed: %w", err)
-	}
-
-	if err := session.Start(command); err != nil {
-		return "", fmt.Errorf("command start failed: %w", err)
-	}
-
-	var buf bytes.Buffer
-	session.Stdout = &buf
-
-	err = session.Wait()
-	output := buf.String()
-
-	if err != nil && err.Error() != "exit status 255" {
-		return cleanOutput(output), err
-	}
-
-	return cleanOutput(output), nil
+	return cleanOutput(string(out)), nil
 }
 
 func cleanOutput(output string) string {
 	lines := strings.Split(output, "\n")
 	cleaned := make([]string, 0, len(lines))
+	promptPattern := "$ "
+
 	for _, line := range lines {
 		if strings.Contains(line, "--More--") {
 			continue
 		}
-		if strings.Contains(line, " # ") {
-			idx := strings.Index(line, " # ")
-			line = line[idx+3:]
-		}
-		if strings.Contains(line, "# ") {
-			idx := strings.Index(line, "# ")
-			line = line[idx+2:]
-		}
-		if strings.Contains(line, "$") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
 			continue
 		}
-		line = strings.TrimSpace(line)
-		if line != "" {
-			cleaned = append(cleaned, line)
+		if strings.HasPrefix(trimmed, "FW-") && strings.Contains(trimmed, promptPattern) {
+			continue
 		}
+		if strings.Contains(trimmed, "$") && !strings.Contains(trimmed, "config:") && !strings.Contains(trimmed, "image:") && !strings.Contains(trimmed, "Run Time:") && !strings.Contains(trimmed, "Temperature") {
+			continue
+		}
+		cleaned = append(cleaned, trimmed)
 	}
 	return strings.Join(cleaned, "\n")
 }
