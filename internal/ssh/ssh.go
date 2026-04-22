@@ -85,9 +85,16 @@ func (c *FortiGateClient) GetConfigChecksum() (string, error) {
 	lines := strings.Split(output, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		parts := strings.Fields(line)
-		if len(parts) >= 2 && parts[len(parts)-2] == "is" {
-			return parts[len(parts)-1], nil
+		if strings.Contains(line, "is") {
+			parts := strings.Fields(line)
+			for i := len(parts) - 1; i >= 0; i-- {
+				if parts[i] == "is" && i+1 < len(parts) {
+					checksum := parts[i+1]
+					if isHexString(checksum) {
+						return checksum, nil
+					}
+				}
+			}
 		}
 	}
 
@@ -96,6 +103,18 @@ func (c *FortiGateClient) GetConfigChecksum() (string, error) {
 		checksum = checksum[len(checksum)-32:]
 	}
 	return checksum, nil
+}
+
+func isHexString(s string) bool {
+	if len(s) < 8 {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *FortiGateClient) GetConfig() (string, error) {
