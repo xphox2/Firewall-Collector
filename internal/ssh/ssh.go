@@ -1,6 +1,7 @@
 package ssh
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"net"
@@ -86,7 +87,7 @@ func (c *FortiGateClient) Execute(command string) (string, error) {
 	}
 
 	modes := ssh.TerminalModes{
-		ssh.ECHO:          0,
+		ssh.ECHO:          1,
 		ssh.TTY_OP_ISPEED: 14400,
 		ssh.TTY_OP_OSPEED: 14400,
 	}
@@ -99,21 +100,40 @@ func (c *FortiGateClient) Execute(command string) (string, error) {
 		return "", fmt.Errorf("shell start failed: %w", err)
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
+
+	reader := bufio.NewReader(stdout)
 
 	_, err = stdin.Write([]byte(command + "\n"))
 	if err != nil {
 		return "", fmt.Errorf("write failed: %w", err)
 	}
 
-	time.Sleep(1 * time.Second)
+	var output []byte
+	buf := make([]byte, 4096)
+	done := time.After(5 * time.Second)
 
-	buf, err := io.ReadAll(stdout)
-	if err != nil && err != io.EOF {
-		return "", fmt.Errorf("read failed: %w", err)
+	for {
+		select {
+		case <-done:
+			n, _ := reader.Read(buf)
+			if n > 0 {
+				output = append(output, buf[:n]...)
+			}
+			return cleanOutput(string(output)), nil
+		default:
+			n, err := reader.Read(buf)
+			if n > 0 {
+				output = append(output, buf[:n]...)
+			}
+			if err != nil {
+				if err == io.EOF {
+					return cleanOutput(string(output)), nil
+				}
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
 	}
-
-	return cleanOutput(string(buf)), nil
 }
 
 func cleanOutput(output string) string {
@@ -131,19 +151,11 @@ func cleanOutput(output string) string {
 			idx := strings.Index(line, "# ")
 			line = line[idx+2:]
 		}
-		if strings.Contains(line, " $ ") {
-			idx := strings.Index(line, " $ ")
-			line = line[idx+3:]
-		}
-		if strings.Contains(line, "$ ") {
-			idx := strings.Index(line, "$ ")
-			line = line[idx+2:]
-		}
-		if strings.Contains(line, "$") && !strings.Contains(line, "Unknown action") {
-			line = strings.SplitAfterN(line, "$", 2)[0]
+		if strings.Contains(line, "$") {
+			continue
 		}
 		line = strings.TrimSpace(line)
-		if line != "" && !strings.Contains(line, "Unknown action") {
+		if line != "" {
 			cleaned = append(cleaned, line)
 		}
 	}
@@ -177,26 +189,6 @@ func (c *FortiGateClient) GetConfigChecksum() (string, error) {
 	}
 
 	return "", fmt.Errorf("could not parse checksum from output: %s", output)
-}
-
-func isHexString(s string) bool {
-	if len(s) < 8 {
-		return false
-	}
-	for _, c := range s {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
-			return false
-		}
-	}
-	return true
-}
-
-func extractHexChecksum(line string) string {
-	matches := hexChecksumFinder.FindStringSubmatch(line)
-	if len(matches) >= 1 {
-		return strings.ToLower(matches[1])
-	}
-	return ""
 }
 
 func (c *FortiGateClient) GetConfig() (string, error) {
