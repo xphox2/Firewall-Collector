@@ -16,7 +16,6 @@ type FortiGateClient struct {
 	username string
 	password string
 	client   *ssh.Client
-	session  *ssh.Session
 }
 
 func NewFortiGateClient(host string, port int, username, password string) *FortiGateClient {
@@ -50,37 +49,27 @@ func (c *FortiGateClient) Connect() error {
 	}
 	c.client = client
 
-	session, err := client.NewSession()
-	if err != nil {
-		client.Close()
-		return fmt.Errorf("new session failed: %w", err)
-	}
-	c.session = session
-
-	if err := session.Shell(); err != nil {
-		session.Close()
-		client.Close()
-		return fmt.Errorf("shell failed: %w", err)
-	}
-
 	return nil
 }
 
 func (c *FortiGateClient) Close() {
-	if c.session != nil {
-		c.session.Close()
-	}
 	if c.client != nil {
 		c.client.Close()
 	}
 }
 
 func (c *FortiGateClient) Execute(command string) (string, error) {
-	if c.session == nil {
+	if c.client == nil {
 		return "", fmt.Errorf("not connected")
 	}
 
-	out, err := c.session.CombinedOutput(command)
+	session, err := c.client.NewSession()
+	if err != nil {
+		return "", fmt.Errorf("new session failed: %w", err)
+	}
+	defer session.Close()
+
+	out, err := session.CombinedOutput(command)
 	if err != nil {
 		return "", fmt.Errorf("execute failed: %w", err)
 	}
