@@ -37,6 +37,9 @@ type Collector struct {
 	// Circuit breaker: consecutive failure counts per device
 	failCount   map[uint]int
 	failCountMu sync.Mutex
+	// SSH polling: last poll time per device ID
+	sshLastPoll   map[uint]time.Time
+	sshLastPollMu sync.Mutex
 }
 
 func main() {
@@ -406,7 +409,7 @@ func (c *Collector) runPollCycle() {
 }
 
 func (c *Collector) sshPollingLoop() {
-	ticker := time.NewTicker(5 * time.Minute)
+	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
 	for {
@@ -425,10 +428,32 @@ func (c *Collector) runSSHPollCycle() {
 	copy(devices, c.devices)
 	c.deviceMu.RUnlock()
 
+	now := time.Now()
+	c.sshLastPollMu.Lock()
+	if c.sshLastPoll == nil {
+		c.sshLastPoll = make(map[uint]time.Time)
+	}
+	c.sshLastPollMu.Unlock()
+
 	for _, dev := range devices {
 		if !dev.Enabled || !dev.SSHPollEnabled || dev.SSHUsername == "" || dev.SSHPassword == "" {
 			continue
 		}
+
+		interval := time.Duration(dev.SSHPollInterval) * time.Second
+		if interval <= 0 {
+			interval = 15 * time.Minute
+		}
+
+		c.sshLastPollMu.Lock()
+		lastPoll, exists := c.sshLastPoll[dev.ID]
+		if exists && now.Sub(lastPoll) < interval {
+			c.sshLastPollMu.Unlock()
+			continue
+		}
+		c.sshLastPoll[dev.ID] = now
+		c.sshLastPollMu.Unlock()
+
 		go c.sshPollDevice(dev)
 	}
 }
