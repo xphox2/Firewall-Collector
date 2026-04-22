@@ -201,7 +201,7 @@ func (c *FortiGateClient) GetInterfaceList() (string, error) {
 }
 
 func (c *FortiGateClient) GetSensorInfo() (string, error) {
-	return c.Execute("diagnose sys sensor info")
+	return c.Execute("execute sensor list")
 }
 
 func (c *FortiGateClient) GetLicenseStatus() (string, error) {
