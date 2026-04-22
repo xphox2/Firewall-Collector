@@ -1,7 +1,6 @@
 package ssh
 
 import (
-	"bufio"
 	"fmt"
 	"net"
 	"strings"
@@ -83,14 +82,12 @@ func (c *FortiGateClient) GetConfigChecksum() (string, error) {
 		return "", err
 	}
 
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.Contains(line, "is") {
-			parts := strings.Fields(line)
-			if len(parts) >= 2 {
-				return parts[len(parts)-1], nil
-			}
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		parts := strings.Fields(line)
+		if len(parts) >= 2 && parts[len(parts)-2] == "is" {
+			return parts[len(parts)-1], nil
 		}
 	}
 
