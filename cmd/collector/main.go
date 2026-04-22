@@ -509,8 +509,9 @@ func (c *Collector) sendInterfaceErrors(dev relay.DeviceInfo, output string) {
 		return
 	}
 	now := time.Now()
+	snaps := make([]relay.InterfaceErrorSnapshot, 0, len(interfaces))
 	for _, iface := range interfaces {
-		snap := relay.InterfaceErrorSnapshot{
+		snaps = append(snaps, relay.InterfaceErrorSnapshot{
 			DeviceID:    dev.ID,
 			Timestamp:   now,
 			Interface:   iface.Name,
@@ -518,10 +519,10 @@ func (c *Collector) sendInterfaceErrors(dev relay.DeviceInfo, output string) {
 			InDiscards:  iface.InDiscards,
 			OutErrors:   iface.OutErrors,
 			OutDiscards: iface.OutDiscards,
-		}
-		if err := c.relayClient.SendInterfaceErrorSnapshot(&snap); err != nil {
-			log.Printf("[SSH] Failed to send interface errors for %s/%s: %v", dev.Name, iface.Name, err)
-		}
+		})
+	}
+	if err := c.relayClient.SendInterfaceErrorSnapshots(snaps); err != nil {
+		log.Printf("[SSH] Failed to send interface errors for %s: %v", dev.Name, err)
 	}
 }
 

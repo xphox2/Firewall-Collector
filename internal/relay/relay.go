@@ -1159,3 +1159,26 @@ func (c *Client) SendInterfaceErrorSnapshot(snap *InterfaceErrorSnapshot) error 
 	}
 	return fmt.Errorf("send interface error snapshot returned status %d", resp.StatusCode)
 }
+
+func (c *Client) SendInterfaceErrorSnapshots(snaps []InterfaceErrorSnapshot) error {
+	if !c.approved.Load() {
+		return fmt.Errorf("probe not approved")
+	}
+	if len(snaps) == 0 {
+		return nil
+	}
+	jsonData, err := json.Marshal(snaps)
+	if err != nil {
+		return fmt.Errorf("failed to marshal interface error snapshots: %w", err)
+	}
+	url := c.Config.ServerURL + "/api/probes/" + fmt.Sprint(c.probeID) + "/interface-errors"
+	resp, err := c.httpClient.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("failed to send interface error snapshots: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return fmt.Errorf("send interface error snapshots returned status %d", resp.StatusCode)
+}
