@@ -1109,7 +1109,7 @@ func (c *Client) SendConfigRevision(rev *ConfigRevision) error {
 		return fmt.Errorf("failed to marshal config revision: %w", err)
 	}
 	url := c.Config.ServerURL + "/api/probes/" + fmt.Sprint(c.probeID) + "/config-revision"
-	resp, err := c.httpClient.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
 	if err != nil {
 		return fmt.Errorf("failed to send config revision: %w", err)
 	}
@@ -1129,7 +1129,7 @@ func (c *Client) SendProcessSnapshot(snap *ProcessSnapshot) error {
 		return fmt.Errorf("failed to marshal process snapshot: %w", err)
 	}
 	url := c.Config.ServerURL + "/api/probes/" + fmt.Sprint(c.probeID) + "/process-snapshot"
-	resp, err := c.httpClient.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
 	if err != nil {
 		return fmt.Errorf("failed to send process snapshot: %w", err)
 	}
@@ -1149,7 +1149,7 @@ func (c *Client) SendInterfaceErrorSnapshot(snap *InterfaceErrorSnapshot) error 
 		return fmt.Errorf("failed to marshal interface error snapshot: %w", err)
 	}
 	url := c.Config.ServerURL + "/api/probes/" + fmt.Sprint(c.probeID) + "/interface-errors"
-	resp, err := c.httpClient.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
 	if err != nil {
 		return fmt.Errorf("failed to send interface error snapshot: %w", err)
 	}
@@ -1172,7 +1172,7 @@ func (c *Client) SendInterfaceErrorSnapshots(snaps []InterfaceErrorSnapshot) err
 		return fmt.Errorf("failed to marshal interface error snapshots: %w", err)
 	}
 	url := c.Config.ServerURL + "/api/probes/" + fmt.Sprint(c.probeID) + "/interface-errors"
-	resp, err := c.httpClient.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
 	if err != nil {
 		return fmt.Errorf("failed to send interface error snapshots: %w", err)
 	}
