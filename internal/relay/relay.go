@@ -1114,9 +1114,9 @@ type LicenseDetail struct {
 	ID          uint      `json:"id"`
 	DeviceID    uint      `json:"device_id"`
 	Timestamp   time.Time `json:"timestamp"`
-	LicenseType string    `json:"license_type"`
+	Description string    `json:"description"`
+	ExpiryDate  string    `json:"expiry_date"`
 	Status      string    `json:"status"`
-	Expires     string    `json:"expires"`
 	Details     string    `json:"details"`
 }
 

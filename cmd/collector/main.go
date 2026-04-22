@@ -594,9 +594,9 @@ func (c *Collector) sendLicenseDetails(dev relay.DeviceInfo, output string) {
 		details = append(details, relay.LicenseDetail{
 			DeviceID:    dev.ID,
 			Timestamp:   now,
-			LicenseType: l.LicenseType,
+			Description: l.LicenseType,
+			ExpiryDate:  l.Expires,
 			Status:      l.Status,
-			Expires:     l.Expires,
 			Details:     l.Details,
 		})
 	}
