@@ -5,6 +5,9 @@
 ### Fixed
 - **ParseSensorInfo for single-line format**: Added `sensorLineRegex` to handle FortiGate output like "1 CPU ON-DIE Temperature ........ 63.8 C" which has all info on one line
 
+### Added
+- **Enhanced ssh-test tool**: Now tests all SSH commands with proper parsing validation (sensor, process, interface, license, performance, vpn, ha, checksum, config)
+
 ## 1.2.35 - 2026-04-22
 
 ### Added
