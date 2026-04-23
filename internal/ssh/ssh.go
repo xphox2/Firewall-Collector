@@ -2,7 +2,6 @@ package ssh
 
 import (
 	"fmt"
-	"net"
 	"regexp"
 	"strings"
 	"time"
@@ -41,10 +40,8 @@ func (c *FortiGateClient) Connect() error {
 		Auth: []ssh.AuthMethod{
 			ssh.Password(c.password),
 		},
-		HostKeyCallback: func(hostname string, remote net.Addr, key ssh.PublicKey) error {
-			return nil
-		},
-		Timeout: 30 * time.Second,
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         30 * time.Second,
 	}
 
 	addr := fmt.Sprintf("%s:%d", c.host, c.port)
@@ -153,4 +150,28 @@ func (c *FortiGateClient) GetSensorInfo() (string, error) {
 
 func (c *FortiGateClient) GetLicenseStatus() (string, error) {
 	return c.Execute("get system status")
+}
+
+func (c *FortiGateClient) GetPerformanceStatus() (string, error) {
+	return c.Execute("get system performance status")
+}
+
+func (c *FortiGateClient) GetVPNStatus() (string, string, error) {
+	phase1, err := c.Execute("show vpn ipsec phase1-interface")
+	if err != nil {
+		return "", "", fmt.Errorf("phase1 failed: %w", err)
+	}
+	phase2, err := c.Execute("show vpn ipsec phase2-interface")
+	if err != nil {
+		return phase1, "", fmt.Errorf("phase2 failed: %w", err)
+	}
+	return phase1, phase2, nil
+}
+
+func (c *FortiGateClient) GetHAStatus() (string, error) {
+	return c.Execute("get system ha status")
+}
+
+func (c *FortiGateClient) GetSystemSessionList() (string, error) {
+	return c.Execute("get system session list")
 }

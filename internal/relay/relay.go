@@ -72,6 +72,20 @@ type SystemStatus struct {
 	IPSVersion    string `json:"ips_version"`
 	SSLVPNUsers   int    `json:"sslvpn_users"`
 	SSLVPNTunnels int    `json:"sslvpn_tunnels"`
+	// Network throughput (kbps) from SSH performance status
+	NetworkInKbps  float64 `json:"network_in_kbps"`
+	NetworkOutKbps float64 `json:"network_out_kbps"`
+	// CPU breakdown from SSH performance status
+	CPUUser    float64 `json:"cpu_user"`
+	CPUSystem  float64 `json:"cpu_system"`
+	CPUNice    float64 `json:"cpu_nice"`
+	CPUIdle    float64 `json:"cpu_idle"`
+	CPUIowait  float64 `json:"cpu_iowait"`
+	CPUIrq     float64 `json:"cpu_irq"`
+	CPUSoftirq float64 `json:"cpu_softirq"`
+	// Memory breakdown
+	MemoryFree     uint64 `json:"memory_free"`
+	MemoryFreeable uint64 `json:"memory_freeable"`
 }
 
 type InterfaceStats struct {
@@ -115,6 +129,9 @@ type VPNStatus struct {
 	LocalSubnet  string    `json:"local_subnet"`
 	RemoteSubnet string    `json:"remote_subnet"`
 	TunnelUptime uint64    `json:"tunnel_uptime"`
+	// Phase1 details from SSH
+	InterfaceName string `json:"interface_name"`
+	Mode          string `json:"mode"`
 }
 
 type TrapEvent struct {
@@ -594,7 +611,7 @@ func (c *Client) sendHeartbeatWithStatus(status string) error {
 func (c *Client) SendTrap(trap *TrapEvent) {
 	c.mu.Lock()
 	if len(c.trapQueue) >= maxQueueSize {
-		c.trapQueue = c.trapQueue[1:]
+		c.trapQueue = append(c.trapQueue[:0], c.trapQueue[1:]...)
 		log.Println("[Relay] Trap queue full, dropping oldest entry")
 	}
 	c.trapQueue = append(c.trapQueue, trap)
@@ -604,7 +621,7 @@ func (c *Client) SendTrap(trap *TrapEvent) {
 func (c *Client) SendPingResult(result *PingResult) {
 	c.mu.Lock()
 	if len(c.pingQueue) >= maxQueueSize {
-		c.pingQueue = c.pingQueue[1:]
+		c.pingQueue = append(c.pingQueue[:0], c.pingQueue[1:]...)
 		log.Println("[Relay] Ping queue full, dropping oldest entry")
 	}
 	c.pingQueue = append(c.pingQueue, result)
@@ -614,7 +631,7 @@ func (c *Client) SendPingResult(result *PingResult) {
 func (c *Client) SendSyslogMessage(msg *SyslogMessage) {
 	c.mu.Lock()
 	if len(c.syslogQueue) >= maxQueueSize {
-		c.syslogQueue = c.syslogQueue[1:]
+		c.syslogQueue = append(c.syslogQueue[:0], c.syslogQueue[1:]...)
 		log.Println("[Relay] Syslog queue full, dropping oldest entry")
 	}
 	c.syslogQueue = append(c.syslogQueue, msg)
@@ -624,7 +641,7 @@ func (c *Client) SendSyslogMessage(msg *SyslogMessage) {
 func (c *Client) SendFlowSample(sample *FlowSample) {
 	c.mu.Lock()
 	if len(c.flowQueue) >= maxQueueSize {
-		c.flowQueue = c.flowQueue[1:]
+		c.flowQueue = append(c.flowQueue[:0], c.flowQueue[1:]...)
 		log.Println("[Relay] Flow queue full, dropping oldest entry")
 	}
 	c.flowQueue = append(c.flowQueue, sample)

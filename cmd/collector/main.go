@@ -18,7 +18,7 @@ import (
 	"firewall-collector/internal/syslog"
 )
 
-const version = "1.2.15"
+const version = "1.2.32"
 
 type Collector struct {
 	cfg           *config.ProbeConfig
@@ -435,6 +435,9 @@ func (c *Collector) runSSHPollCycle() {
 	}
 	c.sshLastPollMu.Unlock()
 
+	sem := make(chan struct{}, 5) // Limit concurrent SSH polls (lower than SNMP due to connection overhead)
+	var wg sync.WaitGroup
+
 	for _, dev := range devices {
 		if !dev.Enabled || !dev.SSHPollEnabled || dev.SSHUsername == "" || dev.SSHPassword == "" {
 			continue
@@ -454,8 +457,15 @@ func (c *Collector) runSSHPollCycle() {
 		c.sshLastPoll[dev.ID] = now
 		c.sshLastPollMu.Unlock()
 
-		go c.sshPollDevice(dev)
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(d relay.DeviceInfo) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			c.sshPollDevice(d)
+		}(dev)
 	}
+	wg.Wait()
 }
 
 func (c *Collector) sshPollDevice(dev relay.DeviceInfo) {
@@ -491,6 +501,16 @@ func (c *Collector) sshPollDevice(dev relay.DeviceInfo) {
 	licenseOutput, err := sshClient.GetLicenseStatus()
 	if err == nil {
 		c.sendLicenseDetails(dev, licenseOutput)
+	}
+
+	perfOutput, err := sshClient.GetPerformanceStatus()
+	if err == nil {
+		c.sendPerformanceStatus(dev, perfOutput)
+	}
+
+	phase1Output, phase2Output, err := sshClient.GetVPNStatus()
+	if err == nil {
+		c.sendVPNStatuses(dev, phase1Output, phase2Output)
 	}
 }
 
@@ -602,6 +622,104 @@ func (c *Collector) sendLicenseDetails(dev relay.DeviceInfo, output string) {
 	}
 	if err := c.relayClient.SendLicenseDetails(details); err != nil {
 		log.Printf("[SSH] Failed to send license details for %s: %v", dev.Name, err)
+	}
+}
+
+func (c *Collector) sendPerformanceStatus(dev relay.DeviceInfo, output string) {
+	perf := ssh.ParsePerformanceStatus(output)
+	if perf == nil {
+		return
+	}
+
+	activeCPU := perf.CPUUser + perf.CPUSystem + perf.CPUNice + perf.CPUIowait + perf.CPUIrq + perf.CPUSoftirq
+	status := relay.SystemStatus{
+		DeviceID:       dev.ID,
+		Timestamp:      time.Now(),
+		CPUUsage:       activeCPU,
+		MemoryUsage:    perf.MemoryUsedPercent,
+		MemoryTotal:    perf.MemoryTotal,
+		MemoryFree:     perf.MemoryFree,
+		MemoryFreeable: perf.MemoryFreeable,
+		SessionCount:   perf.SessionCount,
+		Uptime:         perf.Uptime,
+		NetworkInKbps:  perf.NetworkIn,
+		NetworkOutKbps: perf.NetworkOut,
+		CPUUser:        perf.CPUUser,
+		CPUSystem:      perf.CPUSystem,
+		CPUNice:        perf.CPUNice,
+		CPUIdle:        perf.CPUIdle,
+		CPUIowait:      perf.CPUIowait,
+		CPUIrq:         perf.CPUIrq,
+		CPUSoftirq:     perf.CPUSoftirq,
+	}
+	if err := c.relayClient.SendSystemStatuses([]relay.SystemStatus{status}); err != nil {
+		log.Printf("[SSH] Failed to send performance status for %s: %v", dev.Name, err)
+	}
+
+	if perf.SessionRate > 0 || perf.MaxSessions > 0 {
+		procStats := []relay.ProcessorStats{}
+		if perf.SessionRate > 0 {
+			procStats = append(procStats, relay.ProcessorStats{
+				DeviceID:  dev.ID,
+				Timestamp: time.Now(),
+				Index:     -1,
+				Usage:     float64(perf.SessionRate),
+			})
+		}
+		if perf.MaxSessions > 0 {
+			procStats = append(procStats, relay.ProcessorStats{
+				DeviceID:  dev.ID,
+				Timestamp: time.Now(),
+				Index:     -2,
+				Usage:     float64(perf.MaxSessions),
+			})
+		}
+		if err := c.relayClient.SendProcessorStats(procStats); err != nil {
+			log.Printf("[SSH] Failed to send processor stats for %s: %v", dev.Name, err)
+		}
+	}
+}
+
+func (c *Collector) sendVPNStatuses(dev relay.DeviceInfo, phase1Output, phase2Output string) {
+	phase1Tunnels := ssh.ParseVPNPhase1(phase1Output)
+	phase2Tunnels := ssh.ParseVPNPhase2(phase2Output)
+
+	phase1Map := make(map[string]ssh.VPNPhase1Info)
+	for _, p1 := range phase1Tunnels {
+		if _, exists := phase1Map[p1.Name]; exists {
+			log.Printf("[SSH] WARNING: Duplicate Phase1 tunnel name '%s' on device %s, using first occurrence", p1.Name, dev.Name)
+		}
+		phase1Map[p1.Name] = p1
+	}
+
+	var statuses []relay.VPNStatus
+	for _, p2 := range phase2Tunnels {
+		status := relay.VPNStatus{
+			DeviceID:   dev.ID,
+			Timestamp:  time.Now(),
+			TunnelName: p2.Name,
+			TunnelType: "ipsec",
+			Phase1Name: p2.Phase1Name,
+		}
+		if p1, ok := phase1Map[p2.Phase1Name]; ok {
+			status.RemoteIP = p1.RemoteGateway
+			status.Status = p1.Status
+			status.InterfaceName = p1.Interface
+			status.Mode = p1.Mode
+		}
+		if status.RemoteIP == "" {
+			status.RemoteIP = p2.RemoteGateway
+		}
+		if status.Status == "" {
+			status.Status = "unknown"
+		}
+		statuses = append(statuses, status)
+	}
+
+	if len(statuses) > 0 {
+		if err := c.relayClient.SendVPNStatuses(statuses); err != nil {
+			log.Printf("[SSH] Failed to send VPN statuses for %s: %v", dev.Name, err)
+		}
 	}
 }
 

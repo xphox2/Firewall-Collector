@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.2.34 - 2026-04-22
+
+### Fixed
+- **Security: SSH host key verification**: Changed from custom callback that accepts any host to `ssh.InsecureIgnoreHostKey()` for clearer intent
+- **SSH concurrency limit**: Added semaphore (5 concurrent) to prevent unlimited goroutine spawns during SSH polling
+- **VPN Phase1 duplicate handling**: Added warning log when duplicate Phase1 tunnel names are detected, keeps first occurrence
+- **VPN phase1name regex**: Fixed to capture quoted phase1 names (e.g., `"phase1name"`) instead of only non-whitespace
+- **VPN status regex**: Fixed greedy `.+` to `\S+` to avoid capturing trailing whitespace
+- **Dead code removal**: Removed unused `splitByWhitespace()` function
+- **Queue overflow optimization**: Changed from O(n) slice slicing to `append()` pattern for queue overflow handling
+
+## 1.2.33 - 2026-04-22
+
+### Fixed
+- **VPN Status fallback**: Default Status to "unknown" when Phase1 lookup fails (no matching phase1 interface found)
+- **VPN RemoteGateway fallback**: Use p2.RemoteGateway as fallback when p1.RemoteGateway is empty
+
+## 1.2.32 - 2026-04-22
+
+### Added
+- SSH: Add `GetPerformanceStatus()` to collect CPU per core, memory, network usage, sessions via `get system performance status`
+- SSH: Add `ParsePerformanceStatus()` parser for performance data
+- SSH: Add `GetVPNStatus()` to collect IPSEC phase1/phase2 tunnel configs via `show vpn ipsec phase1-interface` and `show vpn ipsec phase2-interface`
+- SSH: Add `ParseVPNPhase1()` and `ParseVPNPhase2()` parsers for IPSEC tunnel configuration
+- SSH: Add `GetHAStatus()` and `GetSystemSessionList()` methods to FortiGateClient
+- SSH polling: Send performance status as SystemStatus (CPU usage, memory, sessions, uptime)
+- SSH polling: Send VPN tunnel statuses from phase1/phase2 configs
+- SSH polling: Send CPU breakdown (user/system/nice/idle/iowait/irq/softirq) and network throughput (in/out kbps) via `get system performance status`
+- SSH polling: Send phase1 interface name and mode for VPN tunnel display
+- Relay: Add NetworkInKbps, NetworkOutKbps, CPU breakdown fields, MemoryFree, MemoryFreeable to SystemStatus
+- Relay: Add InterfaceName, Mode to VPNStatus
+
 ## 1.2.31 - 2026-04-18
 
 ### Fixed
