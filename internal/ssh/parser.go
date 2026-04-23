@@ -91,20 +91,28 @@ func ParseProcessTop(output string) []ProcessInfo {
 
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.Contains(line, "Run Time:") {
-			inProcessList = true
-			continue
-		}
 		if strings.Contains(line, "--More--") {
-			continue
-		}
-
-		if !inProcessList {
 			continue
 		}
 
 		line = strings.TrimSpace(line)
 		if line == "" {
+			continue
+		}
+
+		if strings.Contains(line, "Run Time:") {
+			inProcessList = true
+			continue
+		}
+
+		if !inProcessList {
+			if strings.Contains(line, "U,") && strings.Contains(line, "T,") {
+				inProcessList = true
+				continue
+			}
+		}
+
+		if !inProcessList {
 			continue
 		}
 

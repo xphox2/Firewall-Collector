@@ -287,11 +287,13 @@ func ParseSensorInfo(output string) []SensorDetailInfo {
 	return sensors
 }
 
-var processLineRegex = regexp.MustCompile(`^\s*(\S+)\s+(\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)\s+(.*)$`)
+var processLineRegex = regexp.MustCompile(`^\s*(\S+)\s+(\d+)\s+(\S)\s+(\d+\.?\d*)\s+(\d+\.?\d*)\s+(\d+)`)
 
 func ParseProcessTop(output string) []ProcessInfo {
 	var processes []ProcessInfo
 	scanner := bufio.NewScanner(strings.NewReader(output))
+	inProcessList := false
+
 	for scanner.Scan() {
 		line := scanner.Text()
 
@@ -299,19 +301,44 @@ func ParseProcessTop(output string) []ProcessInfo {
 			continue
 		}
 
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		if strings.Contains(line, "Run Time:") {
+			inProcessList = true
+			continue
+		}
+
+		if !inProcessList {
+			if strings.Contains(line, "U,") && strings.Contains(line, "T,") {
+				inProcessList = true
+				continue
+			}
+		}
+
+		if !inProcessList {
+			continue
+		}
+
 		match := processLineRegex.FindStringSubmatch(line)
 		if len(match) >= 6 {
+			name := match[1]
+			if name == "process" || name == "CPU" || name == "MEM" || name == "node" {
+				continue
+			}
 			var pid int
 			var cpu, mem float64
 			fmt.Sscanf(match[2], "%d", &pid)
-			fmt.Sscanf(match[3], "%f", &cpu)
-			fmt.Sscanf(match[4], "%f", &mem)
+			fmt.Sscanf(match[4], "%f", &cpu)
+			fmt.Sscanf(match[5], "%f", &mem)
 			processes = append(processes, ProcessInfo{
-				Name:    match[1],
+				Name:    name,
 				PID:     pid,
 				CPU:     cpu,
 				Memory:  mem,
-				Command: match[5],
+				Command: match[6],
 			})
 		}
 	}
@@ -424,6 +451,7 @@ func main() {
 		if err != nil {
 			log.Printf("FAILED: %v", err)
 		} else {
+			log.Printf("Raw output (%d bytes): %q", len(output), output)
 			processes := ParseProcessTop(output)
 			log.Printf("OK: parsed %d processes", len(processes))
 			if len(processes) > 0 {
@@ -439,6 +467,7 @@ func main() {
 		if err != nil {
 			log.Printf("FAILED: %v", err)
 		} else {
+			log.Printf("Raw output (%d bytes): %q", len(output), output)
 			interfaces := ParseInterfaceList(output)
 			log.Printf("OK: parsed %d interfaces", len(interfaces))
 			if len(interfaces) > 0 {

@@ -1,12 +1,15 @@
 # Changelog
 
-## 1.2.36 - 2026-04-23
+## 1.2.37 - 2026-04-23
 
 ### Fixed
 - **ParseSensorInfo for single-line format**: Added `sensorLineRegex` to handle FortiGate output like "1 CPU ON-DIE Temperature ........ 63.8 C" which has all info on one line
+- **ParseProcessTop for FortiGate new format**: FortiGate newer firmware doesn't output "Run Time:" header - process list now detected by presence of "U," and "T," in the same line
 
 ### Added
 - **Enhanced ssh-test tool**: Now tests all SSH commands with proper parsing validation (sensor, process, interface, license, performance, vpn, ha, checksum, config)
+
+## 1.2.36 - 2026-04-23
 
 ## 1.2.35 - 2026-04-22
 
