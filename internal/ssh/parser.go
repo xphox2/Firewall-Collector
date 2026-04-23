@@ -225,6 +225,7 @@ var (
 	sensorNameRegex   = regexp.MustCompile(`(?i)^\s*Sensor\s+\d+:\s+(.+)$`)
 	sensorValueRegex  = regexp.MustCompile(`(?i)^\s*Value:\s*([\d.]+)\s*(\w+)`)
 	sensorStatusRegex = regexp.MustCompile(`(?i)^\s*Status:\s*(\w+)`)
+	sensorLineRegex   = regexp.MustCompile(`(?i)^\s*(\d+)\s+(.+?)\s+\.+\s+([\d.]+)\s*(\w+)\s*(.*)$`)
 )
 
 func ParseSensorInfo(output string) []SensorDetailInfo {
@@ -278,6 +279,36 @@ func ParseSensorInfo(output string) []SensorDetailInfo {
 		statusMatch := sensorStatusRegex.FindStringSubmatch(line)
 		if len(statusMatch) >= 2 {
 			currentStatus = strings.TrimSpace(statusMatch[1])
+			continue
+		}
+
+		lineMatch := sensorLineRegex.FindStringSubmatch(line)
+		if len(lineMatch) >= 5 {
+			currentName = strings.TrimSpace(lineMatch[2])
+			if v, err := strconv.ParseFloat(lineMatch[3], 64); err == nil {
+				currentValue = v
+			}
+			currentUnit = strings.TrimSpace(lineMatch[4])
+			statusPart := strings.TrimSpace(lineMatch[5])
+			if statusPart != "" {
+				currentStatus = statusPart
+			} else {
+				currentStatus = "normal"
+			}
+			valueFound = true
+			if currentName != "" {
+				sensors = append(sensors, SensorDetailInfo{
+					Name:   currentName,
+					Value:  currentValue,
+					Unit:   currentUnit,
+					Status: currentStatus,
+				})
+			}
+			currentName = ""
+			currentValue = 0
+			currentUnit = ""
+			currentStatus = ""
+			valueFound = false
 		}
 	}
 
