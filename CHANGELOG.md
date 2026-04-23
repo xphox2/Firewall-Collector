@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.35 - 2026-04-22
+
+### Added
+- **Debug logging for sensor parsing**: Added logging to ParseSensorInfo to debug why sensors aren't being collected
+
 ## 1.2.34 - 2026-04-22
 
 ### Fixed

@@ -2,6 +2,7 @@ package ssh
 
 import (
 	"bufio"
+	"log"
 	"regexp"
 	"strconv"
 	"strings"
@@ -227,6 +228,11 @@ var (
 )
 
 func ParseSensorInfo(output string) []SensorDetailInfo {
+	if len(output) == 0 {
+		log.Printf("[SSH] ParseSensorInfo: empty output")
+		return nil
+	}
+	log.Printf("[SSH] ParseSensorInfo: parsing %d bytes, first 500 chars: %s", len(output), output[:min(500, len(output))])
 	var sensors []SensorDetailInfo
 	scanner := bufio.NewScanner(strings.NewReader(output))
 
@@ -284,6 +290,7 @@ func ParseSensorInfo(output string) []SensorDetailInfo {
 		})
 	}
 
+	log.Printf("[SSH] ParseSensorInfo: parsed %d sensors", len(sensors))
 	return sensors
 }
 

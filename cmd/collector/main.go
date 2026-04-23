@@ -584,8 +584,10 @@ func (c *Collector) sendInterfaceErrors(dev relay.DeviceInfo, output string) {
 func (c *Collector) sendSensorDetails(dev relay.DeviceInfo, output string) {
 	sensors := ssh.ParseSensorInfo(output)
 	if len(sensors) == 0 {
+		log.Printf("[SSH] No sensors parsed from %s, raw output length: %d", dev.Name, len(output))
 		return
 	}
+	log.Printf("[SSH] Sending %d sensor details for %s", len(sensors), dev.Name)
 	now := time.Now()
 	details := make([]relay.SensorDetail, 0, len(sensors))
 	for _, s := range sensors {
