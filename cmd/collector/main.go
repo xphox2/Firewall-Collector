@@ -563,9 +563,6 @@ func devIDFromFilename(filename string) uint {
 
 func (c *Collector) startTFTPServer() {
 	addr := c.cfg.TFTPListenAddr
-	if addr == "" {
-		addr = "0.0.0.0:69"
-	}
 
 	tftpServer := tftp.NewServer(&tftp.Config{
 		Addr:    addr,
