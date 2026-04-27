@@ -143,6 +143,9 @@ func main() {
 			}
 			fmt.Printf("     %s (id=%d) %s:%d v%s community=%s vendor=%s [%s]\n",
 				d.Name, d.ID, d.IPAddress, d.SNMPPort, d.SNMPVersion, community, d.Vendor, enabledStr)
+			if d.SSHPollEnabled {
+				log.Printf("[SSH] TFTP candidate: device id=%d name=%s ip=%s ssh_port=%d", d.ID, d.Name, d.IPAddress, d.SSHPort)
+			}
 		}
 	}
 	fmt.Println()
