@@ -166,7 +166,7 @@ func (c *FortiGateClient) GetConfigChecksum() (string, error) {
 }
 
 func (c *FortiGateClient) GetConfig() (string, error) {
-	return c.Execute("show full-configuration | no-more")
+	return c.Execute("show full-configuration")
 }
 
 func (c *FortiGateClient) GetProcessTop() (string, error) {
