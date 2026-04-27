@@ -174,7 +174,7 @@ func (c *FortiGateClient) GetProcessTop() (string, error) {
 }
 
 func (c *FortiGateClient) GetInterfaceList() (string, error) {
-	return c.Execute("diagnose netlink interface list | no-more")
+	return c.Execute("diagnose netlink interface list")
 }
 
 func (c *FortiGateClient) GetSensorInfo() (string, error) {

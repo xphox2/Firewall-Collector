@@ -131,7 +131,7 @@ func (c *FortiGateClient) GetProcessTop() (string, error) {
 }
 
 func (c *FortiGateClient) GetInterfaceList() (string, error) {
-	return c.Execute("diagnose netlink interface list | no-more")
+	return c.Execute("diagnose netlink interface list")
 }
 
 func (c *FortiGateClient) GetSensorInfo() (string, error) {
@@ -467,12 +467,8 @@ func main() {
 		if err != nil {
 			log.Printf("FAILED: %v", err)
 		} else {
-			log.Printf("Raw output (%d bytes): %q", len(output), output)
-			interfaces := ParseInterfaceList(output)
-			log.Printf("OK: parsed %d interfaces", len(interfaces))
-			if len(interfaces) > 0 {
-				log.Printf("Sample: %+v", interfaces[0])
-			}
+			lines := strings.Split(output, "\n")
+			log.Printf("OK: %d lines (%d bytes)", len(lines), len(output))
 		}
 		log.Printf("")
 	}

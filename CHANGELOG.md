@@ -1,19 +1,24 @@
 # Changelog
 
+## 1.2.43 - 2026-04-27
+
+### Fixed
+- **GetInterfaceList command**: Removed `| no-more` - does not work on FortiGate-60F and cleanOutput function already handles `--More--` pagination. Command now works without pipe modifier.
+
 ## 1.2.42 - 2026-04-27
 
 ### Fixed
-- **GetConfig command**: `show full-configuration | no-more` fails on FortiGate with "unrecognized pipe command". Removed `| no-more` from GetConfig - `show full-configuration` works correctly without pagination issues when using SSH CombinedOutput.
+- **GetConfig command**: `show full-configuration | no-more` fails on FortiGate with "unrecognized pipe command". Removed `| no-more` from GetConfig.
 
 ## 1.2.41 - 2026-04-27
 
 ### Fixed
-- **ParseSensorInfo temperature regex**: Fixed regex to properly parse temperature sensor values from FortiGate `execute sensor list` output. Changed from `\.+` to `[^\w]+` to handle various separator characters (dots, spaces, control characters) between sensor name and value.
+- **ParseSensorInfo temperature regex**: Fixed regex to properly parse temperature sensor values from FortiGate `execute sensor list` output.
 
 ## 1.2.40 - 2026-04-27
 
 ### Fixed
-- **SSH pagination over tunnels**: Added `| no-more` to large-output commands (GetInterfaceList, GetVPNStatus, GetSystemSessionList) to prevent `--More--` pagination. Note: `| no-more` does NOT work with `show full-configuration` command.
+- **SSH pagination over tunnels**: Note: `| no-more` does NOT work with `show full-configuration` command.
 
 ## 1.2.39 - 2026-04-27
 
