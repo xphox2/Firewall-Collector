@@ -26,21 +26,22 @@ import (
 const version = "1.2.32"
 
 type Collector struct {
-	cfg           *config.ProbeConfig
-	relayClient   *relay.Client
-	trapReceiver  *snmp.TrapReceiver
-	syslogTCP     *syslog.SyslogReceiver
-	syslogUDP     *syslog.UDPSyslogReceiver
-	sflowReceiver *sflow.SFlowReceiver
-	pingCollector *ping.PingCollector
-	tftpServer    *tftp.Server
-	tftpListenIP  string
-	devices       []relay.DeviceInfo
-	deviceMu      sync.RWMutex
-	ifaceIPMap    map[string]uint // interface IP → device ID cache
-	ifaceIPMu     sync.RWMutex
-	stopChan      chan struct{}
-	pollWg        sync.WaitGroup
+	cfg            *config.ProbeConfig
+	relayClient    *relay.Client
+	trapReceiver   *snmp.TrapReceiver
+	syslogTCP      *syslog.SyslogReceiver
+	syslogUDP      *syslog.UDPSyslogReceiver
+	sflowReceiver  *sflow.SFlowReceiver
+	pingCollector  *ping.PingCollector
+	tftpServer     *tftp.Server
+	tftpListenIP   string
+	tftpOutboundIP string // actual IP reachable from firewalls
+	devices        []relay.DeviceInfo
+	deviceMu       sync.RWMutex
+	ifaceIPMap     map[string]uint // interface IP → device ID cache
+	ifaceIPMu      sync.RWMutex
+	stopChan       chan struct{}
+	pollWg         sync.WaitGroup
 	// Circuit breaker: consecutive failure counts per device
 	failCount   map[uint]int
 	failCountMu sync.Mutex
@@ -613,7 +614,22 @@ func (c *Collector) startTFTPServer() {
 
 	c.tftpServer = tftpServer
 	c.tftpListenIP = c.cfg.TFTPListenAddr
-	log.Printf("[TFTP] Server started successfully on %s", addr)
+	c.tftpOutboundIP = c.determineOutboundIP("8.8.8.8") // Use Google DNS to determine outbound IP
+	log.Printf("[TFTP] Server started on %s, outbound IP for firewalls: %s", addr, c.tftpOutboundIP)
+}
+
+func (c *Collector) determineOutboundIP(targetHost string) string {
+	// Determine the IP address this machine would use to reach targetHost
+	// This is the IP the firewall should send TFTP to
+	conn, err := net.Dial("udp", targetHost+":123")
+	if err != nil {
+		log.Printf("[TFTP] Could not determine outbound IP: %v, using %s", err, c.cfg.ListenAddr)
+		return c.cfg.ListenAddr
+	}
+	defer conn.Close()
+	addr := conn.LocalAddr().(*net.UDPAddr)
+	log.Printf("[TFTP] Determined outbound IP for %s: %s", targetHost, addr.IP.String())
+	return addr.IP.String()
 }
 
 func checksumFromData(data []byte) string {
@@ -629,7 +645,7 @@ func (c *Collector) fetchConfigViaTFTP(dev relay.DeviceInfo, checksum string) {
 
 	filename := fmt.Sprintf("fgt_%d_config", dev.ID)
 	log.Printf("[TFTP] Initiating TFTP config backup for device %d (%s) - filename: %s, target: %s",
-		dev.ID, dev.Name, filename, c.tftpListenIP)
+		dev.ID, dev.Name, filename, c.tftpOutboundIP+":69")
 
 	err := c.sendConfigRevisionViaTFTP(dev, checksum, filename)
 	if err != nil {
@@ -647,8 +663,9 @@ func (c *Collector) sendConfigRevisionViaTFTP(dev relay.DeviceInfo, checksum str
 	}
 	defer sshClient.Close()
 
-	log.Printf("[TFTP] Sending 'execute backup config tftp %s %s' to %s", filename, c.tftpListenIP, dev.Name)
-	if err := sshClient.BackupConfigTFTP(filename, c.tftpListenIP); err != nil {
+	tftpTarget := c.tftpOutboundIP + ":69"
+	log.Printf("[TFTP] Sending 'execute backup config tftp %s %s' to %s", filename, tftpTarget, dev.Name)
+	if err := sshClient.BackupConfigTFTP(filename, tftpTarget); err != nil {
 		return fmt.Errorf("TFTP backup command failed: %w", err)
 	}
 	log.Printf("[TFTP] TFTP backup command sent successfully to %s", dev.Name)
