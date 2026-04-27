@@ -11,12 +11,11 @@ import (
 )
 
 var (
-	checksumRegex     = regexp.MustCompile(`(?i)is\s+([a-fA-F0-9]{32}|[a-fA-F0-9]{40})`)
-	hexChecksumFinder = regexp.MustCompile(`([a-fA-F0-9]{32}|[a-fA-F0-9]{40})`)
-
-	// Command execution timeout for config retrieval - 10 minutes for large configs over slow tunnels
-	// This prevents hanging on slow IPSec management tunnels
-	commandTimeout = 10 * time.Minute
+	checksumRegex       = regexp.MustCompile(`(?i)is\s+([a-fA-F0-9]{32}|[a-fA-F0-9]{40})`)
+	hexChecksumFinder   = regexp.MustCompile(`([a-fA-F0-9]{32}|[a-fA-F0-9]{40})`)
+	promptRegex         = regexp.MustCompile(`^(FW-|FGT-|FG-).*\s[\$#]\s*$`)
+	promptWithVDOMRegex = regexp.MustCompile(`^(FW-|FGT-|FG-).*\((global|root)\)\s*[\$#]\s*$`)
+	commandTimeout      = 10 * time.Minute
 )
 
 type FortiGateClient struct {
@@ -115,7 +114,6 @@ func (c *FortiGateClient) Execute(command string) (string, error) {
 func cleanOutput(output string) string {
 	lines := strings.Split(output, "\n")
 	cleaned := make([]string, 0, len(lines))
-	promptPattern := "$ "
 
 	for _, line := range lines {
 		if strings.Contains(line, "--More--") {
@@ -125,15 +123,36 @@ func cleanOutput(output string) string {
 		if trimmed == "" {
 			continue
 		}
-		if strings.HasPrefix(trimmed, "FW-") && strings.Contains(trimmed, promptPattern) {
-			continue
-		}
-		if strings.Contains(trimmed, "$") && !strings.Contains(trimmed, "config:") && !strings.Contains(trimmed, "image:") && !strings.Contains(trimmed, "Run Time:") && !strings.Contains(trimmed, "Temperature") {
+		if isCLIPrompt(trimmed) {
 			continue
 		}
 		cleaned = append(cleaned, trimmed)
 	}
 	return strings.Join(cleaned, "\n")
+}
+
+func isCLIPrompt(line string) bool {
+	if strings.Contains(line, "--More--") {
+		return false
+	}
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return false
+	}
+	if isPromptLine(trimmed, "FW-") || isPromptLine(trimmed, "FGT-") || isPromptLine(trimmed, "FG-") {
+		return true
+	}
+	return false
+}
+
+func isPromptLine(line, prefix string) bool {
+	if !strings.HasPrefix(line, prefix) {
+		return false
+	}
+	if promptWithVDOMRegex.MatchString(line) || promptRegex.MatchString(line) {
+		return true
+	}
+	return false
 }
 
 func (c *FortiGateClient) GetConfigChecksum() (string, error) {
@@ -207,4 +226,10 @@ func (c *FortiGateClient) GetHAStatus() (string, error) {
 
 func (c *FortiGateClient) GetSystemSessionList() (string, error) {
 	return c.Execute("get system session list")
+}
+
+func (c *FortiGateClient) BackupConfigTFTP(filename, tftpServerIP string) error {
+	cmd := fmt.Sprintf("execute backup config tftp %s %s", filename, tftpServerIP)
+	_, err := c.Execute(cmd)
+	return err
 }

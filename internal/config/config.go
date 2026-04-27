@@ -35,6 +35,10 @@ type ProbeConfig struct {
 	SFlowPort     int
 	TrapCommunity string
 
+	// TFTP config fetch
+	TFTPConfigEnabled bool
+	TFTPListenAddr    string
+
 	// Queue & batch limits
 	MaxQueueSize int
 	MaxBatchSize int
@@ -72,6 +76,10 @@ func Load() *Config {
 			SyslogPort:    parseInt("PROBE_SYSLOG_PORT", 514),
 			SFlowPort:     parseInt("PROBE_SFLOW_PORT", 6343),
 			TrapCommunity: os.Getenv("PROBE_SNMP_TRAP_COMMUNITY"),
+
+			// TFTP config fetch
+			TFTPConfigEnabled: parseBool("PROBE_TFTP_CONFIG_ENABLED", false),
+			TFTPListenAddr:    getEnv("PROBE_TFTP_LISTEN_ADDR", "0.0.0.0:69"),
 
 			// Queue & batch limits
 			MaxQueueSize: parseInt("PROBE_MAX_QUEUE_SIZE", 10000),

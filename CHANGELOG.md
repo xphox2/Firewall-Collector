@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.46 - 2026-04-27
+
+### Fixed
+- **cleanOutput config truncation bug**: Fixed prompt detection that incorrectly filtered config lines containing `$` character. Lines like `set alias "FortiGate-100E$"` were being removed. Now only filters actual CLI prompts (lines ending with `FW-XXX #` or `FW-XXX $`).
+
+### Added
+- **TFTP config fetch support**: Added TFTP server for receiving config backups directly from FortiGate. Enable with `PROBE_TFTP_CONFIG_ENABLED=true` and configure listen address with `PROBE_TFTP_LISTEN_ADDR`. FortiGate uses `execute backup config tftp <filename> <server>` to push configs.
+
 ## 1.2.45 - 2026-04-27
 
 ### Fixed
