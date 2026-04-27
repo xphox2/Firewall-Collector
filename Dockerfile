@@ -45,9 +45,7 @@ ENV PROBE_SYSLOG_ENABLED="true"
 ENV PROBE_SFLOW_ENABLED="true"
 ENV PROBE_PING_ENABLED="true"
 
-# TFTP config fetch (set to "true" to enable)
-ENV PROBE_TFTP_CONFIG_ENABLED="true"
-ENV PROBE_TFTP_PORT="69"
+# TFTP config fetch enabled by default (uses PROBE_LISTEN_ADDR + PROBE_TFTP_PORT=69)
 
 # SNMP Trap receiver
 EXPOSE 162/udp
