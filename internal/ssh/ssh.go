@@ -1,6 +1,7 @@
 package ssh
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strings"
@@ -12,6 +13,10 @@ import (
 var (
 	checksumRegex     = regexp.MustCompile(`(?i)is\s+([a-fA-F0-9]{32}|[a-fA-F0-9]{40})`)
 	hexChecksumFinder = regexp.MustCompile(`([a-fA-F0-9]{32}|[a-fA-F0-9]{40})`)
+
+	// Command execution timeout for config retrieval - 5 minutes should be enough for large configs
+	// This prevents hanging on slow IPSec tunnels
+	commandTimeout = 5 * time.Minute
 )
 
 type FortiGateClient struct {
@@ -71,12 +76,28 @@ func (c *FortiGateClient) Execute(command string) (string, error) {
 	}
 	defer session.Close()
 
-	out, err := session.CombinedOutput(command)
-	if err != nil {
-		return "", fmt.Errorf("execute failed: %w", err)
-	}
+	// Execute command with timeout to prevent hanging on slow tunnels
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
 
-	return cleanOutput(string(out)), nil
+	done := make(chan struct{})
+	var output []byte
+	var execErr error
+
+	go func() {
+		output, execErr = session.CombinedOutput(command)
+		close(done)
+	}()
+
+	select {
+	case <-ctx.Done():
+		return "", fmt.Errorf("command timed out after %v: %s", commandTimeout, command)
+	case <-done:
+		if execErr != nil {
+			return "", fmt.Errorf("execute failed: %w", execErr)
+		}
+		return cleanOutput(string(output)), nil
+	}
 }
 
 func cleanOutput(output string) string {
@@ -133,7 +154,7 @@ func (c *FortiGateClient) GetConfigChecksum() (string, error) {
 }
 
 func (c *FortiGateClient) GetConfig() (string, error) {
-	return c.Execute("show")
+	return c.Execute("show full-configuration")
 }
 
 func (c *FortiGateClient) GetProcessTop() (string, error) {

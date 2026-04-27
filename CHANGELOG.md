@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.38 - 2026-04-27
+
+### Fixed
+- **GetConfig uses full-configuration**: Changed `show` to `show full-configuration` to get the COMPLETE config including all default values. Previously `show` only returned modified settings, not the full configuration.
+- **SSH command timeout**: Added 5-minute timeout to `Execute()` to prevent hanging on slow IPSec management tunnels when retrieving large configs
+
 ## 1.2.37 - 2026-04-23
 
 ### Fixed
