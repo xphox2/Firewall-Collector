@@ -123,7 +123,7 @@ func (c *FortiGateClient) GetConfigChecksum() (string, error) {
 }
 
 func (c *FortiGateClient) GetConfig() (string, error) {
-	return c.Execute("show")
+	return c.Execute("show full-configuration")
 }
 
 func (c *FortiGateClient) GetProcessTop() (string, error) {
@@ -131,7 +131,7 @@ func (c *FortiGateClient) GetProcessTop() (string, error) {
 }
 
 func (c *FortiGateClient) GetInterfaceList() (string, error) {
-	return c.Execute("diagnose netlink interface list")
+	return c.Execute("diagnose netlink interface list | no-more")
 }
 
 func (c *FortiGateClient) GetSensorInfo() (string, error) {
