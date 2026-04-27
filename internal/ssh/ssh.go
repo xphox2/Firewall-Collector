@@ -166,7 +166,7 @@ func (c *FortiGateClient) GetConfigChecksum() (string, error) {
 }
 
 func (c *FortiGateClient) GetConfig() (string, error) {
-	return c.Execute("show full-configuration")
+	return c.Execute("show full-configuration | no-more")
 }
 
 func (c *FortiGateClient) GetProcessTop() (string, error) {
@@ -174,7 +174,7 @@ func (c *FortiGateClient) GetProcessTop() (string, error) {
 }
 
 func (c *FortiGateClient) GetInterfaceList() (string, error) {
-	return c.Execute("diagnose netlink interface list")
+	return c.Execute("diagnose netlink interface list | no-more")
 }
 
 func (c *FortiGateClient) GetSensorInfo() (string, error) {
@@ -190,11 +190,11 @@ func (c *FortiGateClient) GetPerformanceStatus() (string, error) {
 }
 
 func (c *FortiGateClient) GetVPNStatus() (string, string, error) {
-	phase1, err := c.Execute("show vpn ipsec phase1-interface")
+	phase1, err := c.Execute("show vpn ipsec phase1-interface | no-more")
 	if err != nil {
 		return "", "", fmt.Errorf("phase1 failed: %w", err)
 	}
-	phase2, err := c.Execute("show vpn ipsec phase2-interface")
+	phase2, err := c.Execute("show vpn ipsec phase2-interface | no-more")
 	if err != nil {
 		return phase1, "", fmt.Errorf("phase2 failed: %w", err)
 	}
@@ -206,5 +206,5 @@ func (c *FortiGateClient) GetHAStatus() (string, error) {
 }
 
 func (c *FortiGateClient) GetSystemSessionList() (string, error) {
-	return c.Execute("get system session list")
+	return c.Execute("get system session list | no-more")
 }

@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.40 - 2026-04-27
+
+### Fixed
+- **SSH pagination over tunnels**: Added `| no-more` to config and large-output commands to prevent `--More--` pagination from blocking output on slow IPSec tunnels. Fixed: GetConfig, GetInterfaceList, GetVPNStatus (phase1/phase2), GetSystemSessionList
+
 ## 1.2.39 - 2026-04-27
 
 ### Fixed
