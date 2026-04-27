@@ -79,7 +79,7 @@ func Load() *Config {
 
 			// TFTP config fetch
 			TFTPConfigEnabled: parseBool("PROBE_TFTP_CONFIG_ENABLED", true),
-			TFTPListenAddr:    getEnv("PROBE_TFTP_LISTEN_ADDR", "0.0.0.0:69"),
+			TFTPListenAddr:    getEnv("PROBE_LISTEN_ADDR", "0.0.0.0") + ":" + getEnv("PROBE_TFTP_PORT", "69"),
 
 			// Queue & batch limits
 			MaxQueueSize: parseInt("PROBE_MAX_QUEUE_SIZE", 10000),

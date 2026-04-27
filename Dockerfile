@@ -47,7 +47,7 @@ ENV PROBE_PING_ENABLED="true"
 
 # TFTP config fetch (set to "true" to enable)
 ENV PROBE_TFTP_CONFIG_ENABLED="true"
-ENV PROBE_TFTP_LISTEN_ADDR="0.0.0.0:69"
+ENV PROBE_TFTP_PORT="69"
 
 # SNMP Trap receiver
 EXPOSE 162/udp
