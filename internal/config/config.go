@@ -78,7 +78,7 @@ func Load() *Config {
 			TrapCommunity: os.Getenv("PROBE_SNMP_TRAP_COMMUNITY"),
 
 			// TFTP config fetch
-			TFTPConfigEnabled: parseBool("PROBE_TFTP_CONFIG_ENABLED", false),
+			TFTPConfigEnabled: parseBool("PROBE_TFTP_CONFIG_ENABLED", true),
 			TFTPListenAddr:    getEnv("PROBE_TFTP_LISTEN_ADDR", "0.0.0.0:69"),
 
 			// Queue & batch limits
