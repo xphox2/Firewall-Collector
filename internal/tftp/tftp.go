@@ -2,6 +2,7 @@ package tftp
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"strings"
 	"sync"
@@ -91,6 +92,7 @@ func (s *Server) serve() {
 		}
 
 		msgType := uint16(buf[0])<<8 | uint16(buf[1])
+		log.Printf("[TFTP DEBUG] Received packet type %d from %s (%d bytes)", msgType, clientAddr.String(), n)
 
 		switch msgType {
 		case 1: // RRQ (Read Request) - client wants to download
@@ -98,6 +100,7 @@ func (s *Server) serve() {
 		case 2: // WRQ (Write Request) - client wants to upload
 			go s.handleWRQ(buf[:n], clientAddr)
 		default:
+			log.Printf("[TFTP DEBUG] Unknown packet type %d from %s", msgType, clientAddr.String())
 			s.sendError(clientAddr, 4, "Not implemented")
 		}
 	}
@@ -126,24 +129,30 @@ func (s *Server) handleRRQ(buf []byte, clientAddr *net.UDPAddr) {
 
 func (s *Server) handleWRQ(buf []byte, clientAddr *net.UDPAddr) {
 	if s.writeHandler == nil {
+		log.Printf("[TFTP DEBUG] WRQ rejected - no write handler set")
 		s.sendError(clientAddr, 4, "Write not supported")
 		return
 	}
 
 	filename := extractFilename(buf)
 	if filename == "" {
+		log.Printf("[TFTP DEBUG] WRQ rejected - empty filename")
 		s.sendError(clientAddr, 1, "Invalid filename")
 		return
 	}
 
+	log.Printf("[TFTP DEBUG] WRQ accepted for file: %s from %s", filename, clientAddr.String())
 	s.sendACK(clientAddr, 0)
+	log.Printf("[TFTP DEBUG] Sent ACK for block 0 to %s", clientAddr.String())
 
 	data, err := s.receiveData(clientAddr)
 	if err != nil {
+		log.Printf("[TFTP DEBUG] WRQ receiveData failed: %v", err)
 		s.sendError(clientAddr, 0, err.Error())
 		return
 	}
 
+	log.Printf("[TFTP DEBUG] WRQ received %d bytes for file: %s", len(data), filename)
 	s.writeHandler(filename, data, clientAddr)
 }
 
