@@ -190,11 +190,11 @@ func (c *FortiGateClient) GetPerformanceStatus() (string, error) {
 }
 
 func (c *FortiGateClient) GetVPNStatus() (string, string, error) {
-	phase1, err := c.Execute("show vpn ipsec phase1-interface | no-more")
+	phase1, err := c.Execute("show vpn ipsec phase1-interface")
 	if err != nil {
 		return "", "", fmt.Errorf("phase1 failed: %w", err)
 	}
-	phase2, err := c.Execute("show vpn ipsec phase2-interface | no-more")
+	phase2, err := c.Execute("show vpn ipsec phase2-interface")
 	if err != nil {
 		return phase1, "", fmt.Errorf("phase2 failed: %w", err)
 	}
@@ -206,5 +206,5 @@ func (c *FortiGateClient) GetHAStatus() (string, error) {
 }
 
 func (c *FortiGateClient) GetSystemSessionList() (string, error) {
-	return c.Execute("get system session list | no-more")
+	return c.Execute("get system session list")
 }
