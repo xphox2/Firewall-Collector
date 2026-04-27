@@ -45,6 +45,10 @@ ENV PROBE_SYSLOG_ENABLED="true"
 ENV PROBE_SFLOW_ENABLED="true"
 ENV PROBE_PING_ENABLED="true"
 
+# TFTP config fetch (set to "true" to enable)
+ENV PROBE_TFTP_CONFIG_ENABLED="true"
+ENV PROBE_TFTP_LISTEN_ADDR="0.0.0.0:69"
+
 # SNMP Trap receiver
 EXPOSE 162/udp
 # Syslog receiver (TCP + UDP)
@@ -52,6 +56,8 @@ EXPOSE 514/tcp
 EXPOSE 514/udp
 # sFlow receiver
 EXPOSE 6343/udp
+# TFTP config backup receiver
+EXPOSE 69/udp
 
 ARG BUILD_VERSION=dev
 LABEL org.opencontainers.image.title="Firewall Collector" \
@@ -59,7 +65,8 @@ LABEL org.opencontainers.image.title="Firewall Collector" \
       org.opencontainers.image.description="Lightweight probe for collecting firewall stats" \
       com.technicallabs.ports.snmp="162/udp - SNMP Trap receiver" \
       com.technicallabs.ports.syslog="514/tcp+udp - Syslog receiver" \
-      com.technicallabs.ports.sflow="6343/udp - sFlow receiver"
+      com.technicallabs.ports.sflow="6343/udp - sFlow receiver" \
+      com.technicallabs.ports.tftp="69/udp - TFTP config backup receiver"
 
 STOPSIGNAL SIGTERM
 

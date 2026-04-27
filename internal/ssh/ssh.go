@@ -233,3 +233,9 @@ func (c *FortiGateClient) BackupConfigTFTP(filename, tftpServerIP string) error 
 	_, err := c.Execute(cmd)
 	return err
 }
+
+func (c *FortiGateClient) BackupConfigSCP(filename, scpServerIP, username, password string) error {
+	cmd := fmt.Sprintf("execute backup config scp %s %s %s %s", filename, scpServerIP, username, password)
+	_, err := c.Execute(cmd)
+	return err
+}
