@@ -43,10 +43,6 @@ services:
       PROBE_SFLOW_ENABLED: "true"
       PROBE_PING_ENABLED: "true"
 
-      # TFTP config fetch (set to "false" to disable)
-      PROBE_TFTP_CONFIG_ENABLED: "true"
-      PROBE_TFTP_PORT: "69"
-
     # Uncomment to mount custom TLS certificates
     # volumes:
     #   - ./certs/ca.pem:/app/certs/ca.pem:ro
