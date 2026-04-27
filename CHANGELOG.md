@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.41 - 2026-04-27
+
+### Fixed
+- **ParseSensorInfo temperature regex**: Fixed regex to properly parse temperature sensor values from FortiGate `execute sensor list` output. Changed from `\.+` to `[^\w]+` to handle various separator characters (dots, spaces, control characters) between sensor name and value.
+
 ## 1.2.40 - 2026-04-27
 
 ### Fixed
