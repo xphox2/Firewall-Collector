@@ -75,7 +75,7 @@ func (c *FortiGateClient) Execute(command string) (string, error) {
 func cleanOutput(output string) string {
 	lines := strings.Split(output, "\n")
 	cleaned := make([]string, 0, len(lines))
-	promptPattern := "$ "
+
 	for _, line := range lines {
 		if strings.Contains(line, "--More--") {
 			continue
@@ -84,15 +84,49 @@ func cleanOutput(output string) string {
 		if trimmed == "" {
 			continue
 		}
-		if strings.HasPrefix(trimmed, "FW-") && strings.Contains(trimmed, promptPattern) {
-			continue
-		}
-		if strings.Contains(trimmed, "$") && !strings.Contains(trimmed, "config:") && !strings.Contains(trimmed, "image:") && !strings.Contains(trimmed, "Run Time:") && !strings.Contains(trimmed, "Temperature") {
+		if isCLIPrompt(trimmed) {
 			continue
 		}
 		cleaned = append(cleaned, trimmed)
 	}
 	return strings.Join(cleaned, "\n")
+}
+
+func isCLIPrompt(line string) bool {
+	if strings.Contains(line, "--More--") {
+		return false
+	}
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return false
+	}
+	if isPromptLine(trimmed, "FW-") || isPromptLine(trimmed, "FGT-") || isPromptLine(trimmed, "FG-") {
+		return true
+	}
+	return false
+}
+
+func isPromptLine(line, prefix string) bool {
+	if !strings.HasPrefix(line, prefix) {
+		return false
+	}
+	idx := strings.Index(line, "#")
+	if idx == -1 {
+		idx = strings.Index(line, "$")
+	}
+	if idx == -1 {
+		return false
+	}
+	after := strings.TrimSpace(line[idx+1:])
+	if after != "" {
+		return false
+	}
+	before := line[:idx]
+	if strings.TrimSpace(before) == "" {
+		return false
+	}
+	return strings.HasSuffix(before, " #") || strings.HasSuffix(before, " $") ||
+		strings.HasSuffix(before, "#") || strings.HasSuffix(before, "$")
 }
 
 func (c *FortiGateClient) GetConfigChecksum() (string, error) {
