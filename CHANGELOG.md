@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.45 - 2026-04-27
+
+### Fixed
+- **ParseSensorInfo regex**: Reverted `\.+` pattern was incorrectly changed to `[^\w]+` which broke sensor parsing on FortiGate. Restored original `\.+` pattern.
+
+## 1.2.44 - 2026-04-27
+
+### Fixed
+- **GetVPNStatus and GetSystemSessionList**: Removed `| no-more` from all commands - does not work on FortiGate, cleanOutput handles pagination.
+
 ## 1.2.43 - 2026-04-27
 
 ### Fixed
