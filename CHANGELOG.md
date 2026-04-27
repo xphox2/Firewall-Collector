@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.47 - 2026-04-27
+
+### Fixed
+- **ssh-test cleanOutput**: Sync ssh-test tool with main ssh.go cleanOutput fix (same prompt filtering logic)
+
+### Added
+- **TFTP tests**: Add unit tests for extractFilename, ACK, shutdown, and write handler
+
 ## 1.2.46 - 2026-04-27
 
 ### Fixed
