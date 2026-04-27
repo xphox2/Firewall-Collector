@@ -14,9 +14,9 @@ var (
 	checksumRegex     = regexp.MustCompile(`(?i)is\s+([a-fA-F0-9]{32}|[a-fA-F0-9]{40})`)
 	hexChecksumFinder = regexp.MustCompile(`([a-fA-F0-9]{32}|[a-fA-F0-9]{40})`)
 
-	// Command execution timeout for config retrieval - 5 minutes should be enough for large configs
-	// This prevents hanging on slow IPSec tunnels
-	commandTimeout = 5 * time.Minute
+	// Command execution timeout for config retrieval - 10 minutes for large configs over slow tunnels
+	// This prevents hanging on slow IPSec management tunnels
+	commandTimeout = 10 * time.Minute
 )
 
 type FortiGateClient struct {
@@ -81,6 +81,7 @@ func (c *FortiGateClient) Execute(command string) (string, error) {
 	defer cancel()
 
 	done := make(chan struct{})
+	stopChan := make(chan struct{})
 	var output []byte
 	var execErr error
 
@@ -89,10 +90,21 @@ func (c *FortiGateClient) Execute(command string) (string, error) {
 		close(done)
 	}()
 
+	go func() {
+		select {
+		case <-ctx.Done():
+			// Timeout fired - close the session to interrupt the command
+			session.Close()
+		case <-stopChan:
+			// Already completed normally
+		}
+	}()
+
 	select {
 	case <-ctx.Done():
 		return "", fmt.Errorf("command timed out after %v: %s", commandTimeout, command)
 	case <-done:
+		close(stopChan)
 		if execErr != nil {
 			return "", fmt.Errorf("execute failed: %w", execErr)
 		}

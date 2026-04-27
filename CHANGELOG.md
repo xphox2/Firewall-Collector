@@ -1,10 +1,11 @@
 # Changelog
 
-## 1.2.38 - 2026-04-27
+## 1.2.39 - 2026-04-27
 
 ### Fixed
 - **GetConfig uses full-configuration**: Changed `show` to `show full-configuration` to get the COMPLETE config including all default values. Previously `show` only returned modified settings, not the full configuration.
-- **SSH command timeout**: Added 5-minute timeout to `Execute()` to prevent hanging on slow IPSec management tunnels when retrieving large configs
+- **SSH command timeout**: Added 10-minute timeout to `Execute()` to prevent hanging on slow IPSec management tunnels when retrieving large configs. Increased from 5 minutes to 10 minutes for large FortiGate configs.
+- **Goroutine leak on timeout**: Fixed goroutine leak when SSH command timed out - now properly closes the session to terminate orphaned goroutines
 
 ## 1.2.37 - 2026-04-23
 
