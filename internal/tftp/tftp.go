@@ -68,7 +68,12 @@ func (s *Server) ListenAndServe() error {
 }
 
 func (s *Server) serve() {
-	defer s.wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[TFTP DEBUG] PANIC in serve loop: %v", r)
+		}
+		s.wg.Done()
+	}()
 
 	buf := make([]byte, 8192)
 	for {
@@ -128,6 +133,12 @@ func (s *Server) handleRRQ(buf []byte, clientAddr *net.UDPAddr) {
 }
 
 func (s *Server) handleWRQ(buf []byte, clientAddr *net.UDPAddr) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[TFTP DEBUG] PANIC in handleWRQ: %v", r)
+		}
+	}()
+
 	if s.writeHandler == nil {
 		log.Printf("[TFTP DEBUG] WRQ rejected - no write handler set")
 		s.sendError(clientAddr, 4, "Write not supported")
@@ -153,7 +164,17 @@ func (s *Server) handleWRQ(buf []byte, clientAddr *net.UDPAddr) {
 	}
 
 	log.Printf("[TFTP DEBUG] WRQ received %d bytes for file: %s", len(data), filename)
-	s.writeHandler(filename, data, clientAddr)
+
+	// Call writeHandler in a separate goroutine to prevent blocking
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[TFTP DEBUG] PANIC in writeHandler: %v", r)
+			}
+		}()
+		s.writeHandler(filename, data, clientAddr)
+		log.Printf("[TFTP DEBUG] writeHandler completed for file: %s", filename)
+	}()
 }
 
 func extractFilename(buf []byte) string {
