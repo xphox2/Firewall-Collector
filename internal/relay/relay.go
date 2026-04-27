@@ -1151,10 +1151,16 @@ func (c *Client) SendConfigRevision(rev *ConfigRevision) error {
 		return fmt.Errorf("failed to send config revision: %w", err)
 	}
 	defer resp.Body.Close()
+
+	// Read response body for logging
+	bodyBytes, _ := io.ReadAll(resp.Body)
+
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		log.Printf("[RELAY] SendConfigRevision success for device %d: %s", rev.DeviceID, string(bodyBytes))
 		return nil
 	}
-	return fmt.Errorf("send config revision returned status %d", resp.StatusCode)
+	log.Printf("[RELAY] SendConfigRevision failed for device %d - status %d: %s", rev.DeviceID, resp.StatusCode, string(bodyBytes))
+	return fmt.Errorf("send config revision returned status %d: %s", resp.StatusCode, string(bodyBytes))
 }
 
 func (c *Client) SendProcessSnapshot(snap *ProcessSnapshot) error {
