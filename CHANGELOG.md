@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.68 - 2026-04-28
+
+### Changed
+- **Clearer TFTP log wording**: Replaced `Sending 'execute backup config tftp <file> <ip>' to <firewall>` with `SSH to <firewall>: instructing firewall to upload config '<file>' to collector at <ip>`. The old wording read as if the config was being sent *to* the firewall, when in fact we're sending an SSH command to the firewall that tells it to upload its config *to the collector*. Followup line now says `SSH command accepted by <firewall> — waiting for firewall to TFTP-upload config to collector`.
+
 ## 1.2.67 - 2026-04-28
 
 ### Added

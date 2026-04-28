@@ -23,7 +23,7 @@ import (
 	"firewall-collector/internal/tftp"
 )
 
-const version = "1.2.67"
+const version = "1.2.68"
 
 type Collector struct {
 	cfg            *config.ProbeConfig
@@ -693,7 +693,8 @@ func (c *Collector) sendConfigRevisionViaTFTP(dev relay.DeviceInfo, checksum str
 	}
 	defer sshClient.Close()
 
-	log.Printf("[TFTP] Sending 'execute backup config tftp %s %s' to %s", filename, tftpTarget, dev.Name)
+	log.Printf("[TFTP] SSH to %s: instructing firewall to upload config '%s' to collector at %s",
+		dev.Name, filename, tftpTarget)
 	output, err := sshClient.BackupConfigTFTP(filename, tftpTarget)
 	if output != "" {
 		log.Printf("[TFTP] FortiGate response from %s:\n%s", dev.Name, strings.TrimSpace(output))
@@ -701,7 +702,7 @@ func (c *Collector) sendConfigRevisionViaTFTP(dev relay.DeviceInfo, checksum str
 	if err != nil {
 		return fmt.Errorf("TFTP backup command failed: %w", err)
 	}
-	log.Printf("[TFTP] TFTP backup command sent successfully to %s", dev.Name)
+	log.Printf("[TFTP] SSH command accepted by %s — waiting for firewall to TFTP-upload config to collector", dev.Name)
 
 	return nil
 }
