@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.2.72 - 2026-04-28
+
+### Added
+- **Syslog-triggered config backups (FortiGate)**: collector now parses incoming syslog and recognises FortiOS event-log IDs `0100044546` (attribute changed) and `0100044547` (object-attribute changed) as config-change signals. When one arrives for a known device, a backup is queued with a 60-second debounce keyed on `(deviceID, cfgtid)` so multi-line commits collapse into a single backup attempt. Logged as `[Syslog→Backup] queued backup for <name> in 1m0s (logid=… cfgtid=… cfgpath=… action=… user=…)`.
+- **`internal/syslog/fortigate.go`**: `FortiEvent` type + `ParseFortiEvent(*relay.SyslogMessage) *FortiEvent` extracting `logid`, `type`, `subtype`, `level`, `vd`, `user`, `ui`, `action`, `cfgtid`, `cfgpath`, `cfgobj`, `cfgattr`, `devid`, `devname`, `msg`. Hand-rolled key=value parser tolerates quoted strings, empty values, missing trailing space. Full unit tests.
+- **TFTP filename now encodes provenance**: `fgt_<id>_<trigger>_config` (e.g. `fgt_2_syslog_config`). The TFTP write handler parses both deviceID and trigger from the filename so revisions arrive at the server already labeled `syslog`/`poll`/`manual`. Legacy `fgt_<id>_config` filenames still parse and default to `poll` for compatibility with in-flight uploads from older collectors.
+- **Backup quality detection**: write handler scans uploaded bytes for FortiOS 7.2.1+ password-masking markers (`config_masked_password`, `ENC <removed>`) and tags the revision `BackupQuality="masked"`. The server surfaces this as a UI badge so operators see "this backup is not restorable — secrets must be re-entered."
+- **`relay.ConfigRevision` DTO**: new optional `trigger_source` and `backup_quality` fields. Server-side handler populates `NormalizedChecksum` and dedup behavior independently; these fields are pure provenance/quality metadata.
+
+### Changed
+- **`fetchConfigViaTFTP` signature**: now takes `(dev, checksum, triggerSource string)`. Existing SSH-poll call site passes `"poll"`; new syslog trigger passes `"syslog"`. Empty triggerSource defaults to `"poll"`.
+- **Default `SSHPollInterval`** confirmed at **15 minutes** when not set per-device. This is the floor cadence in the new hybrid trigger model: syslog gives near-instant detection where forwarding is configured, the periodic poll backstops everything else.
+
+### Why
+FortiOS regenerates the encryption IV on every `set <field> ENC <blob>` line on every config emission, so periodic polling alone produced false-positive `CONFIG_CHANGE` alerts on every backup of every FortiGate. The server-side fix (v0.10.187) hashes a vendor-normalized copy and only alerts on real changes; this collector update reduces *load* on the firewall by polling less aggressively (15 min instead of 1 min) and detecting *real* changes faster (within seconds of the commit) via syslog. Both halves are required.
+
 ## 1.2.71 - 2026-04-28
 
 ### Diagnosed

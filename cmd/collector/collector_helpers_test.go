@@ -70,3 +70,50 @@ func TestChecksumFromData_MatchesMD5(t *testing.T) {
 		t.Errorf("checksumFromData = %q, want %q", got, want)
 	}
 }
+
+func TestParseUploadFilename(t *testing.T) {
+	tests := []struct {
+		filename    string
+		wantID      uint
+		wantTrigger string
+	}{
+		// New 4-part format with embedded trigger
+		{"fgt_42_syslog_config", 42, "syslog"},
+		{"fgt_42_poll_config", 42, "poll"},
+		{"fgt_42_manual_config", 42, "manual"},
+		// Legacy 3-part format defaults to "poll"
+		{"fgt_42_config", 42, "poll"},
+		// Unknown trigger token: fall back to "poll" rather than trust arbitrary input
+		{"fgt_42_garbage_config", 42, "poll"},
+		// Invalid: empty / no underscores / non-numeric
+		{"nounderscores", 0, "poll"},
+		{"fgt_notanumber_syslog_config", 0, "poll"},
+		{"", 0, "poll"},
+	}
+	for _, tt := range tests {
+		gotID, gotTrigger := parseUploadFilename(tt.filename)
+		if gotID != tt.wantID || gotTrigger != tt.wantTrigger {
+			t.Errorf("parseUploadFilename(%q) = (%d, %q), want (%d, %q)",
+				tt.filename, gotID, gotTrigger, tt.wantID, tt.wantTrigger)
+		}
+	}
+}
+
+func TestDetectBackupQuality(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want string
+	}{
+		{"normal full backup", "config system global\n    set hostname \"FW\"\nend\n", "full"},
+		{"masked via config_masked_password", "set foo bar\nconfig_masked_password\nset baz qux\n", "masked"},
+		{"masked via ENC <removed>", "set password ENC <removed>\n", "masked"},
+		{"empty", "", "full"},
+	}
+	for _, tt := range tests {
+		got := detectBackupQuality([]byte(tt.data))
+		if got != tt.want {
+			t.Errorf("detectBackupQuality(%s) = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}

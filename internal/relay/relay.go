@@ -1091,12 +1091,14 @@ func (c *Client) Stop() {
 }
 
 type ConfigRevision struct {
-	ID         uint      `json:"id"`
-	DeviceID   uint      `json:"device_id"`
-	Timestamp  time.Time `json:"timestamp"`
-	Checksum   string    `json:"checksum"`
-	ConfigText string    `json:"config_text"`
-	Length     int       `json:"length"`
+	ID            uint      `json:"id"`
+	DeviceID      uint      `json:"device_id"`
+	Timestamp     time.Time `json:"timestamp"`
+	Checksum      string    `json:"checksum"`
+	ConfigText    string    `json:"config_text"`
+	Length        int       `json:"length"`
+	TriggerSource string    `json:"trigger_source,omitempty"` // syslog | poll | manual
+	BackupQuality string    `json:"backup_quality,omitempty"` // full | masked | unknown
 }
 
 type ProcessSnapshot struct {

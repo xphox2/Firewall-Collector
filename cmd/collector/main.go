@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/md5"
 	"fmt"
 	"log"
@@ -23,7 +24,7 @@ import (
 	"firewall-collector/internal/tftp"
 )
 
-const version = "1.2.71"
+const version = "1.2.72"
 
 type Collector struct {
 	cfg            *config.ProbeConfig
@@ -38,6 +39,12 @@ type Collector struct {
 	tftpServerIP   string // admin-set on the server, IP firewalls reach the collector at
 	tftpServerIPMu sync.RWMutex
 	devices        []relay.DeviceInfo
+
+	// Config-backup debouncer for syslog-triggered backups. Key = "<deviceID>:<cfgtid>".
+	// One CLI commit emits N log lines sharing a cfgtid; we collapse them to one
+	// backup attempt. Per plan: 60s debounce.
+	cfgBackupTimers map[string]*time.Timer
+	cfgBackupMu     sync.Mutex
 	deviceMu       sync.RWMutex
 	ifaceIPMap     map[string]uint // interface IP → device ID cache
 	ifaceIPMu      sync.RWMutex
@@ -194,8 +201,7 @@ func main() {
 	if probeCfg.SyslogEnabled {
 		syslogTCP := syslog.NewSyslogReceiver(probeCfg.ListenAddr, probeCfg.SyslogPort)
 		if err := syslogTCP.Start(func(msg *relay.SyslogMessage) {
-			msg.ProbeID = probeID
-			relayClient.SendSyslogMessage(msg)
+			c.handleSyslogMessage(msg, probeID)
 		}); err != nil {
 			log.Printf("  -> Syslog TCP failed to start: %v", err)
 		} else {
@@ -204,8 +210,7 @@ func main() {
 
 		syslogUDP := syslog.NewUDPSyslogReceiver(probeCfg.ListenAddr, probeCfg.SyslogPort)
 		if err := syslogUDP.Start(func(msg *relay.SyslogMessage) {
-			msg.ProbeID = probeID
-			relayClient.SendSyslogMessage(msg)
+			c.handleSyslogMessage(msg, probeID)
 		}); err != nil {
 			log.Printf("  -> Syslog UDP failed to start: %v", err)
 		} else {
@@ -537,7 +542,7 @@ func (c *Collector) sshPollDevice(dev relay.DeviceInfo) {
 
 func (c *Collector) checkAndSendConfigRevision(dev relay.DeviceInfo, checksum string, client *ssh.FortiGateClient) {
 	if c.cfg.TFTPConfigEnabled && c.tftpServer != nil {
-		c.fetchConfigViaTFTP(dev, checksum)
+		c.fetchConfigViaTFTP(dev, checksum, "poll")
 		return
 	}
 
@@ -559,15 +564,53 @@ func (c *Collector) checkAndSendConfigRevision(dev relay.DeviceInfo, checksum st
 	}
 }
 
-func devIDFromFilename(filename string) uint {
+// parseUploadFilename extracts the deviceID and the trigger source the
+// collector encoded into the TFTP filename. Two formats are supported:
+//
+//	"fgt_<id>_<trigger>_config" — current format, encodes provenance
+//	"fgt_<id>_config"           — legacy (older collectors / manual uploads)
+//
+// Returns (deviceID, triggerSource). triggerSource defaults to "poll" for
+// the legacy path so older inflight backups continue to land cleanly.
+func parseUploadFilename(filename string) (uint, string) {
 	parts := strings.Split(filename, "_")
-	if len(parts) >= 2 {
-		id, err := strconv.ParseUint(parts[1], 10, 32)
-		if err == nil {
-			return uint(id)
+	if len(parts) < 2 {
+		return 0, "poll"
+	}
+	id, err := strconv.ParseUint(parts[1], 10, 32)
+	if err != nil {
+		return 0, "poll"
+	}
+	trigger := "poll"
+	// "fgt_<id>_<trigger>_config" → 4 parts; the trigger is parts[2].
+	// "fgt_<id>_config"           → 3 parts; no embedded trigger.
+	if len(parts) >= 4 {
+		switch parts[2] {
+		case "syslog", "poll", "manual":
+			trigger = parts[2]
 		}
 	}
-	return 0
+	return uint(id), trigger
+}
+
+// devIDFromFilename keeps the legacy two-return-value contract for any caller
+// that doesn't care about the trigger source.
+func devIDFromFilename(filename string) uint {
+	id, _ := parseUploadFilename(filename)
+	return id
+}
+
+// detectBackupQuality scans the uploaded config bytes for FortiOS 7.2.1+
+// password-masking markers. A masked backup is *not* fully restorable —
+// secrets must be re-entered after restore — and we surface that on the
+// revision row so operators see it in the UI.
+func detectBackupQuality(data []byte) string {
+	// Same markers as configdiff.vendor_fortigate.go (kept in sync intentionally).
+	if bytes.Contains(data, []byte("config_masked_password")) ||
+		bytes.Contains(data, []byte("ENC <removed>")) {
+		return "masked"
+	}
+	return "full"
 }
 
 func (c *Collector) startTFTPServer() {
@@ -582,29 +625,34 @@ func (c *Collector) startTFTPServer() {
 	tftpServer.SetWriteHandler(func(filename string, data []byte, clientAddr net.Addr) error {
 		log.Printf("[TFTP] Received WRQ from %s for file: %s (%d bytes)", clientAddr.String(), filename, len(data))
 
-		deviceID := devIDFromFilename(filename)
+		deviceID, triggerSource := parseUploadFilename(filename)
 		if deviceID == 0 {
 			log.Printf("[TFTP] Invalid filename %s - could not parse device ID", filename)
 			return nil
 		}
-		log.Printf("[TFTP] Parsed device ID: %d", deviceID)
+		log.Printf("[TFTP] Parsed device ID: %d, trigger: %s", deviceID, triggerSource)
 
 		checksum := checksumFromData(data)
-		log.Printf("[TFTP] Config checksum: %s", checksum)
+		quality := detectBackupQuality(data)
+		log.Printf("[TFTP] Config checksum: %s, quality: %s", checksum, quality)
 
 		rev := relay.ConfigRevision{
-			DeviceID:   deviceID,
-			Timestamp:  time.Now(),
-			Checksum:   checksum,
-			ConfigText: string(data),
-			Length:     len(data),
+			DeviceID:      deviceID,
+			Timestamp:     time.Now(),
+			Checksum:      checksum,
+			ConfigText:    string(data),
+			Length:        len(data),
+			TriggerSource: triggerSource,
+			BackupQuality: quality,
 		}
 
-		log.Printf("[TFTP] Sending config revision to server for device %d...", deviceID)
+		log.Printf("[TFTP] Sending config revision to server for device %d (trigger=%s quality=%s)...",
+			deviceID, triggerSource, quality)
 		if err := c.relayClient.SendConfigRevision(&rev); err != nil {
 			log.Printf("[TFTP] ERROR - Failed to send config revision for device %d: %v", deviceID, err)
 		} else {
-			log.Printf("[TFTP] SUCCESS - Received and sent config for device %d (len=%d, checksum=%s)", deviceID, len(data), checksum)
+			log.Printf("[TFTP] SUCCESS - Received and sent config for device %d (len=%d, checksum=%s, trigger=%s, quality=%s)",
+				deviceID, len(data), checksum, triggerSource, quality)
 		}
 		return nil
 	})
@@ -659,10 +707,13 @@ func (c *Collector) getTFTPServerIP() string {
 	return c.tftpServerIP
 }
 
-func (c *Collector) fetchConfigViaTFTP(dev relay.DeviceInfo, checksum string) {
+func (c *Collector) fetchConfigViaTFTP(dev relay.DeviceInfo, checksum string, triggerSource string) {
 	if c.tftpServer == nil {
 		log.Printf("[TFTP] TFTP server not available for device %d (%s)", dev.ID, dev.Name)
 		return
+	}
+	if triggerSource == "" {
+		triggerSource = "poll"
 	}
 
 	var tftpTarget string
@@ -673,9 +724,11 @@ func (c *Collector) fetchConfigViaTFTP(dev relay.DeviceInfo, checksum string) {
 		tftpTarget = c.determineOutboundIP(dev.IPAddress)
 		log.Printf("[TFTP] No admin-configured server IP — auto-detected %s for device %s", tftpTarget, dev.Name)
 	}
-	filename := fmt.Sprintf("fgt_%d_config", dev.ID)
-	log.Printf("[TFTP] Initiating TFTP config backup for device %d (%s) - filename: %s, target: %s",
-		dev.ID, dev.Name, filename, tftpTarget)
+	// Encode trigger in the filename so the TFTP write handler (registered once
+	// at server-start time) can recover provenance per upload without shared state.
+	filename := fmt.Sprintf("fgt_%d_%s_config", dev.ID, triggerSource)
+	log.Printf("[TFTP] Initiating TFTP config backup for device %d (%s) - filename: %s, target: %s, trigger: %s",
+		dev.ID, dev.Name, filename, tftpTarget, triggerSource)
 
 	err := c.sendConfigRevisionViaTFTP(dev, checksum, filename, tftpTarget)
 	if err != nil {
@@ -1118,6 +1171,91 @@ func (c *Collector) deviceRefreshLoop() {
 			}
 		}
 	}
+}
+
+// findDeviceByID returns the full DeviceInfo from the known device list. Used
+// by the syslog trigger consumer (which has the deviceID from resolveDeviceByIP
+// but needs the full struct to call fetchConfigViaTFTP).
+func (c *Collector) findDeviceByID(id uint) (relay.DeviceInfo, bool) {
+	c.deviceMu.RLock()
+	defer c.deviceMu.RUnlock()
+	for _, d := range c.devices {
+		if d.ID == id {
+			return d, true
+		}
+	}
+	return relay.DeviceInfo{}, false
+}
+
+// handleSyslogMessage is the unified entry point for both TCP and UDP syslog
+// receivers. It always sends the message via relay (existing behavior) AND, if
+// the message is a FortiGate config-change event, schedules a debounced backup
+// for the source device.
+func (c *Collector) handleSyslogMessage(msg *relay.SyslogMessage, probeID uint) {
+	if msg == nil {
+		return
+	}
+	msg.ProbeID = probeID
+	c.relayClient.SendSyslogMessage(msg)
+
+	ev := syslog.ParseFortiEvent(msg)
+	if !ev.IsConfigChange() {
+		return
+	}
+
+	deviceID := msg.DeviceID
+	if deviceID == 0 && msg.SourceIP != "" {
+		deviceID = c.resolveDeviceByIP(msg.SourceIP)
+	}
+	if deviceID == 0 {
+		log.Printf("[Syslog→Backup] config-change event from %s but no matching device (logid=%s cfgtid=%s cfgpath=%s)",
+			msg.SourceIP, ev.Logid, ev.Cfgtid, ev.Cfgpath)
+		return
+	}
+
+	dev, ok := c.findDeviceByID(deviceID)
+	if !ok {
+		log.Printf("[Syslog→Backup] device id=%d not in current device list", deviceID)
+		return
+	}
+
+	c.scheduleConfigBackup(dev, ev)
+}
+
+// scheduleConfigBackup runs `fetchConfigViaTFTP` on the given device after a
+// 60-second debounce window, keyed on (deviceID, cfgtid). One CLI commit emits
+// many log lines sharing a cfgtid — debouncing collapses them into a single
+// backup attempt. If cfgtid is empty (some events don't carry one), the key
+// degrades to "<deviceID>:_" so we still get one backup per device per minute.
+func (c *Collector) scheduleConfigBackup(dev relay.DeviceInfo, ev *syslog.FortiEvent) {
+	const debounce = 60 * time.Second
+
+	tid := ev.Cfgtid
+	if tid == "" {
+		tid = "_"
+	}
+	key := fmt.Sprintf("%d:%s", dev.ID, tid)
+
+	c.cfgBackupMu.Lock()
+	if c.cfgBackupTimers == nil {
+		c.cfgBackupTimers = map[string]*time.Timer{}
+	}
+	if existing, ok := c.cfgBackupTimers[key]; ok {
+		existing.Stop()
+	}
+	c.cfgBackupTimers[key] = time.AfterFunc(debounce, func() {
+		c.cfgBackupMu.Lock()
+		delete(c.cfgBackupTimers, key)
+		c.cfgBackupMu.Unlock()
+
+		log.Printf("[Syslog→Backup] firing TFTP backup for %s (logid=%s cfgtid=%s cfgpath=%s)",
+			dev.Name, ev.Logid, ev.Cfgtid, ev.Cfgpath)
+		c.fetchConfigViaTFTP(dev, "", "syslog")
+	})
+	c.cfgBackupMu.Unlock()
+
+	log.Printf("[Syslog→Backup] queued backup for %s in %v (logid=%s cfgtid=%s cfgpath=%s action=%s user=%s)",
+		dev.Name, debounce, ev.Logid, ev.Cfgtid, ev.Cfgpath, ev.Action, ev.User)
 }
 
 // resolveDeviceByIP maps an sFlow agent IP to a device ID from the known device list
