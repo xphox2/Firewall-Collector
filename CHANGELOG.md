@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.70 - 2026-04-28
+
+### Added
+- **`cmd/diag-backup`: end-to-end TFTP backup diagnostic**. Single-shot tool that exercises the full path against a real firewall and prints a definitive verdict on where it succeeds or fails — no more iterating on production logs.
+  - Binds a TFTP listener (default port 6969 so it doesn't need root or conflict with a running collector)
+  - SSH connects to the device
+  - Sends `execute backup config tftp <file> <target>` (PTY by default; `-use-pty=false` for comparison)
+  - Logs raw FortiGate output with byte count
+  - Watches the listener for the WRQ + transfer
+  - Prints a labelled verdict: full success / SSH closed silently / firewall couldn't reach TFTP server / firewall says OK but no WRQ / etc., with concrete next steps for each failure mode
+  - Build with: `go build -o diag-backup ./cmd/diag-backup/`
+  - Example: `./diag-backup -device-host=192.168.5.1 -device-user=admin -device-password='...' -listen-port=6969 -tftp-target=192.168.5.25`
+
 ## 1.2.69 - 2026-04-28
 
 ### Fixed
