@@ -65,6 +65,39 @@ func (c *FortiGateClient) Close() {
 }
 
 func (c *FortiGateClient) Execute(command string) (string, error) {
+	return c.executeWith(command, false, commandTimeout)
+}
+
+// ExecuteRaw runs a command and returns the unfiltered combined output. Useful
+// when a caller needs to see exactly what FortiOS printed (e.g. TFTP backup
+// diagnostics) without cleanOutput's prompt/empty-line stripping.
+func (c *FortiGateClient) ExecuteRaw(command string, timeout time.Duration) (string, error) {
+	if timeout == 0 {
+		timeout = commandTimeout
+	}
+	return c.executeRaw(command, false, timeout)
+}
+
+// ExecuteWithPty runs a command in a session that has a PTY allocated. Some
+// FortiOS builds drop non-PTY channels before completing side-effecting
+// `execute` commands (notably TFTP backup), so this variant is used for those.
+// Returns raw output without cleanOutput stripping.
+func (c *FortiGateClient) ExecuteWithPty(command string, timeout time.Duration) (string, error) {
+	if timeout == 0 {
+		timeout = commandTimeout
+	}
+	return c.executeRaw(command, true, timeout)
+}
+
+func (c *FortiGateClient) executeWith(command string, requestPty bool, timeout time.Duration) (string, error) {
+	raw, err := c.executeRaw(command, requestPty, timeout)
+	if err != nil {
+		return "", err
+	}
+	return cleanOutput(raw), nil
+}
+
+func (c *FortiGateClient) executeRaw(command string, requestPty bool, timeout time.Duration) (string, error) {
 	if c.client == nil {
 		return "", fmt.Errorf("not connected")
 	}
@@ -75,8 +108,18 @@ func (c *FortiGateClient) Execute(command string) (string, error) {
 	}
 	defer session.Close()
 
-	// Execute command with timeout to prevent hanging on slow tunnels
-	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	if requestPty {
+		modes := ssh.TerminalModes{
+			ssh.ECHO:          0,
+			ssh.TTY_OP_ISPEED: 14400,
+			ssh.TTY_OP_OSPEED: 14400,
+		}
+		if err := session.RequestPty("xterm", 80, 200, modes); err != nil {
+			return "", fmt.Errorf("request pty failed: %w", err)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	done := make(chan struct{})
@@ -92,22 +135,20 @@ func (c *FortiGateClient) Execute(command string) (string, error) {
 	go func() {
 		select {
 		case <-ctx.Done():
-			// Timeout fired - close the session to interrupt the command
 			session.Close()
 		case <-stopChan:
-			// Already completed normally
 		}
 	}()
 
 	select {
 	case <-ctx.Done():
-		return "", fmt.Errorf("command timed out after %v: %s", commandTimeout, command)
+		return "", fmt.Errorf("command timed out after %v: %s", timeout, command)
 	case <-done:
 		close(stopChan)
 		if execErr != nil {
-			return "", fmt.Errorf("execute failed: %w", execErr)
+			return string(output), fmt.Errorf("execute failed: %w", execErr)
 		}
-		return cleanOutput(string(output)), nil
+		return string(output), nil
 	}
 }
 
@@ -230,7 +271,10 @@ func (c *FortiGateClient) GetSystemSessionList() (string, error) {
 
 func (c *FortiGateClient) BackupConfigTFTP(filename, tftpServerIP string) (string, error) {
 	cmd := fmt.Sprintf("execute backup config tftp %s %s", filename, tftpServerIP)
-	return c.Execute(cmd)
+	// Request a PTY: some FortiOS builds drop non-PTY channels before completing
+	// the TFTP transfer side effect. 90s is enough for the firewall to either
+	// finish or print a definitive failure (default TFTP retry budget is ~25s).
+	return c.ExecuteWithPty(cmd, 90*time.Second)
 }
 
 func (c *FortiGateClient) BackupConfigSCP(filename, scpServerIP, username, password string) error {

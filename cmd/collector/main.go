@@ -23,7 +23,7 @@ import (
 	"firewall-collector/internal/tftp"
 )
 
-const version = "1.2.68"
+const version = "1.2.69"
 
 type Collector struct {
 	cfg            *config.ProbeConfig
@@ -696,9 +696,11 @@ func (c *Collector) sendConfigRevisionViaTFTP(dev relay.DeviceInfo, checksum str
 	log.Printf("[TFTP] SSH to %s: instructing firewall to upload config '%s' to collector at %s",
 		dev.Name, filename, tftpTarget)
 	output, err := sshClient.BackupConfigTFTP(filename, tftpTarget)
-	if output != "" {
-		log.Printf("[TFTP] FortiGate response from %s:\n%s", dev.Name, strings.TrimSpace(output))
-	}
+	// Log raw output unconditionally so we can see exactly what the firewall said,
+	// even if cleanOutput would have stripped it. Bytes count helps diagnose silent
+	// channel closes.
+	log.Printf("[TFTP] FortiGate raw response from %s (%d bytes):\n---\n%s\n---",
+		dev.Name, len(output), output)
 	if err != nil {
 		return fmt.Errorf("TFTP backup command failed: %w", err)
 	}

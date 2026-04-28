@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.69 - 2026-04-28
+
+### Fixed
+- **TFTP backup SSH session was probably exiting before the upload ran**: Logs showed `[TFTP] FortiGate response from <fw>:` followed by no content, with the whole SSH round-trip completing in ~1 second — far too fast for FortiOS to actually have run the upload. Some FortiOS builds drop non-PTY SSH channels before completing side-effecting `execute` commands. `BackupConfigTFTP` now allocates a PTY (`xterm`, 80x200) before sending the command, with a 90-second timeout (long enough for the firewall to either finish or print a definitive failure, short enough that diagnostics aren't buried for 10 minutes).
+
+### Added
+- **Raw FortiGate output is now always logged for TFTP backup** (`[TFTP] FortiGate raw response from <fw> (N bytes):`) — including byte count. Previously only the post-`cleanOutput` text was logged, and only when non-empty, which hid the case where FortiGate's actual response got stripped or the channel closed silently.
+- New SSH client methods: `ExecuteRaw(cmd, timeout)` and `ExecuteWithPty(cmd, timeout)` for callers that need unfiltered output and/or PTY allocation. The existing `Execute` is unchanged behaviorally (no PTY, cleanOutput applied).
+
 ## 1.2.68 - 2026-04-28
 
 ### Changed
