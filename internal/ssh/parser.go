@@ -233,7 +233,7 @@ var (
 	sensorNameRegex   = regexp.MustCompile(`(?i)^\s*Sensor\s+\d+:\s+(.+)$`)
 	sensorValueRegex  = regexp.MustCompile(`(?i)^\s*Value:\s*([\d.]+)\s*(\w+)`)
 	sensorStatusRegex = regexp.MustCompile(`(?i)^\s*Status:\s*(\w+)`)
-	sensorLineRegex   = regexp.MustCompile(`(?i)^\s*(\d+)\s+(.+?)\s+\.+\s+([\d.]+)\s*(\w+)\s*(.*)$`)
+	sensorLineRegex   = regexp.MustCompile(`(?i)^\s*(\d+)\s+(.+?)\s+\.+\s+([\d.]+)\s*(\S+)\s*(.*)$`)
 )
 
 func ParseSensorInfo(output string) []SensorDetailInfo {

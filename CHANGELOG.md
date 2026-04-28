@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.65 - 2026-04-27
+
+### Added
+- **SSH parser tests** (`internal/ssh/parser_test.go`): 26 unit tests covering all 7 parser functions — `ParseSensorInfo` (single-line dot-separator + multi-line block formats, alarm status, unit variants), `ParsePerformanceStatus` (CPU fields, memory ×1024 conversion, network kbps, uptime days→seconds), `ParseVPNPhase1/2` (single/multiple tunnels, last-entry flush), `ParseProcessTop` (both trigger paths, header filtering), `ParseInterfaceList`, `ParseLicenseStatus`.
+- **SSH regression tests** (`internal/ssh/regression_test.go`): 7 tests mapping directly to past changelog bugs — sensor dot-separator regex, `%` unit parsing, `$` in config values, last-entry flush for VPN/interfaces, memory ×1024.
+- **Relay tests** (`internal/relay/relay_test.go`): 14 tests covering queue overflow drop-oldest for all 4 queue types, concurrent write safety, `splitIntoChunks` edge cases, `tryReregister` 60-second rate-limit and 10-minute cooldown guards, `requeueTraps` prepend-to-front and capacity enforcement.
+- **TFTP concurrent transfer regression test** (`internal/tftp/regression_test.go`): runs 3 simultaneous WRQ uploads to verify the rewritten server (fresh ephemeral TID per transfer) has no socket race condition.
+- **Collector helper tests** (`cmd/collector/collector_helpers_test.go`): 5 tests for `devIDFromFilename` (valid/invalid) and `checksumFromData` (format, determinism, MD5 correctness).
+
+### Fixed
+- **`sensorLineRegex` unit group** changed from `\w+` to `\S+` so sensor readings reported with `%` units (storage usage) are now correctly parsed. Previously the digit before `%` leaked into the value and the `%` was silently lost.
+
 ## 1.2.64 - 2026-04-27
 
 ### Fixed
