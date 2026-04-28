@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.73 - 2026-04-28
+
+### Refactored
+- **`scheduleConfigBackup` extracted to `scheduleConfigBackupWith(dev, ev, debounce, action)`** for testability. The production path is unchanged — the public `scheduleConfigBackup` now wraps it with the 60-second `configBackupDebounce` constant and the real TFTP fetch. No behavior change.
+
+### Tests
+- **Debouncer regression tests** (`debounce_test.go`, 5 cases):
+  * Multiple events sharing one `cfgtid` collapse to a single fire after the debounce window.
+  * A later event with the same `(deviceID, cfgtid)` resets the timer — the fire happens debounce-time after the *last* event, not the first.
+  * Different `cfgtid` values for the same device fire separately.
+  * Same `cfgtid` value across different devices fires separately.
+  * Empty `cfgtid` (rare event-log shape) still debounces correctly via the `<deviceID>:_` key fallback.
+
 ## 1.2.72 - 2026-04-28
 
 ### Added

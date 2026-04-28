@@ -24,7 +24,7 @@ import (
 	"firewall-collector/internal/tftp"
 )
 
-const version = "1.2.72"
+const version = "1.2.73"
 
 type Collector struct {
 	cfg            *config.ProbeConfig
@@ -1222,14 +1222,28 @@ func (c *Collector) handleSyslogMessage(msg *relay.SyslogMessage, probeID uint) 
 	c.scheduleConfigBackup(dev, ev)
 }
 
-// scheduleConfigBackup runs `fetchConfigViaTFTP` on the given device after a
-// 60-second debounce window, keyed on (deviceID, cfgtid). One CLI commit emits
-// many log lines sharing a cfgtid — debouncing collapses them into a single
-// backup attempt. If cfgtid is empty (some events don't carry one), the key
-// degrades to "<deviceID>:_" so we still get one backup per device per minute.
-func (c *Collector) scheduleConfigBackup(dev relay.DeviceInfo, ev *syslog.FortiEvent) {
-	const debounce = 60 * time.Second
+// configBackupDebounce is the production debounce window. Test code overrides
+// via scheduleConfigBackupWith. Picked so a single CLI commit's flurry of
+// per-attribute log lines (typically all within ~1s) collapses to one backup.
+const configBackupDebounce = 60 * time.Second
 
+// scheduleConfigBackup runs `fetchConfigViaTFTP` on the given device after the
+// configBackupDebounce window, keyed on (deviceID, cfgtid). Production entry
+// point — wraps scheduleConfigBackupWith to inject the actual TFTP fetch.
+func (c *Collector) scheduleConfigBackup(dev relay.DeviceInfo, ev *syslog.FortiEvent) {
+	c.scheduleConfigBackupWith(dev, ev, configBackupDebounce, func() {
+		log.Printf("[Syslog→Backup] firing TFTP backup for %s (logid=%s cfgtid=%s cfgpath=%s)",
+			dev.Name, ev.Logid, ev.Cfgtid, ev.Cfgpath)
+		c.fetchConfigViaTFTP(dev, "", "syslog")
+	})
+}
+
+// scheduleConfigBackupWith is the testable core. Two events with the same
+// (deviceID, cfgtid) within the debounce window collapse to a single fire of
+// `action`. Different cfgtids are independent timers. If cfgtid is empty
+// (rare — some events don't carry one), the key degrades to "<deviceID>:_"
+// so we still get one backup per device per debounce window.
+func (c *Collector) scheduleConfigBackupWith(dev relay.DeviceInfo, ev *syslog.FortiEvent, debounce time.Duration, action func()) {
 	tid := ev.Cfgtid
 	if tid == "" {
 		tid = "_"
@@ -1247,10 +1261,7 @@ func (c *Collector) scheduleConfigBackup(dev relay.DeviceInfo, ev *syslog.FortiE
 		c.cfgBackupMu.Lock()
 		delete(c.cfgBackupTimers, key)
 		c.cfgBackupMu.Unlock()
-
-		log.Printf("[Syslog→Backup] firing TFTP backup for %s (logid=%s cfgtid=%s cfgpath=%s)",
-			dev.Name, ev.Logid, ev.Cfgtid, ev.Cfgpath)
-		c.fetchConfigViaTFTP(dev, "", "syslog")
+		action()
 	})
 	c.cfgBackupMu.Unlock()
 
