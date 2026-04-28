@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.48 - 2026-04-27
+
+### Fixed
+- **TFTP config backup not working**: Fixed bug where `tftpOutboundIP` was never set because `determineOutboundIP()` was called AFTER `ListenAndServe()`, which blocks forever. Now determines the outbound IP BEFORE starting the TFTP server. This ensures firewalls receive the correct target IP when issuing `execute backup config tftp` command.
+
 ## 1.2.47 - 2026-04-27
 
 ### Fixed

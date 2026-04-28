@@ -572,6 +572,9 @@ func (c *Collector) startTFTPServer() {
 	addr := c.cfg.TFTPListenAddr
 	log.Printf("[TFTP] Starting TFTP server on %s (enabled=%v)", addr, c.cfg.TFTPConfigEnabled)
 
+	c.tftpOutboundIP = c.determineOutboundIP("8.8.8.8")
+	log.Printf("[TFTP] Determined outbound IP for firewalls: %s", c.tftpOutboundIP)
+
 	tftpServer := tftp.NewServer(&tftp.Config{
 		Addr:    addr,
 		Timeout: 60 * time.Second,
@@ -614,7 +617,6 @@ func (c *Collector) startTFTPServer() {
 
 	c.tftpServer = tftpServer
 	c.tftpListenIP = c.cfg.TFTPListenAddr
-	c.tftpOutboundIP = c.determineOutboundIP("8.8.8.8") // Use Google DNS to determine outbound IP
 	log.Printf("[TFTP] Server started on %s, outbound IP for firewalls: %s", addr, c.tftpOutboundIP)
 }
 
