@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.66 - 2026-04-27
+
+### Fixed
+- **TFTP config backup silently failing for firewalls behind tunnels/NAT**: The collector was determining a single global outbound IP at startup by dialing `8.8.8.8` — i.e., the local source address used to reach the public internet. When firewalls live on a private LAN, behind a site-to-site VPN, or behind NAT, that public-facing IP is *not* the IP the firewall sees the collector at, so `execute backup config tftp <file> <wrong-ip>` had no route from the firewall and no WRQ ever arrived. The collector now determines the outbound IP **per device** by dialing each device's own IP, so the kernel returns the correct local source for that device's network path.
+- **Source `version` constant** bumped (was stuck at 1.2.64 even though 1.2.65 had shipped).
+
+### Changed
+- **`BackupConfigTFTP` returns command output**: FortiGate prints diagnostic messages such as `Send config file to tftp server failed.` or `config backup successful` after `execute backup config tftp`. Previously the collector discarded that output, hiding what the firewall actually saw. The collector now logs the FortiGate response for every TFTP backup attempt — making future failures self-diagnosing.
+
 ## 1.2.65 - 2026-04-27
 
 ### Added

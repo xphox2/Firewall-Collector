@@ -23,7 +23,7 @@ import (
 	"firewall-collector/internal/tftp"
 )
 
-const version = "1.2.64"
+const version = "1.2.66"
 
 type Collector struct {
 	cfg            *config.ProbeConfig
@@ -35,7 +35,6 @@ type Collector struct {
 	pingCollector  *ping.PingCollector
 	tftpServer     *tftp.Server
 	tftpListenIP   string
-	tftpOutboundIP string // actual IP reachable from firewalls
 	devices        []relay.DeviceInfo
 	deviceMu       sync.RWMutex
 	ifaceIPMap     map[string]uint // interface IP → device ID cache
@@ -572,9 +571,6 @@ func (c *Collector) startTFTPServer() {
 	addr := c.cfg.TFTPListenAddr
 	log.Printf("[TFTP] Starting TFTP server on %s (enabled=%v)", addr, c.cfg.TFTPConfigEnabled)
 
-	c.tftpOutboundIP = c.determineOutboundIP("8.8.8.8")
-	log.Printf("[TFTP] Determined outbound IP for firewalls: %s", c.tftpOutboundIP)
-
 	tftpServer := tftp.NewServer(&tftp.Config{
 		Addr:    addr,
 		Timeout: 60 * time.Second,
@@ -617,7 +613,7 @@ func (c *Collector) startTFTPServer() {
 
 	c.tftpServer = tftpServer
 	c.tftpListenIP = c.cfg.TFTPListenAddr
-	log.Printf("[TFTP] Server started on %s, outbound IP for firewalls: %s", addr, c.tftpOutboundIP)
+	log.Printf("[TFTP] Server started on %s (outbound IP determined per-device at backup time)", addr)
 }
 
 func (c *Collector) determineOutboundIP(targetHost string) string {
@@ -645,11 +641,12 @@ func (c *Collector) fetchConfigViaTFTP(dev relay.DeviceInfo, checksum string) {
 		return
 	}
 
+	tftpTarget := c.determineOutboundIP(dev.IPAddress)
 	filename := fmt.Sprintf("fgt_%d_config", dev.ID)
 	log.Printf("[TFTP] Initiating TFTP config backup for device %d (%s) - filename: %s, target: %s",
-		dev.ID, dev.Name, filename, c.tftpOutboundIP)
+		dev.ID, dev.Name, filename, tftpTarget)
 
-	err := c.sendConfigRevisionViaTFTP(dev, checksum, filename)
+	err := c.sendConfigRevisionViaTFTP(dev, checksum, filename, tftpTarget)
 	if err != nil {
 		log.Printf("[TFTP] ERROR - TFTP config backup failed for %s: %v", dev.Name, err)
 	} else {
@@ -657,7 +654,7 @@ func (c *Collector) fetchConfigViaTFTP(dev relay.DeviceInfo, checksum string) {
 	}
 }
 
-func (c *Collector) sendConfigRevisionViaTFTP(dev relay.DeviceInfo, checksum string, filename string) error {
+func (c *Collector) sendConfigRevisionViaTFTP(dev relay.DeviceInfo, checksum string, filename string, tftpTarget string) error {
 	log.Printf("[TFTP] Connecting to device %s via SSH to send TFTP backup command...", dev.IPAddress)
 	sshClient := ssh.NewFortiGateClient(dev.IPAddress, dev.SSHPort, dev.SSHUsername, dev.SSHPassword)
 	if err := sshClient.Connect(); err != nil {
@@ -665,9 +662,12 @@ func (c *Collector) sendConfigRevisionViaTFTP(dev relay.DeviceInfo, checksum str
 	}
 	defer sshClient.Close()
 
-	tftpTarget := c.tftpOutboundIP
 	log.Printf("[TFTP] Sending 'execute backup config tftp %s %s' to %s", filename, tftpTarget, dev.Name)
-	if err := sshClient.BackupConfigTFTP(filename, tftpTarget); err != nil {
+	output, err := sshClient.BackupConfigTFTP(filename, tftpTarget)
+	if output != "" {
+		log.Printf("[TFTP] FortiGate response from %s:\n%s", dev.Name, strings.TrimSpace(output))
+	}
+	if err != nil {
 		return fmt.Errorf("TFTP backup command failed: %w", err)
 	}
 	log.Printf("[TFTP] TFTP backup command sent successfully to %s", dev.Name)

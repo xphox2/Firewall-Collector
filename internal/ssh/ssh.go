@@ -228,10 +228,9 @@ func (c *FortiGateClient) GetSystemSessionList() (string, error) {
 	return c.Execute("get system session list")
 }
 
-func (c *FortiGateClient) BackupConfigTFTP(filename, tftpServerIP string) error {
+func (c *FortiGateClient) BackupConfigTFTP(filename, tftpServerIP string) (string, error) {
 	cmd := fmt.Sprintf("execute backup config tftp %s %s", filename, tftpServerIP)
-	_, err := c.Execute(cmd)
-	return err
+	return c.Execute(cmd)
 }
 
 func (c *FortiGateClient) BackupConfigSCP(filename, scpServerIP, username, password string) error {
