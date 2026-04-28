@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.67 - 2026-04-28
+
+### Added
+- **Honors admin-set TFTP Server IP from server**: `GET /api/probes/:id/devices` now carries the per-probe `tftp_server_ip` value the admin entered on the server's Probe edit form (server v0.10.186+). The collector caches it on every device-list refresh and uses it as the destination IP in `execute backup config tftp <file> <ip>`. This is the right answer when the collector runs in Docker with `PROBE_LISTEN_ADDR=0.0.0.0` and cannot reliably auto-detect what IP each firewall reaches it at.
+- **Relay client**: new `FetchDevicesAndConfig()` returning `([]DeviceInfo, tftpServerIP, error)`. The existing `FetchDevices()` is kept as a thin wrapper for compatibility.
+
+### Changed
+- **TFTP target selection priority**: admin-configured `tftp_server_ip` wins; if blank, falls back to the v1.2.66 per-device auto-detection (dial the firewall's IP, take the kernel's local source). Each backup attempt now logs which path was taken.
+
 ## 1.2.66 - 2026-04-27
 
 ### Fixed

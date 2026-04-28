@@ -298,8 +298,9 @@ type DeviceInfo struct {
 }
 
 type DevicesResponse struct {
-	Success bool         `json:"success"`
-	Data    []DeviceInfo `json:"data"`
+	Success      bool         `json:"success"`
+	Data         []DeviceInfo `json:"data"`
+	TFTPServerIP string       `json:"tftp_server_ip"`
 }
 
 // --- Config & Client ---
@@ -742,29 +743,36 @@ func (c *Client) SendInterfaceAddresses(addrs []InterfaceAddress) error {
 // --- FetchDevices ---
 
 func (c *Client) FetchDevices() ([]DeviceInfo, error) {
+	devices, _, err := c.FetchDevicesAndConfig()
+	return devices, err
+}
+
+// FetchDevicesAndConfig returns the device list along with per-probe
+// runtime config the server pushes alongside it (e.g. tftp_server_ip).
+func (c *Client) FetchDevicesAndConfig() ([]DeviceInfo, string, error) {
 	if !c.approved.Load() {
 		if !c.tryReregister() {
-			return nil, fmt.Errorf("probe not approved")
+			return nil, "", fmt.Errorf("probe not approved")
 		}
 	}
 
 	url := fmt.Sprintf("%s/api/probes/%d/devices", c.Config.ServerURL, c.GetProbeID())
 	resp, err := c.doAuthenticatedRequest("GET", url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch devices: %w", err)
+		return nil, "", fmt.Errorf("failed to fetch devices: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("fetch devices returned status %d", resp.StatusCode)
+		return nil, "", fmt.Errorf("fetch devices returned status %d", resp.StatusCode)
 	}
 
 	var result DevicesResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to decode devices response: %w", err)
+		return nil, "", fmt.Errorf("failed to decode devices response: %w", err)
 	}
 
-	return result.Data, nil
+	return result.Data, result.TFTPServerIP, nil
 }
 
 // --- Data sync loop (replaces empty DataSendLoop) ---

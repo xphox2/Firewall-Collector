@@ -23,7 +23,7 @@ import (
 	"firewall-collector/internal/tftp"
 )
 
-const version = "1.2.66"
+const version = "1.2.67"
 
 type Collector struct {
 	cfg            *config.ProbeConfig
@@ -35,6 +35,8 @@ type Collector struct {
 	pingCollector  *ping.PingCollector
 	tftpServer     *tftp.Server
 	tftpListenIP   string
+	tftpServerIP   string // admin-set on the server, IP firewalls reach the collector at
+	tftpServerIPMu sync.RWMutex
 	devices        []relay.DeviceInfo
 	deviceMu       sync.RWMutex
 	ifaceIPMap     map[string]uint // interface IP → device ID cache
@@ -125,12 +127,13 @@ func main() {
 
 	// Fetch initial device list
 	fmt.Println("[3/6] Fetching device list...")
-	if devices, err := relayClient.FetchDevices(); err != nil {
+	if devices, tftpIP, err := relayClient.FetchDevicesAndConfig(); err != nil {
 		log.Printf("  -> Initial device fetch failed: %v", err)
 	} else {
 		c.deviceMu.Lock()
 		c.devices = devices
 		c.deviceMu.Unlock()
+		c.setTFTPServerIP(tftpIP)
 		fmt.Printf("  -> %d devices assigned\n", len(devices))
 		for _, d := range devices {
 			community := d.SNMPCommunity
@@ -635,13 +638,41 @@ func checksumFromData(data []byte) string {
 	return fmt.Sprintf("%x", h)
 }
 
+func (c *Collector) setTFTPServerIP(ip string) {
+	ip = strings.TrimSpace(ip)
+	c.tftpServerIPMu.Lock()
+	prev := c.tftpServerIP
+	c.tftpServerIP = ip
+	c.tftpServerIPMu.Unlock()
+	if prev != ip {
+		if ip == "" {
+			log.Printf("[TFTP] Admin-set TFTP server IP cleared — will fall back to per-device auto-detection")
+		} else {
+			log.Printf("[TFTP] Admin-set TFTP server IP: %s", ip)
+		}
+	}
+}
+
+func (c *Collector) getTFTPServerIP() string {
+	c.tftpServerIPMu.RLock()
+	defer c.tftpServerIPMu.RUnlock()
+	return c.tftpServerIP
+}
+
 func (c *Collector) fetchConfigViaTFTP(dev relay.DeviceInfo, checksum string) {
 	if c.tftpServer == nil {
 		log.Printf("[TFTP] TFTP server not available for device %d (%s)", dev.ID, dev.Name)
 		return
 	}
 
-	tftpTarget := c.determineOutboundIP(dev.IPAddress)
+	var tftpTarget string
+	if configured := c.getTFTPServerIP(); configured != "" {
+		tftpTarget = configured
+		log.Printf("[TFTP] Using admin-configured server IP %s for device %s", tftpTarget, dev.Name)
+	} else {
+		tftpTarget = c.determineOutboundIP(dev.IPAddress)
+		log.Printf("[TFTP] No admin-configured server IP — auto-detected %s for device %s", tftpTarget, dev.Name)
+	}
 	filename := fmt.Sprintf("fgt_%d_config", dev.ID)
 	log.Printf("[TFTP] Initiating TFTP config backup for device %d (%s) - filename: %s, target: %s",
 		dev.ID, dev.Name, filename, tftpTarget)
@@ -1062,7 +1093,7 @@ func (c *Collector) deviceRefreshLoop() {
 		case <-c.stopChan:
 			return
 		case <-ticker.C:
-			devices, err := c.relayClient.FetchDevices()
+			devices, tftpIP, err := c.relayClient.FetchDevicesAndConfig()
 			if err != nil {
 				log.Printf("[Devices] Refresh failed: %v", err)
 				continue
@@ -1071,6 +1102,7 @@ func (c *Collector) deviceRefreshLoop() {
 			c.deviceMu.Lock()
 			c.devices = devices
 			c.deviceMu.Unlock()
+			c.setTFTPServerIP(tftpIP)
 
 			names := make([]string, len(devices))
 			for i, d := range devices {
