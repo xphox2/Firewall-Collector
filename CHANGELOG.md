@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.64 - 2026-04-27
+
+### Fixed
+- **tftp-test debug client**: The standalone `tftp-test` utility had the same `DialUDP` bug as the unit tests — once the TFTP server moved to a fresh ephemeral TID port, the connected client socket dropped its replies. Switched to `ListenUDP` and explicit `WriteToUDP(serverTID)` so it can verify the production server.
+
 ## 1.2.63 - 2026-04-27
 
 ### Fixed
