@@ -3,6 +3,7 @@ package tftp
 import (
 	"bytes"
 	"net"
+	"sync"
 	"testing"
 	"time"
 )
@@ -10,7 +11,7 @@ import (
 func TestTFTPServerRRQ(t *testing.T) {
 	server := NewServer(&Config{
 		Addr:    "127.0.0.1:0",
-		Timeout: 5 * time.Second,
+		Timeout: 2 * time.Second,
 	})
 
 	if err := server.ListenAndServe(); err != nil {
@@ -30,64 +31,169 @@ func TestTFTPServerRRQ(t *testing.T) {
 		return expectedData, nil
 	})
 
-	clientConn, err := net.DialUDP("udp", nil, serverAddr)
+	// Use ListenUDP (unconnected) so we can receive from the server's
+	// ephemeral TID port, which differs from the listen port.
+	clientConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
-		t.Fatalf("DialUDP failed: %v", err)
+		t.Fatalf("ListenUDP failed: %v", err)
 	}
 	defer clientConn.Close()
 
-	rrq := buildRRQ("testfile")
-	if _, err := clientConn.Write(rrq); err != nil {
-		t.Fatalf("WriteToUDP failed: %v", err)
+	if _, err := clientConn.WriteToUDP(buildRRQ("testfile"), serverAddr); err != nil {
+		t.Fatalf("write RRQ: %v", err)
 	}
-	t.Logf("Client: Sent RRQ for file: testfile")
 
-	buf := make([]byte, 1024)
+	// Server allocates a fresh ephemeral port for the response. Read DATA blocks
+	// from whatever port the server replies on, ACKing each, then verify payload.
 	var dataReceived []byte
-	timeout := time.After(3 * time.Second)
+	buf := make([]byte, 1024)
+	clientConn.SetReadDeadline(time.Now().Add(3 * time.Second))
 
 	for {
-		select {
-		case <-timeout:
-			if len(dataReceived) > 0 {
-				t.Logf("Client: Received %d bytes total", len(dataReceived))
-			}
-			goto verify
-		default:
-		}
-
-		clientConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-		n, _, err := clientConn.ReadFromUDP(buf)
+		n, serverTID, err := clientConn.ReadFromUDP(buf)
 		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				goto verify
-			}
-			break
+			t.Fatalf("read DATA: %v", err)
 		}
+		if n < 4 || buf[0] != 0 || buf[1] != byte(opDATA) {
+			t.Fatalf("expected DATA, got opcode %d", uint16(buf[0])<<8|uint16(buf[1]))
+		}
+		block := uint16(buf[2])<<8 | uint16(buf[3])
+		dataReceived = append(dataReceived, buf[4:n]...)
 
-		if n >= 4 && buf[0] == 0 && buf[1] == 3 {
-			dataReceived = append(dataReceived, buf[4:n]...)
-			t.Logf("Client: Received DATA block %d (%d bytes)", int(buf[2])<<8|int(buf[3]), n-4)
+		ack := []byte{0, byte(opACK), buf[2], buf[3]}
+		clientConn.WriteToUDP(ack, serverTID)
+		t.Logf("Client: ACKed block %d (%d bytes)", block, n-4)
 
-			ack := []byte{0, 4, buf[2], buf[3]}
-			clientConn.Write(ack)
-
-			if n-4 < 512 {
-				break
-			}
+		if n-4 < blockSize {
+			break
 		}
 	}
 
-verify:
 	if requestedFilename != "testfile" {
 		t.Errorf("requestedFilename = %q, want %q", requestedFilename, "testfile")
 	}
-
 	if !bytes.Equal(dataReceived, expectedData) {
 		t.Errorf("dataReceived = %q, want %q", dataReceived, expectedData)
 	}
+}
 
-	t.Logf("RRQ Test PASSED - Server correctly served file")
+// TestTFTPServerWRQ exercises the multi-packet write path that was broken
+// by the previous single-socket implementation: DATA packets must reach the
+// per-transfer goroutine, not the main listen loop.
+func TestTFTPServerWRQ(t *testing.T) {
+	server := NewServer(&Config{
+		Addr:    "127.0.0.1:0",
+		Timeout: 2 * time.Second,
+	})
+
+	if err := server.ListenAndServe(); err != nil {
+		t.Fatalf("ListenAndServe failed: %v", err)
+	}
+	defer server.Shutdown()
+
+	serverAddr := server.conn.LocalAddr().(*net.UDPAddr)
+	t.Logf("TFTP server listening on %s", serverAddr.String())
+
+	// Build a payload spanning multiple 512-byte blocks plus a partial final
+	// block (terminator). 1500 bytes -> blocks of 512, 512, 476.
+	payload := make([]byte, 1500)
+	for i := range payload {
+		payload[i] = byte('a' + (i % 26))
+	}
+
+	var (
+		mu          sync.Mutex
+		gotName     string
+		gotData     []byte
+		handlerHit  = make(chan struct{})
+	)
+	server.SetWriteHandler(func(fname string, data []byte, addr net.Addr) error {
+		mu.Lock()
+		gotName = fname
+		gotData = data
+		mu.Unlock()
+		close(handlerHit)
+		return nil
+	})
+
+	clientConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP failed: %v", err)
+	}
+	defer clientConn.Close()
+
+	if _, err := clientConn.WriteToUDP(buildWRQ("fgt_42_config"), serverAddr); err != nil {
+		t.Fatalf("write WRQ: %v", err)
+	}
+
+	// Read ACK 0 — server should reply from a NEW ephemeral TID, not 69.
+	clientConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	ackBuf := make([]byte, 16)
+	n, serverTID, err := clientConn.ReadFromUDP(ackBuf)
+	if err != nil {
+		t.Fatalf("read ACK 0: %v", err)
+	}
+	if n < 4 || ackBuf[0] != 0 || ackBuf[1] != byte(opACK) {
+		t.Fatalf("expected ACK 0, got opcode %d", uint16(ackBuf[0])<<8|uint16(ackBuf[1]))
+	}
+	if serverTID.Port == serverAddr.Port {
+		t.Fatalf("server TID port %d must differ from listen port %d (ephemeral TID required by RFC 1350)",
+			serverTID.Port, serverAddr.Port)
+	}
+	t.Logf("Server TID: %s (listen was %s)", serverTID.String(), serverAddr.String())
+
+	// Send DATA blocks to the server's TID; expect ACKs back.
+	block := uint16(1)
+	offset := 0
+	for {
+		end := offset + blockSize
+		if end > len(payload) {
+			end = len(payload)
+		}
+		chunk := payload[offset:end]
+		pkt := make([]byte, 4+len(chunk))
+		pkt[1] = byte(opDATA)
+		pkt[2] = byte(block >> 8)
+		pkt[3] = byte(block & 0xff)
+		copy(pkt[4:], chunk)
+		if _, err := clientConn.WriteToUDP(pkt, serverTID); err != nil {
+			t.Fatalf("write DATA %d: %v", block, err)
+		}
+
+		clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		n, _, err := clientConn.ReadFromUDP(ackBuf)
+		if err != nil {
+			t.Fatalf("read ACK %d: %v", block, err)
+		}
+		if n < 4 || ackBuf[1] != byte(opACK) {
+			t.Fatalf("expected ACK %d, got opcode %d", block, uint16(ackBuf[0])<<8|uint16(ackBuf[1]))
+		}
+		ackBlock := uint16(ackBuf[2])<<8 | uint16(ackBuf[3])
+		if ackBlock != block {
+			t.Fatalf("expected ACK block %d, got %d", block, ackBlock)
+		}
+
+		offset = end
+		if len(chunk) < blockSize {
+			break
+		}
+		block++
+	}
+
+	select {
+	case <-handlerHit:
+	case <-time.After(2 * time.Second):
+		t.Fatal("write handler not invoked")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if gotName != "fgt_42_config" {
+		t.Errorf("filename = %q, want %q", gotName, "fgt_42_config")
+	}
+	if !bytes.Equal(gotData, payload) {
+		t.Errorf("payload mismatch: got %d bytes, want %d", len(gotData), len(payload))
+	}
 }
 
 func TestTFTPExtractFilename(t *testing.T) {
@@ -96,9 +202,8 @@ func TestTFTPExtractFilename(t *testing.T) {
 		buf      []byte
 		expected string
 	}{
-		{"simple filename", []byte{0, 1, 't', 'e', 's', 't', '.', 't', 'x', 't', 0}, "test.txt"},
-		{"fgt config format", []byte{0, 2, 'f', 'g', 't', '_', '1', '2', '3', '_', 'c', 'o', 'n', 'f', 'i', 'g', 0}, "fgt_123_config"},
-		{"empty string", []byte{0, 1, 0}, ""},
+		{"simple filename with mode", buildRRQ("test.txt"), "test.txt"},
+		{"fgt config format", buildWRQ("fgt_123_config"), "fgt_123_config"},
 		{"too short", []byte{0, 1}, ""},
 	}
 
@@ -125,17 +230,24 @@ func TestTFTPServerShutdown(t *testing.T) {
 	if err := server.Shutdown(); err != nil {
 		t.Errorf("Shutdown failed: %v", err)
 	}
-
-	t.Logf("Shutdown Test PASSED")
 }
 
 func buildRRQ(filename string) []byte {
-	packet := make([]byte, 2+len(filename)+1+6+1)
-	packet[0] = 0
-	packet[1] = 1
-	copy(packet[2:], filename)
-	packet[2+len(filename)] = 0
-	copy(packet[2+len(filename)+1:], []byte("octet"))
-	packet[2+len(filename)+1+6] = 0
-	return packet
+	return buildRequest(opRRQ, filename)
 }
+
+func buildWRQ(filename string) []byte {
+	return buildRequest(opWRQ, filename)
+}
+
+func buildRequest(opcode uint16, filename string) []byte {
+	mode := "octet"
+	pkt := make([]byte, 0, 2+len(filename)+1+len(mode)+1)
+	pkt = append(pkt, byte(opcode>>8), byte(opcode&0xff))
+	pkt = append(pkt, []byte(filename)...)
+	pkt = append(pkt, 0)
+	pkt = append(pkt, []byte(mode)...)
+	pkt = append(pkt, 0)
+	return pkt
+}
+

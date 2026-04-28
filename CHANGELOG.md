@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.63 - 2026-04-27
+
+### Fixed
+- **TFTP config backup actually works now**: Fixed two bugs that prevented FortiGate config backup over TFTP from ever succeeding.
+  - `execute backup config tftp` was being given an `IP:PORT` string (e.g. `192.168.1.10:69`); FortiGate's CLI requires a bare IPv4 address and was silently failing to resolve the malformed argument. The collector now passes only the IP.
+  - The TFTP server used a single UDP socket on port 69 for both new RRQ/WRQ requests and per-transfer DATA/ACK packets. The main `serve()` loop and the per-WRQ goroutine raced for incoming DATA, so half the time the listen loop would receive a DATA packet, treat it as an unknown opcode, and reply ERROR ("Not implemented") — killing the transfer. Per RFC 1350 the server must allocate a fresh ephemeral UDP port (the server TID) for each transfer; the rewrite does this and isolates each transfer to its own socket.
+
+### Added
+- **WRQ multi-packet test**: New `TestTFTPServerWRQ` exercises a 1500-byte upload across three blocks and asserts the server's TID port differs from the listen port. Would have caught the race condition above.
+
 ## 1.2.48 - 2026-04-27
 
 ### Fixed

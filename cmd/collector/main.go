@@ -23,7 +23,7 @@ import (
 	"firewall-collector/internal/tftp"
 )
 
-const version = "1.2.32"
+const version = "1.2.63"
 
 type Collector struct {
 	cfg            *config.ProbeConfig
@@ -647,7 +647,7 @@ func (c *Collector) fetchConfigViaTFTP(dev relay.DeviceInfo, checksum string) {
 
 	filename := fmt.Sprintf("fgt_%d_config", dev.ID)
 	log.Printf("[TFTP] Initiating TFTP config backup for device %d (%s) - filename: %s, target: %s",
-		dev.ID, dev.Name, filename, c.tftpOutboundIP+":69")
+		dev.ID, dev.Name, filename, c.tftpOutboundIP)
 
 	err := c.sendConfigRevisionViaTFTP(dev, checksum, filename)
 	if err != nil {
@@ -665,7 +665,7 @@ func (c *Collector) sendConfigRevisionViaTFTP(dev relay.DeviceInfo, checksum str
 	}
 	defer sshClient.Close()
 
-	tftpTarget := c.tftpOutboundIP + ":69"
+	tftpTarget := c.tftpOutboundIP
 	log.Printf("[TFTP] Sending 'execute backup config tftp %s %s' to %s", filename, tftpTarget, dev.Name)
 	if err := sshClient.BackupConfigTFTP(filename, tftpTarget); err != nil {
 		return fmt.Errorf("TFTP backup command failed: %w", err)

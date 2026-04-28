@@ -9,19 +9,35 @@ import (
 	"time"
 )
 
+const (
+	opRRQ   uint16 = 1
+	opWRQ   uint16 = 2
+	opDATA  uint16 = 3
+	opACK   uint16 = 4
+	opERROR uint16 = 5
+	opOACK  uint16 = 6
+
+	blockSize       = 512
+	maxPacketSize   = 1024
+	defaultTimeout  = 30 * time.Second
+	transferTimeout = 5 * time.Minute
+	maxRetries      = 5
+)
+
 type Config struct {
 	Addr    string
 	Timeout time.Duration
 }
 
 type WriteHandler func(filename string, data []byte, client net.Addr) error
+type ReadHandler func(filename string, client net.Addr) ([]byte, error)
 
 type Server struct {
 	cfg          *Config
 	conn         *net.UDPConn
 	stopCh       chan struct{}
 	wg           sync.WaitGroup
-	handler      func(filename string, client net.Addr) ([]byte, error)
+	readHandler  ReadHandler
 	writeHandler WriteHandler
 	mu           sync.Mutex
 	running      bool
@@ -29,7 +45,7 @@ type Server struct {
 
 func NewServer(cfg *Config) *Server {
 	if cfg.Timeout == 0 {
-		cfg.Timeout = 30 * time.Second
+		cfg.Timeout = defaultTimeout
 	}
 	return &Server{
 		cfg:    cfg,
@@ -37,8 +53,8 @@ func NewServer(cfg *Config) *Server {
 	}
 }
 
-func (s *Server) SetHandler(handler func(filename string, client net.Addr) ([]byte, error)) {
-	s.handler = handler
+func (s *Server) SetHandler(handler ReadHandler) {
+	s.readHandler = handler
 }
 
 func (s *Server) SetWriteHandler(handler WriteHandler) {
@@ -67,15 +83,18 @@ func (s *Server) ListenAndServe() error {
 	return nil
 }
 
+// serve reads only RRQ/WRQ packets on the well-known port. Each accepted
+// transfer is handed off to a goroutine that allocates its own ephemeral
+// UDP socket (the server TID), per RFC 1350.
 func (s *Server) serve() {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("[TFTP DEBUG] PANIC in serve loop: %v", r)
+			log.Printf("[TFTP] PANIC in serve loop: %v", r)
 		}
 		s.wg.Done()
 	}()
 
-	buf := make([]byte, 8192)
+	buf := make([]byte, maxPacketSize)
 	for {
 		select {
 		case <-s.stopCh:
@@ -83,7 +102,7 @@ func (s *Server) serve() {
 		default:
 		}
 
-		s.conn.SetReadDeadline(time.Now().Add(s.cfg.Timeout))
+		s.conn.SetReadDeadline(time.Now().Add(1 * time.Second))
 		n, clientAddr, err := s.conn.ReadFromUDP(buf)
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
@@ -96,187 +115,307 @@ func (s *Server) serve() {
 			continue
 		}
 
-		msgType := uint16(buf[0])<<8 | uint16(buf[1])
-		log.Printf("[TFTP DEBUG] Received packet type %d from %s (%d bytes)", msgType, clientAddr.String(), n)
+		opcode := uint16(buf[0])<<8 | uint16(buf[1])
+		pkt := make([]byte, n)
+		copy(pkt, buf[:n])
 
-		switch msgType {
-		case 1: // RRQ (Read Request) - client wants to download
-			go s.handleRRQ(buf[:n], clientAddr)
-		case 2: // WRQ (Write Request) - client wants to upload
-			go s.handleWRQ(buf[:n], clientAddr)
+		switch opcode {
+		case opRRQ:
+			log.Printf("[TFTP] RRQ from %s", clientAddr.String())
+			go s.handleRRQ(pkt, clientAddr)
+		case opWRQ:
+			log.Printf("[TFTP] WRQ from %s", clientAddr.String())
+			go s.handleWRQ(pkt, clientAddr)
 		default:
-			log.Printf("[TFTP DEBUG] Unknown packet type %d from %s", msgType, clientAddr.String())
-			s.sendError(clientAddr, 4, "Not implemented")
+			log.Printf("[TFTP] Unexpected opcode %d on listen socket from %s — ignoring", opcode, clientAddr.String())
 		}
 	}
 }
 
-func (s *Server) handleRRQ(buf []byte, clientAddr *net.UDPAddr) {
-	if s.handler == nil {
-		s.sendError(clientAddr, 0, "No handler")
-		return
-	}
-
-	filename := extractFilename(buf)
-	if filename == "" {
-		s.sendError(clientAddr, 1, "File not found")
-		return
-	}
-
-	data, err := s.handler(filename, clientAddr)
-	if err != nil {
-		s.sendError(clientAddr, 0, err.Error())
-		return
-	}
-
-	s.sendData(clientAddr, data)
+// newSessionConn allocates a fresh ephemeral UDP socket bound to the same
+// local IP family as the listener. This becomes the server-side TID for the
+// transfer.
+func (s *Server) newSessionConn() (*net.UDPConn, error) {
+	listenIP := s.conn.LocalAddr().(*net.UDPAddr).IP
+	return net.ListenUDP("udp", &net.UDPAddr{IP: listenIP, Port: 0})
 }
 
-func (s *Server) handleWRQ(buf []byte, clientAddr *net.UDPAddr) {
+func (s *Server) handleWRQ(reqPkt []byte, clientAddr *net.UDPAddr) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("[TFTP DEBUG] PANIC in handleWRQ: %v", r)
+			log.Printf("[TFTP] PANIC in handleWRQ: %v", r)
 		}
 	}()
 
 	if s.writeHandler == nil {
-		log.Printf("[TFTP DEBUG] WRQ rejected - no write handler set")
-		s.sendError(clientAddr, 4, "Write not supported")
+		s.sendErrorOn(s.conn, clientAddr, 4, "Write not supported")
 		return
 	}
 
-	filename := extractFilename(buf)
+	filename, _, _ := parseRequest(reqPkt)
 	if filename == "" {
-		log.Printf("[TFTP DEBUG] WRQ rejected - empty filename")
-		s.sendError(clientAddr, 1, "Invalid filename")
+		s.sendErrorOn(s.conn, clientAddr, 1, "Invalid filename")
 		return
 	}
 
-	log.Printf("[TFTP DEBUG] WRQ accepted for file: %s from %s", filename, clientAddr.String())
-	s.sendACK(clientAddr, 0)
-	log.Printf("[TFTP DEBUG] Sent ACK for block 0 to %s", clientAddr.String())
-
-	data, err := s.receiveData(clientAddr)
+	sessionConn, err := s.newSessionConn()
 	if err != nil {
-		log.Printf("[TFTP DEBUG] WRQ receiveData failed: %v", err)
-		s.sendError(clientAddr, 0, err.Error())
+		log.Printf("[TFTP] WRQ %q: failed to allocate session socket: %v", filename, err)
+		s.sendErrorOn(s.conn, clientAddr, 0, "Server resource error")
+		return
+	}
+	defer sessionConn.Close()
+
+	log.Printf("[TFTP] WRQ accepted file=%q client=%s sessionPort=%d",
+		filename, clientAddr.String(), sessionConn.LocalAddr().(*net.UDPAddr).Port)
+
+	// ACK 0 from the new session socket — this becomes our TID.
+	if err := sendACK(sessionConn, clientAddr, 0); err != nil {
+		log.Printf("[TFTP] WRQ %q: failed to send ACK 0: %v", filename, err)
 		return
 	}
 
-	log.Printf("[TFTP DEBUG] WRQ received %d bytes for file: %s", len(data), filename)
+	data, err := s.receiveTransfer(sessionConn, clientAddr)
+	if err != nil {
+		log.Printf("[TFTP] WRQ %q: receive failed: %v", filename, err)
+		s.sendErrorOn(sessionConn, clientAddr, 0, err.Error())
+		return
+	}
 
-	// Call writeHandler in a separate goroutine to prevent blocking
+	log.Printf("[TFTP] WRQ %q complete: %d bytes from %s", filename, len(data), clientAddr.String())
+
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("[TFTP DEBUG] PANIC in writeHandler: %v", r)
+				log.Printf("[TFTP] PANIC in writeHandler for %q: %v", filename, r)
 			}
 		}()
-		s.writeHandler(filename, data, clientAddr)
-		log.Printf("[TFTP DEBUG] writeHandler completed for file: %s", filename)
+		if err := s.writeHandler(filename, data, clientAddr); err != nil {
+			log.Printf("[TFTP] writeHandler %q returned error: %v", filename, err)
+		}
 	}()
 }
 
-func extractFilename(buf []byte) string {
-	if len(buf) < 2 {
-		return ""
+func (s *Server) handleRRQ(reqPkt []byte, clientAddr *net.UDPAddr) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[TFTP] PANIC in handleRRQ: %v", r)
+		}
+	}()
+
+	if s.readHandler == nil {
+		s.sendErrorOn(s.conn, clientAddr, 0, "No handler")
+		return
 	}
-	filename := string(buf[2:])
-	if idx := strings.Index(filename, "\x00"); idx != -1 {
-		filename = filename[:idx]
+
+	filename, _, _ := parseRequest(reqPkt)
+	if filename == "" {
+		s.sendErrorOn(s.conn, clientAddr, 1, "File not found")
+		return
 	}
-	return strings.TrimSpace(filename)
+
+	data, err := s.readHandler(filename, clientAddr)
+	if err != nil {
+		s.sendErrorOn(s.conn, clientAddr, 0, err.Error())
+		return
+	}
+
+	sessionConn, err := s.newSessionConn()
+	if err != nil {
+		log.Printf("[TFTP] RRQ %q: failed to allocate session socket: %v", filename, err)
+		s.sendErrorOn(s.conn, clientAddr, 0, "Server resource error")
+		return
+	}
+	defer sessionConn.Close()
+
+	if err := s.sendTransfer(sessionConn, clientAddr, data); err != nil {
+		log.Printf("[TFTP] RRQ %q: send failed: %v", filename, err)
+	}
 }
 
-func (s *Server) sendACK(clientAddr *net.UDPAddr, blockNum uint16) {
-	pkt := []byte{0, 4, byte(blockNum >> 8), byte(blockNum & 0xff)}
-	s.conn.WriteToUDP(pkt, clientAddr)
-}
-
-func (s *Server) receiveData(clientAddr *net.UDPAddr) ([]byte, error) {
-	buf := make([]byte, 8192)
+// receiveTransfer reads DATA packets from the client on sessionConn, ACKing
+// each one. Terminates when a DATA packet smaller than 516 bytes arrives
+// (last block, per RFC 1350) or when the deadline expires.
+func (s *Server) receiveTransfer(sessionConn *net.UDPConn, clientAddr *net.UDPAddr) ([]byte, error) {
+	buf := make([]byte, maxPacketSize)
 	var data []byte
+	expectedBlock := uint16(1)
+	deadline := time.Now().Add(transferTimeout)
 
 	for {
-		s.conn.SetReadDeadline(time.Now().Add(s.cfg.Timeout))
-		n, _, err := s.conn.ReadFromUDP(buf)
-		if err != nil {
-			return nil, err
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("transfer timed out after %v", transferTimeout)
 		}
 
+		sessionConn.SetReadDeadline(time.Now().Add(s.cfg.Timeout))
+		n, addr, err := sessionConn.ReadFromUDP(buf)
+		if err != nil {
+			return nil, fmt.Errorf("read DATA: %w", err)
+		}
 		if n < 4 {
 			continue
 		}
 
-		msgType := uint16(buf[0])<<8 | uint16(buf[1])
-		if msgType != 3 { // DATA
+		// Lock the session to a single client TID once data is flowing.
+		if addr.Port != clientAddr.Port || !addr.IP.Equal(clientAddr.IP) {
+			// Stray packet from someone else — reply with ERROR but keep listening.
+			s.sendErrorOn(sessionConn, addr, 5, "Unknown TID")
 			continue
 		}
 
-		blockNum := uint16(buf[2])<<8 | uint16(buf[3])
-		data = append(data, buf[4:n]...)
-
-		s.sendACK(clientAddr, blockNum)
-
-		if n < 516 { // Last packet if less than 512 bytes + header
-			break
+		opcode := uint16(buf[0])<<8 | uint16(buf[1])
+		if opcode == opERROR {
+			code := uint16(buf[2])<<8 | uint16(buf[3])
+			msg := ""
+			if n > 4 {
+				if idx := strings.IndexByte(string(buf[4:n]), 0); idx >= 0 {
+					msg = string(buf[4 : 4+idx])
+				} else {
+					msg = string(buf[4:n])
+				}
+			}
+			return nil, fmt.Errorf("client sent ERROR %d: %s", code, msg)
 		}
-	}
+		if opcode != opDATA {
+			continue
+		}
 
-	return data, nil
+		block := uint16(buf[2])<<8 | uint16(buf[3])
+		payload := buf[4:n]
+
+		if block == expectedBlock {
+			data = append(data, payload...)
+			if err := sendACK(sessionConn, clientAddr, block); err != nil {
+				return nil, fmt.Errorf("send ACK %d: %w", block, err)
+			}
+			if len(payload) < blockSize {
+				return data, nil
+			}
+			expectedBlock++
+		} else if block == expectedBlock-1 {
+			// Duplicate of the previous block — re-ACK without appending.
+			_ = sendACK(sessionConn, clientAddr, block)
+		}
+		// Out-of-window blocks are dropped silently; client will retransmit.
+	}
 }
 
-func (s *Server) sendData(clientAddr *net.UDPAddr, data []byte) {
-	blkNum := uint16(1)
+// sendTransfer streams data to the client in 512-byte DATA packets, waiting
+// for the matching ACK between each one.
+func (s *Server) sendTransfer(sessionConn *net.UDPConn, clientAddr *net.UDPAddr, data []byte) error {
+	block := uint16(1)
+	offset := 0
+	deadline := time.Now().Add(transferTimeout)
 
-	for len(data) > 0 {
-		pktLen := 512
-		if len(data) < 512 {
-			pktLen = len(data)
+	for {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("transfer timed out after %v", transferTimeout)
 		}
 
-		pkt := make([]byte, 4+pktLen)
+		end := offset + blockSize
+		if end > len(data) {
+			end = len(data)
+		}
+		chunk := data[offset:end]
+
+		pkt := make([]byte, 4+len(chunk))
 		pkt[0] = 0
-		pkt[1] = 3 // DATA
-		pkt[2] = byte(blkNum >> 8)
-		pkt[3] = byte(blkNum & 0xff)
-		copy(pkt[4:], data[:pktLen])
+		pkt[1] = byte(opDATA)
+		pkt[2] = byte(block >> 8)
+		pkt[3] = byte(block & 0xff)
+		copy(pkt[4:], chunk)
 
-		_, err := s.conn.WriteToUDP(pkt, clientAddr)
-		if err != nil {
-			return
-		}
+		// Send and wait for matching ACK; retry up to maxRetries.
+		acked := false
+		for attempt := 0; attempt < maxRetries; attempt++ {
+			if _, err := sessionConn.WriteToUDP(pkt, clientAddr); err != nil {
+				return fmt.Errorf("write DATA %d: %w", block, err)
+			}
 
-		data = data[pktLen:]
-		blkNum++
-		if blkNum == 0 {
-			blkNum = 1
-		}
-
-		// Wait for ACK
-		ackBuf := make([]byte, 4)
-		s.conn.SetReadDeadline(time.Now().Add(s.cfg.Timeout))
-		for {
-			_, _, err := s.conn.ReadFromUDP(ackBuf)
+			sessionConn.SetReadDeadline(time.Now().Add(s.cfg.Timeout))
+			ackBuf := make([]byte, maxPacketSize)
+			n, addr, err := sessionConn.ReadFromUDP(ackBuf)
 			if err != nil {
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 					continue
 				}
-				return
+				return fmt.Errorf("read ACK %d: %w", block, err)
 			}
-			break
+			if addr.Port != clientAddr.Port || !addr.IP.Equal(clientAddr.IP) {
+				s.sendErrorOn(sessionConn, addr, 5, "Unknown TID")
+				continue
+			}
+			if n < 4 {
+				continue
+			}
+			opcode := uint16(ackBuf[0])<<8 | uint16(ackBuf[1])
+			ackBlock := uint16(ackBuf[2])<<8 | uint16(ackBuf[3])
+			if opcode == opACK && ackBlock == block {
+				acked = true
+				break
+			}
 		}
+		if !acked {
+			return fmt.Errorf("no ACK for block %d after %d retries", block, maxRetries)
+		}
+
+		offset = end
+		if len(chunk) < blockSize {
+			return nil
+		}
+		block++
 	}
 }
 
-func (s *Server) sendError(clientAddr *net.UDPAddr, code uint16, msg string) {
+// parseRequest returns (filename, mode, options) from an RRQ or WRQ packet.
+// Options are returned as a flat key,value,key,value list; we don't currently
+// negotiate them.
+func parseRequest(buf []byte) (string, string, []string) {
+	if len(buf) < 4 {
+		return "", "", nil
+	}
+	parts := splitNullTerminated(buf[2:])
+	if len(parts) < 2 {
+		return "", "", nil
+	}
+	return parts[0], parts[1], parts[2:]
+}
+
+func splitNullTerminated(b []byte) []string {
+	var out []string
+	start := 0
+	for i, c := range b {
+		if c == 0 {
+			out = append(out, string(b[start:i]))
+			start = i + 1
+		}
+	}
+	if start < len(b) {
+		out = append(out, string(b[start:]))
+	}
+	return out
+}
+
+// extractFilename is kept for backwards compatibility with tests.
+func extractFilename(buf []byte) string {
+	name, _, _ := parseRequest(buf)
+	return strings.TrimSpace(name)
+}
+
+func sendACK(conn *net.UDPConn, addr *net.UDPAddr, block uint16) error {
+	pkt := []byte{0, byte(opACK), byte(block >> 8), byte(block & 0xff)}
+	_, err := conn.WriteToUDP(pkt, addr)
+	return err
+}
+
+func (s *Server) sendErrorOn(conn *net.UDPConn, addr *net.UDPAddr, code uint16, msg string) {
 	pkt := make([]byte, 5+len(msg))
 	pkt[0] = 0
-	pkt[1] = 5 // ERROR
+	pkt[1] = byte(opERROR)
 	pkt[2] = byte(code >> 8)
 	pkt[3] = byte(code & 0xff)
 	copy(pkt[4:], msg)
-	s.conn.WriteToUDP(pkt, clientAddr)
+	conn.WriteToUDP(pkt, addr)
 }
 
 func (s *Server) Shutdown() error {
