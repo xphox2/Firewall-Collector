@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.71 - 2026-04-28
+
+### Diagnosed
+- **Root cause of "TFTP backup never arrives" silent failure**: the SSH user being used to run `execute backup config tftp` does **not** have permission to back up config. FortiOS responds with `The current admin user does not have the permission to backup config. Command fail. Return code -37` — but on accounts with even more restricted profiles, the response is stripped entirely, which is why production logs showed an empty FortiGate response and no WRQ ever landed on the listener. Resolution is on the FortiGate: assign the SSH user an admin profile that includes Configuration & Settings read+write (or `super_admin`).
+
+### Added
+- **diag-backup verdict for permission denied**: `cmd/diag-backup` now recognises FortiOS `Return code -37` / "permission to backup config" output and prints a labelled verdict pointing at the admin profile, instead of the previous generic "no upload arrived" message. Includes the exact CLI to fix it.
+
 ## 1.2.70 - 2026-04-28
 
 ### Added

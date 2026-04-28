@@ -209,6 +209,13 @@ func main() {
 		fmt.Printf("  Size:     %d bytes\n", got.bytes)
 		fmt.Printf("  From:     %s\n", got.from)
 
+	case containsCaseInsensitive(rawOutput, "permission to backup config") ||
+		containsCaseInsensitive(rawOutput, "Return code -37"):
+		verdict.fail("SSH user lacks permission to backup config (FortiOS code -37). The user's admin profile must include System > Configuration: Read/Write. Either assign accprofile super_admin or grant the equivalent in a custom profile. CLI: `config system admin / edit \"<user>\" / set accprofile \"super_admin\"`.")
+
+	case containsCaseInsensitive(rawOutput, "permission") || containsCaseInsensitive(rawOutput, "Return code -"):
+		verdict.fail("FortiGate refused the command — see output above. Check the SSH user's admin profile and whether the firewall is in read-only mode (HA secondary, etc.).")
+
 	case execErr != nil && cmdElapsed < 5*time.Second && len(rawOutput) == 0:
 		verdict.fail("SSH session closed almost immediately with no output. Likely a FortiOS PTY/CLI mode issue or auth fallthrough. Try -use-pty=true (default), or check that the SSH user has CLI access.")
 
