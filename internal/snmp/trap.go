@@ -13,7 +13,6 @@ import (
 	"github.com/gosnmp/gosnmp"
 )
 
-// Standard SNMPv2c trap varbind OIDs
 const (
 	snmpTrapOID  = ".1.3.6.1.6.3.1.1.4.1.0"
 	sysUpTimeOID = ".1.3.6.1.2.1.1.3.0"
@@ -37,19 +36,18 @@ func NewTrapReceiver(listenAddr string, port int, community string) *TrapReceive
 }
 
 func (t *TrapReceiver) Start(handler func(*relay.TrapEvent)) error {
+	if t.community == "" {
+		return fmt.Errorf("SNMP trap community is empty: PROBE_SNMP_TRAP_COMMUNITY must be set when traps are enabled")
+	}
+
 	t.handler = handler
 
 	t.server.OnNewTrap = func(packet *gosnmp.SnmpPacket, addr *net.UDPAddr) {
-		// Launch a goroutine per trap so a panic in the handler (or the
-		// downstream relay call) cannot kill gosnmp's internal listener
-		// loop. Overhead is one goroutine per trap — acceptable for
-		// typical trap rates (≤1000/s).
 		safego.Go("snmpTrap:"+addr.IP.String(), func() {
 			log.Printf("[SNMP Trap] Received trap from %s (%d varbinds, version %s, community %q)",
 				addr.IP, len(packet.Variables), packet.Version, packet.Community)
 
-			if t.community != "" && packet.Community != t.community {
-				log.Printf("[SNMP Trap] Dropped: community mismatch (expected %q)", t.community)
+			if !t.allowCommunity(packet.Community) {
 				return
 			}
 			trap := t.parseTrap(packet, addr)
@@ -87,6 +85,14 @@ func (t *TrapReceiver) Stop() {
 	log.Println("[SNMP Trap] Listener stopped")
 }
 
+func (t *TrapReceiver) allowCommunity(community string) bool {
+	if community != t.community {
+		log.Printf("[SNMP Trap] Dropped: community mismatch (expected %q, got %q)", t.community, community)
+		return false
+	}
+	return true
+}
+
 func (t *TrapReceiver) parseTrap(packet *gosnmp.SnmpPacket, addr *net.UDPAddr) *relay.TrapEvent {
 	if len(packet.Variables) == 0 {
 		return nil
@@ -97,18 +103,13 @@ func (t *TrapReceiver) parseTrap(packet *gosnmp.SnmpPacket, addr *net.UDPAddr) *
 		SourceIP:  addr.IP.String(),
 	}
 
-	// SNMPv2c/v3 traps: the trap OID is the VALUE of the snmpTrapOID.0 varbind,
-	// not the name. The first two varbinds are sysUpTime.0 and snmpTrapOID.0.
-	// SNMPv1 traps: gosnmp puts the enterprise OID in the SnmpTrap field.
 	trapOID := ""
 
 	if packet.Version == gosnmp.Version1 {
-		// v1: trap OID is constructed from enterprise + specific-trap
 		if packet.SnmpTrap.Enterprise != "" {
 			trapOID = fmt.Sprintf("%s.0.%d", packet.SnmpTrap.Enterprise, packet.SnmpTrap.SpecificTrap)
 		}
 	} else {
-		// v2c/v3: look for snmpTrapOID.0 varbind — its value is the trap OID
 		for _, v := range packet.Variables {
 			if v.Name == snmpTrapOID {
 				if oid, ok := v.Value.(string); ok {
@@ -119,7 +120,6 @@ func (t *TrapReceiver) parseTrap(packet *gosnmp.SnmpPacket, addr *net.UDPAddr) *
 		}
 	}
 
-	// Check if it's a known vendor trap via registered profiles
 	if trapOID != "" {
 		if tt, sev := lookupTrapOID(trapOID); tt != "" {
 			trap.TrapOID = trapOID
@@ -128,7 +128,6 @@ func (t *TrapReceiver) parseTrap(packet *gosnmp.SnmpPacket, addr *net.UDPAddr) *
 		}
 	}
 
-	// Also scan varbind names as fallback (some devices put the trap OID as a varbind name)
 	if trap.TrapOID == "" {
 		for _, v := range packet.Variables {
 			if tt, sev := lookupTrapOID(v.Name); tt != "" {
@@ -140,14 +139,12 @@ func (t *TrapReceiver) parseTrap(packet *gosnmp.SnmpPacket, addr *net.UDPAddr) *
 		}
 	}
 
-	// If we still have no recognized OID, accept it as a generic trap with the raw OID
 	if trap.TrapOID == "" {
 		if trapOID != "" {
 			trap.TrapOID = trapOID
 			trap.TrapType = "GENERIC"
 			trap.Severity = "info"
 		} else {
-			// Completely unrecognized — log and drop
 			log.Printf("[SNMP Trap] Unrecognized trap from %s, varbinds:", addr.IP)
 			for _, v := range packet.Variables {
 				log.Printf("[SNMP Trap]   OID=%s Type=%d", v.Name, v.Type)
@@ -156,7 +153,6 @@ func (t *TrapReceiver) parseTrap(packet *gosnmp.SnmpPacket, addr *net.UDPAddr) *
 		}
 	}
 
-	// Build message from all varbinds (skip sysUpTime and snmpTrapOID meta-varbinds)
 	trap.Message = buildTrapMessage(trap.TrapType, packet.Variables)
 
 	return trap
@@ -167,7 +163,6 @@ func buildTrapMessage(trapType string, vars []gosnmp.SnmpPDU) string {
 	sb.WriteString(trapType)
 
 	for _, v := range vars {
-		// Skip the standard meta-varbinds
 		if v.Name == snmpTrapOID || v.Name == sysUpTimeOID {
 			continue
 		}
@@ -203,7 +198,6 @@ func formatVarbindValue(v gosnmp.SnmpPDU) string {
 	return ""
 }
 
-// lookupTrapOID searches all registered vendor profiles for the given trap OID.
 func lookupTrapOID(oid string) (trapType string, severity string) {
 	vendorMu.RLock()
 	defer vendorMu.RUnlock()

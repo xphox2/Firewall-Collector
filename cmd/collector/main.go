@@ -25,7 +25,7 @@ import (
 	"firewall-collector/internal/tftp"
 )
 
-const version = "1.2.79"
+const version = "1.2.80"
 
 type Collector struct {
 	cfg            *config.ProbeConfig
@@ -68,7 +68,10 @@ type Collector struct {
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("Config error: %v", err)
+	}
 	probeCfg := &cfg.Probe
 
 	if probeCfg.RegistrationKey == "" {
