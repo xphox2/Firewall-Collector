@@ -13,23 +13,32 @@ import (
 // withCapturedLog runs fn with the package's logf swapped for one that
 // captures output into a buffer. Waits for `expected` log calls to complete
 // before returning the buffer's contents, so the test never reads while a
-// goroutine is still writing. This is the race-safe replacement for the
-// old `withCapturedLog` (which used `log.SetOutput` and racy time.Sleep).
+// goroutine is still writing. The buffer is protected by a mutex because
+// Go's race detector doesn't infer happens-before from the atomic counter
+// alone — a concurrent goroutine could still be inside Fprintf when the
+// test calls String, even if the counter has already incremented. The
+// mutex makes the write/read pair serializable.
 func withCapturedLog(t *testing.T, expected int, fn func()) string {
 	t.Helper()
 	var (
+		mu      sync.Mutex
 		buf     bytes.Buffer
 		counter int32
 	)
 	saved := logf
 	logf = func(format string, args ...interface{}) {
 		atomic.AddInt32(&counter, 1)
+		mu.Lock()
 		fmt.Fprintf(&buf, format, args...)
+		mu.Unlock()
 	}
 	defer func() { logf = saved }()
 	fn()
 	waitForCount(t, &counter, int32(expected), 2*time.Second)
-	return buf.String()
+	mu.Lock()
+	out := buf.String()
+	mu.Unlock()
+	return out
 }
 
 // withCountingLogf swaps the package's logf for one that increments an
