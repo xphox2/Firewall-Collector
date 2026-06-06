@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -357,23 +358,9 @@ func NewClient(cfg Config) *Client {
 		cfg.HeartbeatInterval = 60 * time.Second
 	}
 
-	tlsConfig := &tls.Config{}
-
-	if cfg.CACertFile != "" {
-		caCert, err := os.ReadFile(cfg.CACertFile)
-		if err != nil {
-			log.Fatalf("Failed to read CA certificate file %s: %v", cfg.CACertFile, err)
-		}
-		caPool := x509.NewCertPool()
-		if !caPool.AppendCertsFromPEM(caCert) {
-			log.Fatalf("Failed to parse CA certificate from %s", cfg.CACertFile)
-		}
-		tlsConfig.RootCAs = caPool
-	}
-
-	if cfg.InsecureSkipVerify {
-		log.Println("WARNING: TLS certificate verification is disabled — do not use in production")
-		tlsConfig.InsecureSkipVerify = true
+	tlsConfig, err := buildTLSConfig(cfg)
+	if err != nil {
+		log.Fatalf("%v", err)
 	}
 
 	return &Client{
@@ -391,6 +378,67 @@ func NewClient(cfg Config) *Client {
 		done:     make(chan struct{}),
 	}
 }
+
+// buildTLSConfig assembles the *tls.Config used by the relay's HTTP client
+// (AUDIT-048). It is split out of NewClient so the error paths are unit
+// testable without spawning a subprocess; NewClient turns every error into
+// log.Fatalf because they all represent startup misconfigurations that must
+// abort the process before the first request goes out.
+//
+// mTLS (PROBE_TLS_CERT + PROBE_TLS_KEY) is loaded here. Previously the cert
+// and key paths were parsed from env vars and stored on Config, but NewClient
+// silently dropped them — so the documented mTLS mode was fiction.
+func buildTLSConfig(cfg Config) (*tls.Config, error) {
+	tlsConfig := &tls.Config{}
+
+	if cfg.CACertFile != "" {
+		caCert, err := os.ReadFile(cfg.CACertFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read CA certificate file %s: %w", cfg.CACertFile, err)
+		}
+		caPool := x509.NewCertPool()
+		if !caPool.AppendCertsFromPEM(caCert) {
+			return nil, fmt.Errorf("failed to parse CA certificate from %s", cfg.CACertFile)
+		}
+		tlsConfig.RootCAs = caPool
+	}
+
+	if cfg.TLSCertFile != "" || cfg.TLSKeyFile != "" {
+		if cfg.TLSCertFile == "" || cfg.TLSKeyFile == "" {
+			return nil, fmt.Errorf(
+				"mTLS misconfiguration: both PROBE_TLS_CERT and PROBE_TLS_KEY must be set (got cert=%q key=%q)",
+				cfg.TLSCertFile, cfg.TLSKeyFile)
+		}
+		// Refuse world- or group-readable private keys. Skipped on Windows
+		// where the kernel doesn't enforce Unix permission bits.
+		if runtime.GOOS != "windows" {
+			info, err := os.Stat(cfg.TLSKeyFile)
+			if err != nil {
+				return nil, fmt.Errorf("stat TLS key file %s: %w", cfg.TLSKeyFile, err)
+			}
+			if mode := info.Mode().Perm(); mode&0o077 != 0 {
+				return nil, fmt.Errorf(
+					"TLS key file %s has permissive mode %#o — world/group readable private keys are rejected; chmod 600 (or stricter) and restart",
+					cfg.TLSKeyFile, mode)
+			}
+		}
+		cert, err := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"load mTLS client cert/key pair (cert=%s key=%s): %w",
+				cfg.TLSCertFile, cfg.TLSKeyFile, err)
+		}
+		tlsConfig.Certificates = []tls.Certificate{cert}
+	}
+
+	if cfg.InsecureSkipVerify {
+		log.Println("WARNING: TLS certificate verification is disabled — do not use in production")
+		tlsConfig.InsecureSkipVerify = true
+	}
+
+	return tlsConfig, nil
+}
+
 
 func generateRandomName() string {
 	adjectives := []string{"swift", "bright", "eager", "keen", "active", "bold", "calm", "sharp", "lively", "noble"}

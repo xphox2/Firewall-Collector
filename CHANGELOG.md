@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.79 - 2026-06-06
+
+### Fixed
+- **mTLS is now actually wired up** (closes AUDIT-048). `relay.NewClient` now loads `PROBE_TLS_CERT` + `PROBE_TLS_KEY` into `tls.Config.Certificates` via `tls.LoadX509KeyPair`. Previously the paths were parsed from env vars and stored on `Config.TLSCertFile` / `TLSKeyFile` but silently dropped - every connection was server-side TLS only, and the documented mTLS mode was fiction. The cert-loading logic was extracted into a `buildTLSConfig` helper so its error paths are unit-testable without subprocess.
+
+### Changed
+- **`relay.NewClient` now treats every mTLS misconfiguration as fatal at startup** (AUDIT-048). If only one of `TLSCertFile` / `TLSKeyFile` is set, `NewClient` calls `log.Fatalf` with a clear error referencing both env-var names. If the key file is world- or group-readable (mode `& 0o077 != 0`), `NewClient` also calls `log.Fatalf` - better to refuse to start than to silently ship a half-protected private key. The perm check is skipped on Windows where Unix bits are not enforced.
+
+### Added
+- **5 tests in `internal/relay/relay_mtls_audit048_test.go`** (AUDIT-048). `TestNewClient_LoadsClientCertificate` (cert+key -> `Certificates` populated with 1 entry), `TestNewClient_OnlyOneCertOrKey_Fatals` (subprocess verifies `log.Fatalf` exit code 1 and the cert/key-mismatch message), `TestNewClient_KeyFileWorldReadable_RefusesToStart` (chmod 0o644), `TestNewClient_KeyFileGroupReadable_RefusesToStart` (chmod 0o640), and `TestNewClient_MTLSTLSHandshake_PresentsClientCert` (end-to-end mTLS - `httptest` server with `ClientAuth: RequireAndVerifyClientCert` confirms the client cert is actually presented on the wire). The three "fatals" tests use the standard subprocess-wrap pattern since `log.Fatalf` calls `os.Exit(1)`. Perm tests skip on Windows.
+
 ## 1.2.78 - 2026-06-06
 
 ### Changed
