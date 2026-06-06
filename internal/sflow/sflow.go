@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"firewall-collector/internal/relay"
+	"firewall-collector/internal/safego"
 )
 
 type SFlowReceiver struct {
@@ -55,7 +56,7 @@ func (r *SFlowReceiver) Start(handler func(*relay.FlowSample)) error {
 	}
 
 	r.running.Store(true)
-	go r.readLoop()
+	safego.Go("sflow:read", r.readLoop)
 
 	log.Printf("[sFlow] Listening on %s:%d", r.ListenAddr, r.Port)
 	return nil

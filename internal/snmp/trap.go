@@ -8,13 +8,14 @@ import (
 	"time"
 
 	"firewall-collector/internal/relay"
+	"firewall-collector/internal/safego"
 
 	"github.com/gosnmp/gosnmp"
 )
 
 // Standard SNMPv2c trap varbind OIDs
 const (
-	snmpTrapOID = ".1.3.6.1.6.3.1.1.4.1.0"
+	snmpTrapOID  = ".1.3.6.1.6.3.1.1.4.1.0"
 	sysUpTimeOID = ".1.3.6.1.2.1.1.3.0"
 )
 
@@ -39,30 +40,36 @@ func (t *TrapReceiver) Start(handler func(*relay.TrapEvent)) error {
 	t.handler = handler
 
 	t.server.OnNewTrap = func(packet *gosnmp.SnmpPacket, addr *net.UDPAddr) {
-		log.Printf("[SNMP Trap] Received trap from %s (%d varbinds, version %s, community %q)",
-			addr.IP, len(packet.Variables), packet.Version, packet.Community)
+		// Launch a goroutine per trap so a panic in the handler (or the
+		// downstream relay call) cannot kill gosnmp's internal listener
+		// loop. Overhead is one goroutine per trap — acceptable for
+		// typical trap rates (≤1000/s).
+		safego.Go("snmpTrap:"+addr.IP.String(), func() {
+			log.Printf("[SNMP Trap] Received trap from %s (%d varbinds, version %s, community %q)",
+				addr.IP, len(packet.Variables), packet.Version, packet.Community)
 
-		if t.community != "" && packet.Community != t.community {
-			log.Printf("[SNMP Trap] Dropped: community mismatch (expected %q)", t.community)
-			return
-		}
-		trap := t.parseTrap(packet, addr)
-		if trap != nil && t.handler != nil {
-			log.Printf("[SNMP Trap] Accepted: type=%s severity=%s from %s", trap.TrapType, trap.Severity, trap.SourceIP)
-			t.handler(trap)
-		}
+			if t.community != "" && packet.Community != t.community {
+				log.Printf("[SNMP Trap] Dropped: community mismatch (expected %q)", t.community)
+				return
+			}
+			trap := t.parseTrap(packet, addr)
+			if trap != nil && t.handler != nil {
+				log.Printf("[SNMP Trap] Accepted: type=%s severity=%s from %s", trap.TrapType, trap.Severity, trap.SourceIP)
+				t.handler(trap)
+			}
+		})
 	}
 
 	listenAddr := fmt.Sprintf("%s:%d", t.listenAddr, t.port)
 	log.Printf("[SNMP Trap] Starting listener on %s", listenAddr)
 
 	errCh := make(chan error, 1)
-	go func() {
+	safego.Go("snmpTrap:listen", func() {
 		if err := t.server.Listen(listenAddr); err != nil {
 			errCh <- err
 		}
 		close(errCh)
-	}()
+	})
 
 	select {
 	case err := <-errCh:

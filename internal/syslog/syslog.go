@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"firewall-collector/internal/relay"
+	"firewall-collector/internal/safego"
 )
 
 const MaxMessageSize = 64 * 1024
@@ -53,7 +54,7 @@ func (s *SyslogReceiver) Start(handler func(*relay.SyslogMessage)) error {
 	}
 
 	s.running.Store(true)
-	go s.acceptLoop()
+	safego.Go("syslogTcp:accept", s.acceptLoop)
 
 	log.Printf("[Syslog TCP] Listening on %s", addr)
 	return nil
@@ -86,10 +87,10 @@ func (s *SyslogReceiver) acceptLoop() {
 			continue
 		}
 		s.connWg.Add(1)
-		go func() {
+		safego.Go("syslogTcp:handleConn", func() {
 			defer s.connWg.Done()
 			s.handleConnection(conn)
-		}()
+		})
 	}
 }
 
@@ -183,7 +184,7 @@ func (u *UDPSyslogReceiver) Start(handler func(*relay.SyslogMessage)) error {
 
 	u.running.Store(true)
 	u.wg.Add(1)
-	go u.readLoop()
+	safego.Go("syslogUdp:read", u.readLoop)
 
 	log.Printf("[Syslog UDP] Listening on %s", addr)
 	return nil
