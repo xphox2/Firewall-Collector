@@ -1,0 +1,20 @@
+# CODEOWNERS
+# Each line is a file pattern followed by one or more owners.
+# When a PR changes a file matching a pattern, the listed users are
+# automatically requested for review.
+# See: https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-repository/about-code-owners
+
+# Default owners for everything not matched below
+*           @xphox2
+
+# Security-sensitive code
+/internal/relay/      @xphox2
+/internal/ssh/        @xphox2
+/internal/snmp/       @xphox2
+/internal/syslog/     @xphox2
+/internal/tftp/       @xphox2
+/internal/safego/     @xphox2
+/Dockerfile           @xphox2
+/docker-compose.yml  @xphox2
+/.github/workflows/   @xphox2
+/SECURITY.md          @xphox2
