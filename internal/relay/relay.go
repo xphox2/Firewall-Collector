@@ -421,13 +421,34 @@ func randBytes(n int) []byte {
 }
 
 func (c *Client) doAuthenticatedRequest(method, url string, body []byte) (*http.Response, error) {
+	return c.doAuthenticatedRequestH(method, url, body, nil)
+}
+
+// doAuthenticatedRequestH is doAuthenticatedRequest with extra request headers
+// (e.g. the AUDIT-042 X-Probe-Batch-ID idempotency key).
+func (c *Client) doAuthenticatedRequestH(method, url string, body []byte, headers map[string]string) (*http.Response, error) {
 	req, err := http.NewRequest(method, url, bytes.NewBuffer(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.Config.RegistrationKey)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
 	return c.httpClient.Do(req)
+}
+
+// newBatchID returns a random idempotency key for one probe data batch
+// (AUDIT-042). It is generated once per batch and reused across that batch's
+// retry attempts, so the server can dedupe a batch whose response timed out
+// after it was actually saved instead of inserting duplicate rows.
+func newBatchID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("ts-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
 }
 
 // --- Registration ---
@@ -1026,8 +1047,11 @@ func (c *Client) sendBatch(url, name string, data interface{}) bool {
 		return false
 	}
 
+	// AUDIT-042: one idempotency key per batch, reused across all retry
+	// attempts so the server dedupes a timed-out-but-saved batch.
+	batchID := newBatchID()
 	for attempt := 0; attempt < 3; attempt++ {
-		resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
+		resp, err := c.doAuthenticatedRequestH("POST", url, jsonData, map[string]string{"X-Probe-Batch-ID": batchID})
 		if err != nil {
 			log.Printf("[Relay] Failed to send %s batch (attempt %d/3): %v", name, attempt+1, err)
 			time.Sleep(time.Duration(1<<uint(attempt)) * time.Second)

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.74 - 2026-06-05
+
+### Fixed
+- **Batch sends now carry an idempotency key (AUDIT-042)**: `sendBatch` generates a stable `X-Probe-Batch-ID` (random 128-bit hex via `newBatchID`) once per batch and reuses it across all retry attempts, sending it on every POST. This lets the central server dedupe a batch whose response timed out *after* it was saved, instead of inserting duplicate rows on the collector's retry — previously this double-counted ping downtime. Pairs with server v0.10.327, which records `(probe_id, batch_id)` and short-circuits repeats. `doAuthenticatedRequest` now delegates to a header-aware `doAuthenticatedRequestH`; existing callers are unchanged. Applies to the queued-batch sends (syslog/traps/flows/pings); direct sends are unchanged (out of the audit's scope).
+
+### Tests
+- **`relay_idempotency_audit042_test.go`**: `newBatchID` uniqueness/non-empty, and the crux invariant — the `X-Probe-Batch-ID` is identical across a batch's retry attempts (verified against an `httptest` server that forces one retry), since a per-attempt id would defeat server dedup.
+
 ## 1.2.73 - 2026-04-28
 
 ### Refactored
