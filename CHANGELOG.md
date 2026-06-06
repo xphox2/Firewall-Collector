@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.2.95 - 2026-06-06
+
+### Fixed
+- **SendConfigRevision retry-with-backoff** (closes AUDIT-054). `internal/relay/relay.go` `SendConfigRevision` was the only `Send*` method with zero delivery durability — a single POST, no retry, no requeue, no escalation beyond `log.Printf`. A misfire from TFTP, a 5xx from the central server, or a transient 60 s TLS handshake failure silently dropped the only copy of the config backup. Now:
+  - A new `revisionQueue []*ConfigRevision` (guarded by `c.mu`, matching the trap/ping/syslog/flow pattern) holds failed revisions.
+  - `SendConfigRevision` enqueues on **both** transport errors (TLS handshake, DNS, conn reset) and non-2xx HTTP responses, and returns an error to the caller.
+  - `syncData` drains `revisionQueue` via a new `sendRevisionBatch` helper, which retries each revision 3× with 1 s / 2 s backoff, attempts re-registration on 401/403/404, and re-queues revisions that still fail at the end of the budget.
+  - Fixed the documented `defer resp.Body.Close()` / `io.ReadAll` ordering bug at the old `relay.go:1166-1172` — the response body is now read **before** the close, so the log lines actually contain the server's error message.
+- **Approval gate is preserved**: `c.approved.Load() == false` still returns immediately without enqueuing (an unapproved probe is a state issue, not a network issue).
+- **Queue capacity**: `revisionQueue` is bounded by the same `maxQueueSize` (default 10000) as the other queues; oldest entry is dropped on overflow.
+
+### Tests
+- New `internal/relay/relay_audit054_test.go` (14 tests) covers: single-POST semantics of `SendConfigRevision`, enqueue-on-5xx, enqueue-on-transport-error, enqueue-on-502, no-enqueue-when-unapproved, response-body regression for the close/read order, success path, request-shape pinning (method/path/auth/JSON body), `enqueueRevision` overflow-drops-oldest, `requeueRevisions` prepends-to-front + respects-capacity, `sendRevisionBatch` retries 3× with backoff and requeues on total failure, success-clears-queue, `syncData` drains the queue and routes to `/config-revision`, `syncData` restores the queue when not approved, and an over-TLS smoke test.
+
 ## 1.2.88 - 2026-06-06
 
 ### Changed

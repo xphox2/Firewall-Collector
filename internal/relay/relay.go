@@ -334,10 +334,11 @@ type Client struct {
 	lastReregisterAttempt time.Time
 
 	// Data queues
-	trapQueue   []*TrapEvent
-	pingQueue   []*PingResult
-	syslogQueue []*SyslogMessage
-	flowQueue   []*FlowSample
+	trapQueue     []*TrapEvent
+	pingQueue     []*PingResult
+	syslogQueue   []*SyslogMessage
+	flowQueue     []*FlowSample
+	revisionQueue []*ConfigRevision // AUDIT-054: retry queue for failed config backups
 }
 
 func NewClient(cfg Config) *Client {
@@ -839,6 +840,9 @@ func (c *Client) syncData() {
 	flows := c.flowQueue
 	c.flowQueue = nil
 
+	revisions := c.revisionQueue
+	c.revisionQueue = nil
+
 	c.mu.Unlock()
 
 	if !c.approved.Load() {
@@ -849,6 +853,7 @@ func (c *Client) syncData() {
 			c.pingQueue = append(pings, c.pingQueue...)
 			c.syslogQueue = append(syslogs, c.syslogQueue...)
 			c.flowQueue = append(flows, c.flowQueue...)
+			c.revisionQueue = append(revisions, c.revisionQueue...)
 			c.mu.Unlock()
 			return
 		}
@@ -871,6 +876,9 @@ func (c *Client) syncData() {
 	}
 	if len(flows) > 0 {
 		c.sendBatchesSequential(baseURL+"/flows", "flows", flows)
+	}
+	if len(revisions) > 0 {
+		c.sendRevisionBatch(baseURL+"/config-revision", revisions)
 	}
 }
 
@@ -1191,19 +1199,118 @@ func (c *Client) SendConfigRevision(rev *ConfigRevision) error {
 	url := c.Config.ServerURL + "/api/probes/" + fmt.Sprint(c.probeID) + "/config-revision"
 	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
 	if err != nil {
-		return fmt.Errorf("failed to send config revision: %w", err)
+		// AUDIT-054: enqueue on transport errors (TLS handshake, DNS, conn reset)
+		// so a transient outage doesn't drop the only copy of the config backup.
+		c.enqueueRevision(rev)
+		return fmt.Errorf("failed to send config revision (enqueued for retry): %w", err)
 	}
-	defer resp.Body.Close()
 
-	// Read response body for logging
+	// AUDIT-054: read the body BEFORE the deferred close — otherwise the
+	// response body is always empty in the log line below.
 	bodyBytes, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		log.Printf("[RELAY] SendConfigRevision success for device %d: %s", rev.DeviceID, string(bodyBytes))
 		return nil
 	}
-	log.Printf("[RELAY] SendConfigRevision failed for device %d - status %d: %s", rev.DeviceID, resp.StatusCode, string(bodyBytes))
-	return fmt.Errorf("send config revision returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	// AUDIT-054: non-2xx means the server didn't durably store the revision;
+	// enqueue it so the next syncData cycle retries.
+	c.enqueueRevision(rev)
+	log.Printf("[RELAY] SendConfigRevision failed for device %d - status %d (enqueued for retry): %s", rev.DeviceID, resp.StatusCode, string(bodyBytes))
+	return fmt.Errorf("send config revision returned status %d (enqueued for retry): %s", resp.StatusCode, string(bodyBytes))
+}
+
+// enqueueRevision appends a failed *ConfigRevision to revisionQueue under c.mu.
+// If the queue is full, the oldest entry is dropped to make room (matching the
+// behaviour of trap/ping/syslog/flow queues). AUDIT-054.
+func (c *Client) enqueueRevision(rev *ConfigRevision) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.revisionQueue) >= maxQueueSize {
+		c.revisionQueue = append(c.revisionQueue[:0], c.revisionQueue[1:]...)
+		log.Println("[Relay] Revision queue full, dropping oldest entry")
+	}
+	c.revisionQueue = append(c.revisionQueue, rev)
+}
+
+// requeueRevisions prepends revisions that still failed after the batch's
+// internal retry loop back to the front of revisionQueue, so they're retried
+// first in the next syncData cycle. AUDIT-054.
+func (c *Client) requeueRevisions(items []*ConfigRevision) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	space := maxQueueSize - len(c.revisionQueue)
+	if space > len(items) {
+		space = len(items)
+	}
+	if space > 0 {
+		c.revisionQueue = append(items[:space], c.revisionQueue...)
+		log.Printf("[Relay] Re-queued %d config revisions", space)
+	} else {
+		log.Printf("[Relay] WARNING: Could not requeue %d config revisions - queue full", len(items))
+	}
+}
+
+// sendRevisionBatch attempts to deliver each config revision individually with
+// retry and re-registration on auth errors. Revisions that still fail after the
+// full retry budget are re-queued for the next syncData cycle. AUDIT-054.
+func (c *Client) sendRevisionBatch(url string, revisions []*ConfigRevision) {
+	var failed []*ConfigRevision
+	for _, rev := range revisions {
+		if !c.sendOneRevisionWithRetry(url, rev) {
+			failed = append(failed, rev)
+		}
+	}
+	if len(failed) > 0 {
+		c.requeueRevisions(failed)
+	}
+}
+
+func (c *Client) sendOneRevisionWithRetry(url string, rev *ConfigRevision) bool {
+	jsonData, err := json.Marshal(rev)
+	if err != nil {
+		log.Printf("[Relay] Failed to marshal config revision: %v", err)
+		return false
+	}
+
+	for attempt := 0; attempt < 3; attempt++ {
+		resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
+		if err != nil {
+			log.Printf("[Relay] Failed to send config revision for device %d (attempt %d/3): %v", rev.DeviceID, attempt+1, err)
+			if attempt < 2 {
+				time.Sleep(time.Duration(1<<uint(attempt)) * time.Second)
+			}
+			continue
+		}
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			log.Printf("[Relay] Sent config revision for device %d", rev.DeviceID)
+			return true
+		}
+
+		if resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 404 {
+			log.Printf("[Relay] Probe rejected (%d on config-revision), attempting re-registration...", resp.StatusCode)
+			c.approved.Store(false)
+			if c.tryReregister() {
+				continue
+			}
+			return false
+		}
+
+		if resp.StatusCode == 400 {
+			log.Printf("[Relay] Bad request (400) for config revision: %s - not retrying", string(bodyBytes))
+			return false
+		}
+
+		log.Printf("[Relay] Failed to send config revision for device %d: status %d (attempt %d/3): %s", rev.DeviceID, resp.StatusCode, attempt+1, string(bodyBytes))
+		if attempt < 2 {
+			time.Sleep(time.Duration(1<<uint(attempt)) * time.Second)
+		}
+	}
+	return false
 }
 
 func (c *Client) SendProcessSnapshot(snap *ProcessSnapshot) error {
