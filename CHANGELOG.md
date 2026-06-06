@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.78 - 2026-06-06
+
+### Changed
+- **Pinned default image tag from `:latest` to `:1.2`** in `docker-compose.yml` (closes AUDIT-046). Operators running `docker compose up -d` no longer get an opaque, un-pinned image — they get the newest 1.2.x release. Tag upgrade and rollback are now predictable.
+- **Extended CI tag list** in `.github/workflows/docker.yml`. In addition to the existing `:1.2.78` and `:1.2`, the default-branch build now also pushes `:stable` and a forensic `:1.2.78-<sha>` trace tag. `:latest` is preserved for compatibility. See the new README "Upgrading" section for which tag to use when.
+- **README.md Quick Start** example now references `xphox/firewall-collector:1.2` instead of `:latest`.
+
+### Added
+- **README.md "Upgrading" section**: documents the available tags (`:1.2.78` / `:1.2` / `:stable` / `:latest`), the upgrade command (`docker compose pull && docker compose up -d`), how to pin to a specific patch in `docker-compose.yml`, and the rollback procedure (`docker compose pull xphox/firewall-collector:1.2.77`).
+- **DEPLOY.md** example updated to use `:1.2` and points to the README "Upgrading" section.
+
 ## 1.2.77 - 2026-06-06
 
 ### Fixed

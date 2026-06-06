@@ -29,7 +29,7 @@ docker run -d \
   -p 514:514/udp \
   -p 514:514/tcp \
   -p 6343:6343/udp \
-  firewall-collector:latest
+  xphox/firewall-collector:1.2
 ```
 
 **Binary:**
@@ -40,6 +40,47 @@ PROBE_REGISTRATION_KEY=your-registration-key ./firewall-collector
 ### 3. Map to Site (in Server Admin Panel)
 
 Once the collector connects, it will appear in **Pending Approvals**. Approve it, then edit the probe to assign it to a site. Assigned devices will be automatically polled via SNMP and pinged.
+
+## Upgrading
+
+The collector's `docker-compose.yml` and Quick Start example pin to the moving `1.2` major.minor tag rather than `:latest`, so you always know what you have running and can roll back predictably.
+
+### Available image tags
+
+| Tag | Stability | Use it for |
+|-----|-----------|------------|
+| `:1.2.78` | exact version | production — pinned, reproducible builds |
+| `:1.2`    | moving major.minor | gets every 1.2.x patch automatically (default in `docker-compose.yml`) |
+| `:stable` | tracks the default branch | the most recent merge to `master` that passed CI |
+| `:latest` | tracks the default branch | alias for `:stable`; exists for tooling compatibility |
+
+### Upgrade to the latest patch
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+`docker compose pull` re-resolves `:1.2` to the newest 1.2.x image on Docker Hub, and `up -d` recreates the container. The collector's data directory and registration state are preserved across restarts.
+
+### Pin to a specific version
+
+Edit `docker-compose.yml` and change the `image:` line:
+
+```yaml
+image: xphox/firewall-collector:1.2.78
+```
+
+Then `docker compose up -d`. Use a pinned tag whenever you need to reproduce a known-good deployment (compliance, change control, etc.).
+
+### Roll back to a previous version
+
+```bash
+docker compose pull xphox/firewall-collector:1.2.77
+docker compose up -d
+```
+
+To make the rollback stick across future `pull` runs, edit `docker-compose.yml` to the older tag (e.g. `:1.2.77`) and re-run `docker compose up -d`.
 
 ## Environment Variables
 
