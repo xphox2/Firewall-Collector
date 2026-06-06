@@ -88,6 +88,19 @@
 - Expected: `BenchmarkSendTrap_Parallel` at `-cpu 8` should be 2–5× the `-cpu 1` rate on the same machine, instead of the pre-fix ~1× (saturated on `c.mu`).
 
 
+## 1.2.98 - 2026-06-06
+
+### Changed
+- **Tune `relay.Client` `http.Transport` for fleet scale (closes AUDIT-072)**. The previous config (`MaxIdleConns: 25`, `MaxIdleConnsPerHost: 10`, no `ResponseHeaderTimeout`, no `ForceAttemptHTTP2`) was sized for a handful of devices and was the binding constraint for the 100-device fleet polling every 60s. New config:
+  - `MaxIdleConns: 200` (was 25) — headroom for connection reuse across the whole fleet without churning.
+  - `MaxIdleConnsPerHost: 50` (was 10) — fits the 100-device poll cadence with a 2x safety margin; the 10 cap forced the transport to re-handshake on every cycle once the pool saturated.
+  - `IdleConnTimeout: 90s` — unchanged.
+  - `ResponseHeaderTimeout: 10s` (new) — a slow central server (DB lock, long GC pause) can no longer hold a request goroutine for the full 60s `Client.Timeout`; the transport-level cap fires after 10s of header silence. Backed by `TestHTTPTransport_ResponseHeaderTimeout_Triggers`.
+  - `ForceAttemptHTTP2: true` (new) — free perf win; ALPN-negotiated h2 multiplexes syslog batches over a single connection. Backed by `TestHTTPTransport_HTTP2_Used`.
+
+  Gzip on outbound POST bodies (also flagged in AUDIT-072) is **deferred** — the central server in `Firewall-Monitoring` would need to add `Accept-Encoding: gzip` handling, so it's a cross-cutting change requiring server coordination. The transport changes above are safe to ship without server changes.
+
+
 ## 1.2.88 - 2026-06-06
 
 ### Changed

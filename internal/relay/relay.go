@@ -371,10 +371,12 @@ func NewClient(cfg Config) *Client {
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second,
 			Transport: &http.Transport{
-				TLSClientConfig:     tlsConfig,
-				MaxIdleConns:        25,
-				MaxIdleConnsPerHost: 10,
-				IdleConnTimeout:     90 * time.Second,
+				TLSClientConfig:       tlsConfig,
+				MaxIdleConns:          200,
+				MaxIdleConnsPerHost:   50,
+				IdleConnTimeout:       90 * time.Second,
+				ResponseHeaderTimeout: 10 * time.Second,
+				ForceAttemptHTTP2:     true,
 			},
 		},
 		stopChan: make(chan struct{}),
