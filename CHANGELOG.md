@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.88 - 2026-06-06
+
+### Changed
+- **Pin Go toolchain to `1.25.11` in `.github/workflows/docker.yml`** (was `1.25`, which resolved to `1.25.10` and exposed two Go-stdlib CVEs that `govulncheck` from AUDIT-055 caught):
+  - **GO-2026-5039** in `net/textproto@go1.25.10`, fixed in `go1.25.11`.
+  - **GO-2026-5037** in `crypto/x509@go1.25.10`, fixed in `go1.25.11`.
+
+  Both were reachable from production code: `GO-2026-5039` via `diag/main` (`fmt.Fprintln` → `x509.HostnameError.Error` path), and `GO-2026-5037` via `relay.Client.SendConfigRevision` (`io.ReadAll` → `x509.Certificate.Verify` / `VerifyHostname` path). Pinning the toolchain to a specific patch makes future CI runs reproducible — no surprises when a new 1.25.x patch lands with breaking changes. The Dockerfile (`golang:1.25-alpine`) and `go.mod` (`go 1.25.0`) are unchanged; both follow the latest 1.25.x automatically.
+
+### Unblocks
+- `master` build (was red since AUDIT-055 merged). All 6 CI steps now pass.
+
 ## 1.2.87 - 2026-06-06
 
 ### Fixed
