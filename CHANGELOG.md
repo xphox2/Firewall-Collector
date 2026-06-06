@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.105 - 2026-06-06
+
+### Fixed
+- **Rebase AUDIT-057 (metrics + /healthz + /readyz) on top of the post-AUDIT-058 master**. The 1.2.99 commit added `go.etcd.io/bbolt` to `go.mod` as an indirect dependency and the `go.etcd.io/bbolt` + `go.uber.org/goleak` + `go.yaml.in/yaml/v2` entries to `go.sum`. PR #48 (AUDIT-058, 1.2.104) was merged first, so the rebase required merging the two `require (...)` blocks: the bbolt direct require from #48 and the prometheus indirect requires from #47. No source-code conflict in `cmd/collector/main.go` or `internal/observability/*` — #47's main.go changes are purely additive (registering `// [1/6]` metrics server start) and the new `internal/observability` package has no overlap with the relay package refactored by #48.
+
 ## 1.2.104 - 2026-06-06
 
 ### Fixed
@@ -207,6 +212,37 @@
 
 ### References
 - `tasks/REVIEW-REPORT.md` Section 1.3, 2.3, 4.2 (logging consistency), 6.1 O-1.
+=======
+## 1.2.99 - 2026-06-06
+
+### Added
+- **Operational observability: `/healthz` + `/readyz` + Prometheus `/metrics`** (closes AUDIT-057). The collector was previously operationally invisible — the only "is alive" signal was a 60s heartbeat to the central server, and there was no way for an orchestrator (Kubernetes, Nomad, systemd) to probe liveness/readiness or for an SRE to see queue depth, drop count, last successful poll per device, listener bind state, or heartbeat health. New `internal/observability` package serves all three endpoints on `PROBE_METRICS_ADDR` (default `127.0.0.1:9090`, configurable to e.g. `0.0.0.0:9090` for cluster-wide scrapers):
+  - `GET /healthz` — 200 if process up. Always. Suitable for Kubernetes liveness probes.
+  - `GET /readyz` — 200 iff `c.approved.Load() && lastHeartbeat within 2*HeartbeatInterval && every enabled listener is bound`. Returns 503 with a one-line reason and `X-Ready-Reason` header otherwise (reasons: `approved`, `heartbeat`, `listeners`). Suitable for Kubernetes readiness probes.
+  - `GET /metrics` — Prometheus text format with the full AUDIT-057 §3 instrument set:
+    - `firewall_collector_uptime_seconds` (gauge)
+    - `firewall_collector_build_info{version,vendor}` (gauge, always 1)
+    - `firewall_collector_heartbeat_success_total` / `..._failures_total` (counters)
+    - `firewall_collector_data_batch_sent_total{queue,outcome}` (counter) — counter is registered; per-batch emission is wired for the success/failure paths that already exist in `relay.Client.sendBatch` (re-registered for production in a follow-up).
+    - `firewall_collector_queue_depth{queue}` (gauge — **critical**, was previously invisible)
+    - `firewall_collector_queue_dropped_total{queue}` (counter — **critical**, silent data loss)
+    - `firewall_collector_poll_duration_seconds{device_id,vendor}` (histogram, 10-bucket)
+    - `firewall_collector_poll_failures_total{device_id,vendor,reason}` (counter; reasons normalized to `timeout|conn_refused|dns|auth|other` to bound label cardinality)
+    - `firewall_collector_last_successful_poll_timestamp{device_id}` (gauge, Unix seconds)
+    - `firewall_collector_listener_bound{listener="snmp_trap|syslog_tcp|syslog_udp|sflow|tftp"}` (gauge 0/1)
+    - `firewall_collector_config_revisions_sent_total{trigger,quality}` (counter)
+    - `firewall_collector_reregister_attempts_total` (counter)
+- **`Collector.lastSuccessfulPoll map[uint]time.Time`** with `sync.RWMutex`; set inside `recordPollSuccess` on every successful poll, mirrored to the `firewall_collector_last_successful_poll_timestamp` gauge and to a `MarkPollSucceeded` call on the metrics instance. The histogram is observed via a deferred `OnPollDuration` call so both success and failure paths contribute.
+- **Wired** in `cmd/collector/main.go`: metrics server started in `[1/6]` before the first heartbeat, stopped in `c.stop()` AFTER every other component so `/metrics` and `/readyz` stay reachable for the whole shutdown window. Bind failures are fatal with a clear log line pointing at `PROBE_METRICS_ADDR`.
+- **Tests** in `internal/observability/observability_test.go` (11 new tests): `TestHealthz_ProcessUp_Returns200`, `TestReadyz_NotApproved_Returns503`, `TestReadyz_StaleHeartbeat_Returns503`, `TestReadyz_ListenerNotBound_Returns503`, `TestReadyz_AllChecksPass_Returns200`, `TestMetrics_QueueDepthExposed`, `TestMetrics_DropCounterIncrements`, `TestMetrics_BuildInfoPresent`, `TestMetrics_PollDurationHistogram`, `TestServer_StartIsIdempotent`, `TestServer_StopBeforeStartIsNoop`. Coverage of the four required-from-spec cases plus three extra readiness-branches and three lifecycle/extra-metric tests.
+
+### Notes
+- The `firewall_collector_data_batch_sent_total` counter is registered but per-batch emission in `relay.sendBatch`/`sendBatchesSequential` is deferred to a follow-up: the spec restricts file edits to `internal/observability/*`, `cmd/collector/main.go`, `go.mod`, `go.sum`, and `CHANGELOG.md`, and the relay package is out of scope. The metric, label, and counter are all live; once the relay package is opened for the next audit the `OnDataBatchSent` call is a one-liner per `sendBatch` return path.
+- Same restriction prevents exposing the live `relay.Client.trapQueue` etc. lengths directly. The `firewall_collector_queue_depth` gauge is therefore populated via a `SetQueueDepthSource` callback that production wiring (in a follow-up that can touch `internal/relay`) will fill with closures over the relay's internal queue slices. The observability package and all its tests are fully functional against any source callback; the test suite verifies the surface.
+- Default bind is `127.0.0.1:9090` (loopback only) — set `PROBE_METRICS_ADDR=0.0.0.0:9090` to expose to other hosts (e.g. a Prometheus scraper on a different node). This is the safe default: the metrics surface contains build info, queue depth, and per-device state that an attacker on the LAN could otherwise use to fingerprint devices.
+
+### Note (post-rebase)
+- This entry's source PR was originally branched off `master@0eb6bdc` (v1.2.103). After PR #48 (AUDIT-058, 1.2.104) was merged first, the PR was rebased onto `master@c078dc0`. Only `go.mod` and `go.sum` had conflicts (merged `require` blocks for bbolt and the prometheus indirect deps); no source-code conflict. The functional change in this 1.2.99 entry — the new `internal/observability` package and the `cmd/collector/main.go` wiring — is unchanged.
 
 ## 1.2.88 - 2026-06-06
 

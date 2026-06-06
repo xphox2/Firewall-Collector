@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/md5"
 	"fmt"
 	"log"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"firewall-collector/internal/config"
+	"firewall-collector/internal/observability"
 	"firewall-collector/internal/ping"
 	"firewall-collector/internal/relay"
 	"firewall-collector/internal/safego"
@@ -27,7 +29,30 @@ import (
 	"firewall-collector/internal/tftp"
 )
 
-const version = "1.2.104"
+// Package-level observability state. These live at package scope so
+// the metrics callbacks (registered with observability.New) can read
+// them even though the Collector struct isn't constructed yet when
+// the metrics server is started. Only main() ever writes to them;
+// the /readyz handler reads via closure.
+var (
+	listenerBoundMu sync.RWMutex
+	listenerBound   = map[string]bool{}
+
+	lastHeartbeatMu sync.RWMutex
+	lastHeartbeat   time.Time
+)
+
+// getEnv returns the value of the named environment variable, or
+// fallback if unset/empty. Duplicated from internal/config to avoid
+// modifying that package (out of scope for AUDIT-057).
+func getEnv(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+const version = "1.2.105"
 
 type Collector struct {
 	cfg            *config.ProbeConfig
@@ -65,6 +90,16 @@ type Collector struct {
 	// SSH polling: last poll time per device ID
 	sshLastPoll   map[uint]time.Time
 	sshLastPollMu sync.Mutex
+
+	// Observability (AUDIT-057). metrics is created at startup and
+	// shared with the metricsServer. lastSuccessfulPollMu guards the
+	// per-device last-successful-poll map; the metrics package holds
+	// its own copy, but the Collector also reads from this map when
+	// (future) code wants to know "has device X ever polled OK?"
+	metrics              *observability.Metrics
+	metricsServer        *observability.Server
+	lastSuccessfulPoll   map[uint]time.Time
+	lastSuccessfulPollMu sync.RWMutex
 }
 
 func main() {
@@ -112,6 +147,63 @@ func main() {
 		MaxBatchSize:       probeCfg.MaxBatchSize,
 	})
 
+	// Observability (AUDIT-057): start the metrics + probe server
+	// early so /healthz is reachable as soon as we have a process to
+	// probe, even before the first heartbeat. Bind to loopback by
+	// default — set PROBE_METRICS_ADDR to "0.0.0.0:9090" to expose
+	// on all interfaces (e.g. for a Prometheus scraper outside the
+	// host).
+	metricsAddr := getEnv("PROBE_METRICS_ADDR", "127.0.0.1:9090")
+
+	metrics := observability.New(observability.Config{
+		Version:           version,
+		Vendor:            "community",
+		HeartbeatInterval: probeCfg.HeartbeatInterval,
+		ApprovedFn:        relayClient.IsApproved,
+		LastHeartbeatFn: func() time.Time {
+			lastHeartbeatMu.RLock()
+			defer lastHeartbeatMu.RUnlock()
+			return lastHeartbeat
+		},
+		EnabledListenersFn: func() []string {
+			// Order is significant only for /readyz's "X-Ready-Reason"
+			// header value; the actual check iterates the whole slice.
+			names := make([]string, 0, 5)
+			if probeCfg.SNMPTrapEnabled {
+				names = append(names, "snmp_trap")
+			}
+			if probeCfg.SyslogEnabled {
+				names = append(names, "syslog_tcp", "syslog_udp")
+			}
+			if probeCfg.SFlowEnabled {
+				names = append(names, "sflow")
+			}
+			if probeCfg.TFTPConfigEnabled {
+				names = append(names, "tftp")
+			}
+			return names
+		},
+		ListenerBoundFn: func(name string) bool {
+			// Reads from the package-level listenerBound map, which
+			// the receiver start paths below update via
+			// markListenerBound(). Returning true for unknown names
+			// would be a bug, but /readyz only iterates names from
+			// EnabledListenersFn() so the map should never be
+			// queried with an unconfigured name.
+			listenerBoundMu.RLock()
+			defer listenerBoundMu.RUnlock()
+			return listenerBound[name]
+		},
+	})
+	metricsServer := observability.NewServer(metrics, metricsAddr)
+	if err := metricsServer.Start(); err != nil {
+		// Bind failure is fatal in production (operator forgot to
+		// change the port) but we want the log line to point at
+		// PROBE_METRICS_ADDR clearly so they can fix it.
+		log.Fatalf("Failed to start metrics server on %s: %v (set PROBE_METRICS_ADDR to a free port, e.g. 127.0.0.1:9091)", metricsAddr, err)
+	}
+	fmt.Printf("  -> Metrics server on %s (PROBE_METRICS_ADDR)\n", metricsAddr)
+
 	// Register with server
 	fmt.Println("[1/6] Registering with server...")
 	if err := relayClient.Register(); err != nil {
@@ -120,10 +212,13 @@ func main() {
 	fmt.Printf("  -> Registered as '%s' (ID: %d)\n\n", relayClient.GetProbeName(), relayClient.GetProbeID())
 
 	c := &Collector{
-		cfg:         probeCfg,
-		relayClient: relayClient,
-		stopChan:    make(chan struct{}),
-		failCount:   make(map[uint]int),
+		cfg:                probeCfg,
+		relayClient:        relayClient,
+		stopChan:           make(chan struct{}),
+		failCount:          make(map[uint]int),
+		metrics:            metrics,
+		metricsServer:      metricsServer,
+		lastSuccessfulPoll: make(map[uint]time.Time),
 	}
 
 	// Start TFTP server for config fetch if enabled
@@ -137,9 +232,7 @@ func main() {
 	// Start heartbeat + data sync loops
 	fmt.Println("[2/6] Starting heartbeat and data sync loops...")
 	safego.Go("relay:heartbeat", func() {
-		if err := relayClient.HeartbeatLoop(); err != nil {
-			log.Printf("Heartbeat loop error: %v", err)
-		}
+		c.runHeartbeatLoop(&lastHeartbeatMu, &lastHeartbeat)
 	})
 	safego.Go("relay:dataSend", func() {
 		if err := relayClient.DataSendLoop(); err != nil {
@@ -210,6 +303,8 @@ func main() {
 			log.Printf("  -> SNMP Trap failed to start: %v", err)
 		} else {
 			c.trapReceiver = trapReceiver
+			markListenerBound("snmp_trap", true)
+			c.metrics.SetListenerBound("snmp_trap", true)
 			fmt.Printf("  -> SNMP Trap on %s:%d\n", probeCfg.ListenAddr, probeCfg.SNMPTrapPort)
 		}
 	}
@@ -222,6 +317,8 @@ func main() {
 			log.Printf("  -> Syslog TCP failed to start: %v", err)
 		} else {
 			c.syslogTCP = syslogTCP
+			markListenerBound("syslog_tcp", true)
+			c.metrics.SetListenerBound("syslog_tcp", true)
 		}
 
 		syslogUDP := syslog.NewUDPSyslogReceiver(probeCfg.ListenAddr, probeCfg.SyslogPort)
@@ -231,6 +328,8 @@ func main() {
 			log.Printf("  -> Syslog UDP failed to start: %v", err)
 		} else {
 			c.syslogUDP = syslogUDP
+			markListenerBound("syslog_udp", true)
+			c.metrics.SetListenerBound("syslog_udp", true)
 			fmt.Printf("  -> Syslog TCP+UDP on %s:%d\n", probeCfg.ListenAddr, probeCfg.SyslogPort)
 		}
 	}
@@ -247,6 +346,8 @@ func main() {
 			log.Printf("  -> sFlow failed to start: %v", err)
 		} else {
 			c.sflowReceiver = sflowReceiver
+			markListenerBound("sflow", true)
+			c.metrics.SetListenerBound("sflow", true)
 			fmt.Printf("  -> sFlow on %s:%d\n", probeCfg.ListenAddr, probeCfg.SFlowPort)
 		}
 	}
@@ -281,6 +382,76 @@ func main() {
 	fmt.Println("Shutting down collector...")
 	c.stop()
 	fmt.Println("Collector stopped")
+}
+
+// runHeartbeatLoop wraps relayClient.HeartbeatLoop so we can record
+// the timestamp of every successful heartbeat (read by /readyz) and
+// increment the success/failure Prometheus counters on each cycle.
+// This is "wiring only" — the actual heartbeat logic is unchanged.
+func (c *Collector) runHeartbeatLoop(mu *sync.RWMutex, last *time.Time) {
+	if err := c.relayClient.SendHeartbeat(); err != nil {
+		log.Printf("Initial heartbeat error: %v", err)
+		c.metrics.OnHeartbeatFailure()
+	} else {
+		mu.Lock()
+		*last = time.Now()
+		mu.Unlock()
+		c.metrics.OnHeartbeatSuccess()
+	}
+
+	ticker := time.NewTicker(c.cfg.HeartbeatInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if err := c.relayClient.SendHeartbeat(); err != nil {
+				log.Printf("Heartbeat error: %v", err)
+				c.metrics.OnHeartbeatFailure()
+				continue
+			}
+			mu.Lock()
+			*last = time.Now()
+			mu.Unlock()
+			c.metrics.OnHeartbeatSuccess()
+		case <-c.stopChan:
+			return
+		}
+	}
+}
+
+// markListenerBound records that the named listener has either
+// successfully bound (bound=true) or been stopped (bound=false), so
+// /readyz and the firewall_collector_listener_bound gauge reflect
+// current reality.
+func markListenerBound(name string, bound bool) {
+	listenerBoundMu.Lock()
+	listenerBound[name] = bound
+	listenerBoundMu.Unlock()
+}
+
+// classifyPollErr maps an SNMP client error to a small, low-cardinality
+// reason label for the firewall_collector_poll_failures_total counter.
+// Keeping the set small prevents the Prometheus label space from
+// blowing up if some buggy device starts returning unique error
+// strings per poll.
+func classifyPollErr(err error) string {
+	if err == nil {
+		return "other"
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "timeout"):
+		return "timeout"
+	case strings.Contains(msg, "connection refused"):
+		return "conn_refused"
+	case strings.Contains(msg, "no such host"):
+		return "dns"
+	case strings.Contains(msg, "auth") || strings.Contains(msg, "community"):
+		return "auth"
+	default:
+		return "other"
+	}
 }
 
 func (c *Collector) runStartupDiagnostic() {
@@ -581,7 +752,12 @@ func (c *Collector) checkAndSendConfigRevision(dev relay.DeviceInfo, checksum st
 	}
 	if err := c.relayClient.SendConfigRevision(&rev); err != nil {
 		log.Printf("[SSH] Failed to send config revision for %s: %v", dev.Name, err)
+		return
 	}
+	// SSH-driven backups have no masked-password risk (the device
+	// returns the running config in cleartext), so the quality is
+	// always "full" here.
+	c.metrics.OnConfigRevisionSent("poll", "full")
 }
 
 // parseUploadFilename extracts the deviceID and the trigger source the
@@ -673,6 +849,7 @@ func (c *Collector) startTFTPServer() {
 		} else {
 			log.Printf("[TFTP] SUCCESS - Received and sent config for device %d (len=%d, checksum=%s, trigger=%s, quality=%s)",
 				deviceID, len(data), checksum, triggerSource, quality)
+			c.metrics.OnConfigRevisionSent(triggerSource, quality)
 		}
 		return nil
 	})
@@ -684,6 +861,8 @@ func (c *Collector) startTFTPServer() {
 
 	c.tftpServer = tftpServer
 	c.tftpListenIP = c.cfg.TFTPListenAddr
+	markListenerBound("tftp", true)
+	c.metrics.SetListenerBound("tftp", true)
 	log.Printf("[TFTP] Server started on %s (outbound IP determined per-device at backup time)", addr)
 }
 
@@ -996,19 +1175,28 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 		}
 	}
 
+	vendor := dev.Vendor
+	if vendor == "" {
+		vendor = "fortigate"
+	}
+
+	// Observability: time the poll so the histogram records actual
+	// wall-clock duration. Done in a deferred closure so the histogram
+	// captures success and failure paths uniformly.
+	pollStart := time.Now()
+	defer func() {
+		c.metrics.OnPollDuration(dev.ID, vendor, time.Since(pollStart))
+	}()
+
 	client, err := snmp.NewSNMPClient(dev.IPAddress, dev.SNMPPort, dev.SNMPCommunity, dev.SNMPVersion, v3)
 	if err != nil {
 		log.Printf("[SNMP] Connect failed for %s (%s:%d v%s community_len=%d): %v",
 			dev.Name, dev.IPAddress, dev.SNMPPort, dev.SNMPVersion, len(dev.SNMPCommunity), err)
 		c.recordPollFailure(dev.ID)
+		c.metrics.OnPollFailure(dev.ID, vendor, classifyPollErr(err))
 		return
 	}
 	defer client.Close()
-
-	vendor := dev.Vendor
-	if vendor == "" {
-		vendor = "fortigate"
-	}
 
 	// Poll system status
 	status, err := client.GetSystemStatus(vendor)
@@ -1016,10 +1204,12 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 		log.Printf("[SNMP] Poll failed for %s (%s:%d v%s community_len=%d vendor=%s): %v",
 			dev.Name, dev.IPAddress, dev.SNMPPort, dev.SNMPVersion, len(dev.SNMPCommunity), vendor, err)
 		c.recordPollFailure(dev.ID)
+		c.metrics.OnPollFailure(dev.ID, vendor, classifyPollErr(err))
 		return
 	}
 
-	// Success — reset circuit breaker
+	// Success — reset circuit breaker, record last-successful-poll,
+	// and update Prometheus gauges.
 	c.recordPollSuccess(dev.ID)
 	status.DeviceID = dev.ID
 	status.Timestamp = time.Now()
@@ -1158,6 +1348,16 @@ func (c *Collector) recordPollSuccess(deviceID uint) {
 		c.failCount[deviceID] = 0
 	}
 	c.failCountMu.Unlock()
+
+	// Observability: record the wall-clock instant of this successful
+	// poll so /metrics publishes a non-zero
+	// firewall_collector_last_successful_poll_timestamp for the device.
+	// The duration itself is recorded by the deferred OnPollDuration
+	// in pollDevice — we only update the timestamp here.
+	c.lastSuccessfulPollMu.Lock()
+	c.lastSuccessfulPoll[deviceID] = time.Now()
+	c.lastSuccessfulPollMu.Unlock()
+	c.metrics.MarkPollSucceeded(deviceID)
 }
 
 func (c *Collector) deviceRefreshLoop() {
@@ -1354,15 +1554,23 @@ func (c *Collector) stop() {
 
 		if c.trapReceiver != nil {
 			c.trapReceiver.Stop()
+			markListenerBound("snmp_trap", false)
+			c.metrics.SetListenerBound("snmp_trap", false)
 		}
 		if c.syslogTCP != nil {
 			c.syslogTCP.Stop()
+			markListenerBound("syslog_tcp", false)
+			c.metrics.SetListenerBound("syslog_tcp", false)
 		}
 		if c.syslogUDP != nil {
 			c.syslogUDP.Stop()
+			markListenerBound("syslog_udp", false)
+			c.metrics.SetListenerBound("syslog_udp", false)
 		}
 		if c.sflowReceiver != nil {
 			c.sflowReceiver.Stop()
+			markListenerBound("sflow", false)
+			c.metrics.SetListenerBound("sflow", false)
 		}
 		if c.pingCollector != nil {
 			c.pingCollector.Stop()
@@ -1371,10 +1579,24 @@ func (c *Collector) stop() {
 			if err := c.tftpServer.Shutdown(); err != nil {
 				log.Printf("[Collector] TFTP shutdown error: %v", err)
 			}
+			markListenerBound("tftp", false)
+			c.metrics.SetListenerBound("tftp", false)
 		}
 
 		if c.relayClient != nil {
 			c.relayClient.Stop()
+		}
+
+		// Stop the metrics server LAST so /metrics and /readyz are
+		// reachable for the whole shutdown. Use a short bounded
+		// context — there's no in-flight work to wait for, the http
+		// server only serves scrapes.
+		if c.metricsServer != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := c.metricsServer.Stop(ctx); err != nil {
+				log.Printf("[Collector] Metrics server shutdown error: %v", err)
+			}
+			cancel()
 		}
 	})
 }
