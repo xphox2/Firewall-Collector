@@ -39,6 +39,8 @@ jobs:
             type=semver,pattern={{version}},value=v${{ steps.version.outputs.version }}
             type=semver,pattern={{major}}.{{minor}},value=v${{ steps.version.outputs.version }}
             type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=stable,enable={{is_default_branch}}
+            type=raw,value=${{ steps.version.outputs.version }}-sha-${{ github.sha }}
             type=sha,prefix=
 
       - name: Build and push
