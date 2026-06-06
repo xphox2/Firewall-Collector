@@ -101,6 +101,29 @@
   Gzip on outbound POST bodies (also flagged in AUDIT-072) is **deferred** — the central server in `Firewall-Monitoring` would need to add `Accept-Encoding: gzip` handling, so it's a cross-cutting change requiring server coordination. The transport changes above are safe to ship without server changes.
 
 
+## 1.2.99 - 2026-06-06
+
+### Added
+- **SSH public-key authentication for FortiGate collection** (closes AUDIT-071). Previously the SSH collector in `internal/ssh/ssh.go` only supported password auth, which sends the password plaintext during the SSH handshake (before the encrypted channel is established). Even with strict host-key checking from AUDIT-049, an attacker who can present a valid host key (e.g. via a compromised collector) can capture the next password attempt. Public-key auth removes the password from the auth path entirely.
+  - New struct fields on `relay.DeviceInfo`: `SSHKeyFile` (`ssh_key_file`) and `SSHKeyPassphrase` (`ssh_key_passphrase`). The collector reads these from the device list sync response.
+  - New constructor `ssh.NewFortiGateClientWithKey(host, port, user, password, keyFile, keyPassphrase)`. The existing `ssh.NewFortiGateClient(host, port, user, password)` is retained as a thin wrapper for the operator tools (`cmd/ssh-test`, `cmd/diag-backup`) — those still use password auth and are covered by the separate AUDIT-060 follow-up.
+  - Auth method selection in `Connect()` is now:
+    1. If `SSHKeyFile` is set → load the key (via `ssh.ParsePrivateKey` or `ssh.ParsePrivateKeyWithPassphrase` if `SSHKeyPassphrase` is also set) and use `ssh.PublicKeys()`.
+    2. Else if `SSHPassword` is set → use `ssh.Password()` and log a `[SSH] WARNING` line at connect time noting that the password is sent plaintext.
+    3. Else → refuse to connect with `"ssh: no auth method configured"`. Previously an empty password would still produce an `ssh.Password("")` auth attempt that some misconfigured SSH servers silently accept as "none" auth.
+  - Both production SSH call sites in `cmd/collector/main.go` (`sshPollDevice` and `sendConfigRevisionViaTFTP`) switched to the new constructor and now pass the key file/passphrase from `DeviceInfo`.
+
+### Tests
+- `TestSSHClient_PublicKeyAuth` — generates an Ed25519 keypair in `t.TempDir()`, spins up an in-process SSH server that accepts only that key (and rejects all passwords), and asserts `Connect()` succeeds.
+- `TestSSHClient_KeyWithPassphrase` — same as above but the private key file is encrypted with a passphrase. Also verifies a wrong passphrase produces a load-key error.
+- `TestSSHClient_PasswordFallback` — sets both `SSHKeyFile` and `SSHPassword`, points at a server that rejects passwords, and asserts the key is preferred (connection succeeds, `buildAuthMethods` returns exactly one method).
+- `TestSSHClient_NoAuth_RefusesToConnect` — both creds empty, asserts `Connect()` returns the "no auth method configured" error without dialing.
+- `TestSSHClient_PasswordAuth_StillWorksWithWarning` — regression coverage that the legacy `NewFortiGateClient` constructor still works against a password-accepting test server.
+
+### Follow-up
+- The central Firewall-Mon server's device-edit UI and `/api/devices` schema need to add `ssh_key_file` / `ssh_key_passphrase` fields so operators can actually populate them. This collector change is forward-compatible — the fields default to `""` when absent and the existing password path is preserved — but the server work is required before public-key auth can be used in production. Filed as a follow-up note to AUDIT-071.
+
+
 ## 1.2.88 - 2026-06-06
 
 ### Changed

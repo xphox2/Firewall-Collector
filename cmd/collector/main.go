@@ -25,7 +25,7 @@ import (
 	"firewall-collector/internal/tftp"
 )
 
-const version = "1.2.98"
+const version = "1.2.99"
 
 
 
