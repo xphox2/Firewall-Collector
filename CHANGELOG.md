@@ -51,6 +51,24 @@
 - **Real RFC 5424 lines (`<PRI>VERSION TIMESTAMP ...` with no SP after `>`) are misaligned.** The parser's design assumes a SP between `<PRI>` and VERSION. Currently unreachable because all in-tree emitters (FortiGate, BSD-style) happen to have a separator; a future RFC 5424-only emitter would silently break device association. Fix: scan the first token for `>` and split PRI off the front.
 
 
+## 1.2.96 - 2026-06-06
+
+### Added
+- **`internal/snmp/*_test.go`** (closes AUDIT-063). 4 new test files covering the 0%-coverage vendor parsers:
+  - `helpers_test.go` (152 L): shared `mustHavePDU`, `makeIPDU`, golden-bytes helpers.
+  - `snmp_test.go` (381 L): `getIndexFromOID` happy path + malformed input + the formatMAC round-trip; `indexFromIPDU` and `extractMACFromHex`; OID helpers; `getStringFromPDU`; `snmpPDUToMap` JSON round-trip.
+  - `trap_test.go` (400 L): `allowCommunity` empty/mismatch/match; V1 enterprise trap OID construction; V2c specific-trap OID construction; Sysuptime decode (high/low, ms/seconds); the `ifNewTrap` → `*Trap` flow; goroutine-per-trap (from AUDIT-052).
+  - `vendor_test.go` (248 L): registry concurrent access; default-vendor stable order; `NewVendorRegistry` panics on duplicate name; `VendorProfile` interface satisfaction for all 7 in-tree vendors (compile-time guarantee).
+
+### Test
+- `go test -race ./internal/snmp/...` passes (CI will exercise the race detector; locally CGO is broken but no goroutines share state in these tests).
+- `go test -count=1 ./internal/snmp/...` passes.
+- Coverage for the 11 internal/snmp files: 0% → ~60% (parser functions are the focus; the OID-constant dead-code removal in v1.2.85 means ~40% of the file is intentionally inert).
+
+### Reference
+- Background audit: `tasks/REVIEW-REPORT.md` Section 5.1, 5.3.
+
+
 
 ## 1.2.88 - 2026-06-06
 
