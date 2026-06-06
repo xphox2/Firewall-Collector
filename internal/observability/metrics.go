@@ -104,9 +104,8 @@ type Metrics struct {
 	queueDepth   *prometheus.GaugeVec
 	queueDropped *prometheus.CounterVec
 
-	pollDuration    *prometheus.HistogramVec
-	pollFailures    *prometheus.CounterVec
-	lastPollSuccess *prometheus.GaugeVec
+	pollDuration *prometheus.HistogramVec
+	pollFailures *prometheus.CounterVec
 
 	listenerBound *prometheus.GaugeVec
 

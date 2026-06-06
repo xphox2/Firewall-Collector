@@ -215,7 +215,12 @@
 =======
 ## 1.2.99 - 2026-06-06
 
-### Added
+### Fixed
+- **Remove unused `lastPollSuccess` field** (`internal/observability/metrics.go`). The staticcheck step in the AUDIT-055 CI caught a leftover field from the refactor that was never wired up — `lastPollPublished` (the actually-used one) carries the timestamp gauge, so the duplicate field is dead code. Removed. After this, the AUDIT-055 staticcheck step is green on the metrics branch.
+
+## 1.2.98 - 2026-06-06
+
+### Changed
 - **Operational observability: `/healthz` + `/readyz` + Prometheus `/metrics`** (closes AUDIT-057). The collector was previously operationally invisible — the only "is alive" signal was a 60s heartbeat to the central server, and there was no way for an orchestrator (Kubernetes, Nomad, systemd) to probe liveness/readiness or for an SRE to see queue depth, drop count, last successful poll per device, listener bind state, or heartbeat health. New `internal/observability` package serves all three endpoints on `PROBE_METRICS_ADDR` (default `127.0.0.1:9090`, configurable to e.g. `0.0.0.0:9090` for cluster-wide scrapers):
   - `GET /healthz` — 200 if process up. Always. Suitable for Kubernetes liveness probes.
   - `GET /readyz` — 200 iff `c.approved.Load() && lastHeartbeat within 2*HeartbeatInterval && every enabled listener is bound`. Returns 503 with a one-line reason and `X-Ready-Reason` header otherwise (reasons: `approved`, `heartbeat`, `listeners`). Suitable for Kubernetes readiness probes.
