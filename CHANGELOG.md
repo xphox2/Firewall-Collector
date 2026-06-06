@@ -70,6 +70,24 @@
 
 
 
+## 1.2.97 - 2026-06-06
+
+### Changed
+- **Per-queue mutex on `relay.Client`** (closes AUDIT-064). `trapQueue`, `pingQueue`, `syslogQueue`, and `flowQueue` each get their own `sync.Mutex` (`trapMu`, `pingMu`, `syslogMu`, `flowMu`); the four `Send*` appenders and four requeue paths no longer share the single `c.mu` that previously covered everything. The syslog and sFlow sender goroutines run on different cores in production, so the old design meant cross-core cache-line contention on every inbound packet — at 1000 syslog/s + 1000 sFlow/s this was measurable. `syncData` now acquires each queue's mutex briefly to drain it, and the not-approved re-prepend path in `syncData` takes per-queue locks independently. `c.mu` is retained for `reregisterAttempts` and `lastReregisterAttempt` only.
+
+- **`probeID` and `probeName` promoted to atomics** (closes AUDIT-064). `probeID` is now `atomic.Uint64` and `probeName` is `atomic.Value` (string), so `GetProbeID`, `sendHeartbeatWithStatus`, and the URL builders in `SendConfigRevision` / `SendProcessSnapshot` / `SendInterfaceErrorSnapshot(s)` / `SendSensorDetails` / `SendLicenseDetails` no longer take `c.mu` just to read them. `Register` stores the values with `Store` and `c.mu` is now used only for the reregister counter. `NewClient` pre-initialises `probeName` to `""` so `Load` is always safe.
+
+### Added
+- **`internal/relay/relay_audit064_test.go`** — new tests for the per-queue mutex design:
+  - `TestSendTrap_QueueMutex_DoesNotBlockOtherQueues` — holds `trapMu` for 100 ms in a background goroutine and asserts the other three `Send*` methods can each push 100 events in under 50 ms. Pre-fix, all three would queue behind the held mutex.
+  - `TestSendSyslogMessage_QueueMutex_DoesNotBlockOtherQueues` — symmetric: holds `syslogMu` (the busiest queue) and confirms trap/ping/flow can still push.
+  - `TestSendQueue_ParallelSyslogAndFlow_NoLopsidedThroughput` — runs the issue's "1000 syslog/s + 1000 sFlow/s" workload in parallel and asserts the two per-goroutine times stay within 2.5× of each other. Under a shared mutex the slower stream would be ~2× the faster one.
+  - `BenchmarkSendTrap` (serial baseline) and `BenchmarkSendTrap_Parallel` — `-cpu 1,2,4,8` should show near-linear scaling post-fix. Run with `go test -bench BenchmarkSendTrap -cpu 1,2,4,8 ./internal/relay`.
+
+### Performance
+- Expected: `BenchmarkSendTrap_Parallel` at `-cpu 8` should be 2–5× the `-cpu 1` rate on the same machine, instead of the pre-fix ~1× (saturated on `c.mu`).
+
+
 ## 1.2.88 - 2026-06-06
 
 ### Changed
