@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.2.77 - 2026-06-06
+
+### Fixed
+- **Shutdown is now idempotent and drains in-flight work** (closes AUDIT-053). Three related defects:
+  1. `Collector.stop()` panicked on the second SIGTERM (or any re-entry path) because `close(c.stopChan)` ran unconditionally. Now wrapped in `sync.Once` — second call is a no-op.
+  2. SSH poll goroutines were not tracked in any WaitGroup. A 60-minute SSH command could outlive a stop() signal by up to 10 minutes (10-min commandTimeout × 6 commands), so a SIGTERM could hang the process for that long. Added `c.sshPollWg sync.WaitGroup` on the Collector, `c.sshPollWg.Add(1)` in `runSSHPollCycle` before each per-device launch, and `c.sshPollWg.Done()` in the goroutine.
+  3. `tftpServer.Shutdown()` was never called on collector stop — TFTP listeners were orphaned and any in-flight FortiGate config transfer was abandoned. Now called in `stop()` after the bounded drain.
+- **TFTP `Shutdown()` now actually waits for in-flight transfers.** The server had `s.wg.Wait()` in `Shutdown()` but the per-request goroutines launched at `tftp.go:125, 128` never incremented `s.wg`. Now `s.wg.Add(1)` is called at launch and a `defer s.wg.Done()` is in each handler — `Shutdown()` blocks until the in-flight `handleWRQ` / `handleRRQ` returns.
+- **Bounded-wait fallback in `stop()`**: a stuck SSH session (e.g. firewall hung mid-command) used to hang the entire process forever. New code waits up to `shutdownDrainTimeout` (30s, configurable via a package var) for `pollWg` + `sshPollWg`, logs a `WARNING`, and proceeds with the rest of the shutdown. Better to ship a "slow shutdown" warning than hang indefinitely.
+- **Nil guards on `c.tftpServer` and `c.relayClient`** in `stop()` so a partial initialization (e.g. a test that constructs a `Collector` with only `stopChan` set) can call `stop()` without a nil deref. The 5 new tests in `cmd/collector/stop_test.go` rely on this.
+
+### Added
+- **`shutdownDrainTimeout` package var** (default 30s) — extracted from inline `time.After` so tests can override it. Production code does not need to set it.
+- **5 tests in `cmd/collector/stop_test.go`**: idempotency, wait-for-SSH, wait-for-SNMP, bounded-wait-on-stuck, concurrent calls from 10 goroutines. All override `shutdownDrainTimeout` to 100ms–5s for speed.
+- **2 tests in `internal/tftp/shutdown_test.go`**: in-flight handler wait, idempotency. Uses the existing `Server.wg` field directly to simulate in-flight work (full network exchange test is out of scope for this change).
+
 ## 1.2.76 - 2026-06-05
 
 ### Added
