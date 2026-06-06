@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.2.94 - 2026-06-06
+
+### Fixed
+- **TFTP WRQ accepts from any source with no size cap** (closes AUDIT-050). `internal/tftp/tftp.go` `handleWRQ` previously allowed any UDP peer that could reach UDP/69 to upload an arbitrary config blob for any device ID — corrupting the central server's config-change monitoring — and `receiveTransfer` would `append` indefinitely (bounded only by a 5-minute `transferTimeout`), letting a single peer drive the collector to OOM. The fix layers three defenses, all library-side, all opt-in except the size cap:
+  - **Hard 2 MB per-transfer size cap** (new `maxTransferSize` const). Real FortiGate configs are <500 KB; 2 MB leaves comfortable headroom. Enforced in `receiveTransfer` *before* the `append` so a malicious peer can never force the collector to allocate beyond the cap. On overflow, `receiveTransfer` returns an error and `handleWRQ` translates it to a TFTP ERROR 0 back to the client. **This cap is unconditional — it applies to every production caller, even those that never opt into the allowlist or rate limit.**
+  - **Per-source-IP allowlist** via the new `Server.SetAllowedSourceIPs([]string)` (defaults to `nil` = "no policy, accept all", preserving backward compatibility for every existing caller; non-nil empty = explicit deny-all). Entries are normalized through `net.ParseIP(...).String()` so "127.0.0.001" and "::ffff:127.0.0.1" both match a peer reporting "127.0.0.1". The check runs before any state mutation — blocked peers cannot consume a session socket, a goroutine, or poison the rate-limit map. Guarded by the existing `handlerMu` RWMutex that AUDIT-081 already added for the handler setters (same race concern — `SetAllowedSourceIPs` from one goroutine racing `handleWRQ` from the listener).
+  - **Per-source-IP rate limit** via the new `Server.SetMinWRQInterval(time.Duration)` (defaults to `0` = disabled, preserving the existing behavior). A WRQ from a source IP is refused (TFTP ERROR 0, sent from the listen socket — no session allocated) if a WRQ from the same IP was accepted less than the configured interval ago. Backed by a `sync.Mutex`-protected `map[string]time.Time`.
+
+### Added
+- 8 new tests in `internal/tftp/tftp_srcip_test.go`:
+  - `TestTFTPReceiveTransfer_SizeCapEnforced` — drives 3 MB of DATA into `receiveTransfer` and asserts the cap error fires before the safetyLimit and that ACKs stop being sent.
+  - `TestTFTPHandleWRQ_SourceIPBlocked` — blocked source IP must get ERROR 2 from the *listen* socket (no session allocated) and the write handler must never be invoked.
+  - `TestTFTPHandleWRQ_SourceIPAllowed` — regression guard: an allowed source IP completes the full WRQ end-to-end.
+  - `TestTFTPHandleWRQ_AllowlistEmpty_DeniesAll` — non-nil empty allowlist means deny-all (distinct from the nil default).
+  - `TestTFTPHandleWRQ_RateLimitRefused` — second WRQ from same source within `minWRQInterval` is refused; rejection comes from the listen socket (no session allocated).
+  - `TestTFTPHandleWRQ_RateLimitDisabledByDefault` — without an explicit `SetMinWRQInterval`, two back-to-back WRQs from the same source both succeed.
+  - `TestTFTPSetAllowedSourceIPs_NormalizesIPv4Mapped` — allowlist normalization is symmetric.
+  - `TestTFTPSetAllowedSourceIPs_NilSemantics` — `nil` / `[]string{}` / populated tri-state is documented and tested.
+
+### Security notes
+- The size cap is the only change that is active by default. The allowlist and rate limit are opt-in: production callers must explicitly call `SetAllowedSourceIPs(...)` and/or `SetMinWRQInterval(...)` to activate them. Wiring them into the production collector (cmd/collector/main.go `startTFTPServer`) is intentionally out of scope for this PR — it requires either a static config-driven IP list (no device→IP mapping exists at startup) or a "first WRQ pins the source IP" bootstrap, which is a follow-up.
+- Follow-up (not in this PR): HMAC the TFTP filename so an on-path attacker cannot forge a `fgt_<id>_config` for a device they don't own.
+
+### Unblocks
+- AUDIT-050 review item (C-2, H-3, 2.1.4 from `tasks/REVIEW-REPORT.md`).
+
 ## 1.2.88 - 2026-06-06
 
 ### Changed

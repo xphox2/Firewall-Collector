@@ -22,6 +22,12 @@ const (
 	defaultTimeout  = 30 * time.Second
 	transferTimeout = 5 * time.Minute
 	maxRetries      = 5
+
+	// maxTransferSize is the AUDIT-050 hard cap on a single WRQ payload.
+	// Real FortiGate configs are well under 500 KB; 2 MB leaves comfortable
+	// headroom while bounding the per-transfer memory footprint that an
+	// unauthenticated UDP peer can force the collector to allocate.
+	maxTransferSize = 2 * 1024 * 1024
 )
 
 type Config struct {
@@ -41,14 +47,29 @@ type Server struct {
 	writeHandler WriteHandler
 	mu           sync.Mutex
 	running      bool
-	// handlerMu guards readHandler and writeHandler. SetHandler /
-	// SetWriteHandler take the write lock; handleWRQ / handleRRQ take
-	// the read lock around the handler field access. This is the
-	// AUDIT-081 fix — the previous code raced because the test
-	// (and any production caller) called SetWriteHandler from one
-	// goroutine while handleWRQ was already reading it from the
-	// listener goroutine.
+	// handlerMu guards readHandler, writeHandler, and allowedSourceIPs.
+	// SetHandler / SetWriteHandler / SetAllowedSourceIPs take the write
+	// lock; handleWRQ / handleRRQ take the read lock around the field
+	// access. This is the AUDIT-081 fix — the previous code raced because
+	// the test (and any production caller) called SetWriteHandler from one
+	// goroutine while handleWRQ was already reading it from the listener
+	// goroutine. AUDIT-050 extends the same lock to cover allowedSourceIPs.
 	handlerMu sync.RWMutex
+
+	// allowedSourceIPs is the AUDIT-050 per-device source-IP allowlist.
+	// nil  = no policy (allow every source IP — backward compatible).
+	// non-nil but empty = explicitly deny everyone.
+	// non-nil with entries = only the listed IPs may submit WRQs.
+	// Keys are normalized via net.ParseIP(...).String().
+	allowedSourceIPs map[string]bool
+
+	// minWRQInterval is the AUDIT-050 per-source-IP rate limit. Zero
+	// disables the limiter (default — preserves the existing behavior so
+	// no caller is broken by upgrading). Production callers should set
+	// this to something like 60s.
+	minWRQInterval time.Duration
+	lastWRQMu      sync.Mutex
+	lastWRQTime    map[string]time.Time
 }
 
 func NewServer(cfg *Config) *Server {
@@ -56,8 +77,9 @@ func NewServer(cfg *Config) *Server {
 		cfg.Timeout = defaultTimeout
 	}
 	return &Server{
-		cfg:    cfg,
-		stopCh: make(chan struct{}),
+		cfg:         cfg,
+		stopCh:      make(chan struct{}),
+		lastWRQTime: make(map[string]time.Time),
 	}
 }
 
@@ -71,6 +93,74 @@ func (s *Server) SetWriteHandler(handler WriteHandler) {
 	s.handlerMu.Lock()
 	s.writeHandler = handler
 	s.handlerMu.Unlock()
+}
+
+// SetAllowedSourceIPs configures the AUDIT-050 per-source-IP allowlist.
+//
+//	nil  -> clear the policy; accept WRQs from any source IP.
+//	[]   -> non-nil empty list; deny every source IP.
+//	[…]  -> only accept WRQs whose source IP appears in the list.
+//
+// Entries that fail to parse as IPs are silently dropped. Entries are
+// normalized through net.ParseIP(...).String() so "127.0.0.001" and
+// "::ffff:127.0.0.1" both match a peer reporting "127.0.0.1".
+func (s *Server) SetAllowedSourceIPs(ips []string) {
+	var set map[string]bool
+	if ips != nil {
+		set = make(map[string]bool, len(ips))
+		for _, ip := range ips {
+			parsed := net.ParseIP(ip)
+			if parsed == nil {
+				continue
+			}
+			set[parsed.String()] = true
+		}
+	}
+	s.handlerMu.Lock()
+	s.allowedSourceIPs = set
+	s.handlerMu.Unlock()
+}
+
+// SetMinWRQInterval configures the AUDIT-050 per-source-IP rate limit:
+// a WRQ from a given source IP is refused if a WRQ from the same IP was
+// accepted less than d ago. Zero (the default) disables the limiter so
+// existing callers see no behavior change.
+func (s *Server) SetMinWRQInterval(d time.Duration) {
+	s.lastWRQMu.Lock()
+	s.minWRQInterval = d
+	s.lastWRQMu.Unlock()
+}
+
+// isSourceAllowed checks the AUDIT-050 allowlist. With no policy set
+// (allowedSourceIPs == nil), every IP is allowed — preserves backward
+// compatibility for callers that never call SetAllowedSourceIPs.
+func (s *Server) isSourceAllowed(ip net.IP) bool {
+	s.handlerMu.RLock()
+	defer s.handlerMu.RUnlock()
+	if s.allowedSourceIPs == nil {
+		return true
+	}
+	return s.allowedSourceIPs[ip.String()]
+}
+
+// checkAndUpdateRateLimit enforces the AUDIT-050 per-source-IP rate
+// limit. Returns true if the WRQ should be allowed (and atomically
+// records the new last-seen time); returns false if the WRQ should be
+// rejected because the previous one was too recent. With minWRQInterval
+// == 0 the limiter is a no-op and always allows.
+func (s *Server) checkAndUpdateRateLimit(ip net.IP) bool {
+	s.lastWRQMu.Lock()
+	defer s.lastWRQMu.Unlock()
+	if s.minWRQInterval <= 0 {
+		return true
+	}
+	key := ip.String()
+	now := time.Now()
+	if last, ok := s.lastWRQTime[key]; ok && now.Sub(last) < s.minWRQInterval {
+		return false
+	}
+	s.lastWRQTime[key] = now
+	return true
 }
 
 func (s *Server) ListenAndServe() error {
@@ -166,6 +256,25 @@ func (s *Server) handleWRQ(reqPkt []byte, clientAddr *net.UDPAddr) {
 			log.Printf("[TFTP] PANIC in handleWRQ: %v", r)
 		}
 	}()
+
+	// AUDIT-050: source-IP allowlist check. Run before any state mutation
+	// so a blocked peer cannot consume socket/goroutine resources or
+	// poison the rate-limit map.
+	if !s.isSourceAllowed(clientAddr.IP) {
+		log.Printf("[TFTP] WRQ from %s: source IP not in allowlist — refusing", clientAddr.String())
+		s.sendErrorOn(s.conn, clientAddr, 2, "Access denied")
+		return
+	}
+
+	// AUDIT-050: per-source-IP rate limit. Only update the timestamp for
+	// peers that pass the allowlist, so blocked peers cannot affect the
+	// pacing of allowed peers.
+	if !s.checkAndUpdateRateLimit(clientAddr.IP) {
+		log.Printf("[TFTP] WRQ from %s: rate-limited (min interval %v) — refusing",
+			clientAddr.String(), s.minWRQInterval)
+		s.sendErrorOn(s.conn, clientAddr, 0, "Rate limit exceeded")
+		return
+	}
 
 	s.handlerMu.RLock()
 	h := s.writeHandler
@@ -313,6 +422,13 @@ func (s *Server) receiveTransfer(sessionConn *net.UDPConn, clientAddr *net.UDPAd
 		payload := buf[4:n]
 
 		if block == expectedBlock {
+			// AUDIT-050: reject before the append so we never allocate
+			// beyond maxTransferSize. The caller (handleWRQ) translates
+			// this error into a TFTP ERROR 0 sent back to the client.
+			if len(data)+len(payload) > maxTransferSize {
+				return nil, fmt.Errorf("transfer exceeds %d-byte cap (have %d, +%d would overflow)",
+					maxTransferSize, len(data), len(payload))
+			}
 			data = append(data, payload...)
 			if err := sendACK(sessionConn, clientAddr, block); err != nil {
 				return nil, fmt.Errorf("send ACK %d: %w", block, err)
