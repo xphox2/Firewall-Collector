@@ -3,7 +3,6 @@ package safego
 import (
 	"bytes"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -11,13 +10,25 @@ import (
 	"time"
 )
 
-func withCapturedLog(t *testing.T, fn func()) string {
+// withCapturedLog runs fn with the package's logf swapped for one that
+// captures output into a buffer. Waits for `expected` log calls to complete
+// before returning the buffer's contents, so the test never reads while a
+// goroutine is still writing. This is the race-safe replacement for the
+// old `withCapturedLog` (which used `log.SetOutput` and racy time.Sleep).
+func withCapturedLog(t *testing.T, expected int, fn func()) string {
 	t.Helper()
-	var buf bytes.Buffer
-	prev := log.Writer()
-	log.SetOutput(&buf)
-	defer log.SetOutput(prev)
+	var (
+		buf     bytes.Buffer
+		counter int32
+	)
+	saved := logf
+	logf = func(format string, args ...interface{}) {
+		atomic.AddInt32(&counter, 1)
+		fmt.Fprintf(&buf, format, args...)
+	}
+	defer func() { logf = saved }()
 	fn()
+	waitForCount(t, &counter, int32(expected), 2*time.Second)
 	return buf.String()
 }
 
@@ -60,7 +71,7 @@ func TestGo_NormalReturn_NoLog(t *testing.T) {
 
 func TestGo_PanicCaught_ProcessSurvives(t *testing.T) {
 	var ran int32
-	out := withCapturedLog(t, func() {
+	out := withCapturedLog(t, 1, func() {
 		var wg sync.WaitGroup
 		wg.Add(2)
 		Go("panicker", func() {
@@ -74,9 +85,6 @@ func TestGo_PanicCaught_ProcessSurvives(t *testing.T) {
 			atomic.AddInt32(&ran, 1)
 		})
 		wg.Wait()
-		// recoverPanic runs after wg.Done in the wrapping goroutine; give
-		// it a moment to log.
-		time.Sleep(20 * time.Millisecond)
 	})
 
 	if got := atomic.LoadInt32(&ran); got != 2 {
@@ -111,7 +119,7 @@ func TestGo_ManyConcurrentPanics_AllCaught(t *testing.T) {
 
 func TestGo_DefersStillRun(t *testing.T) {
 	var ran int32
-	withCapturedLog(t, func() {
+	withCapturedLog(t, 1, func() {
 		var wg sync.WaitGroup
 		wg.Add(1)
 		Go("defer-check", func() {
@@ -120,7 +128,6 @@ func TestGo_DefersStillRun(t *testing.T) {
 			panic("after defer")
 		})
 		wg.Wait()
-		time.Sleep(20 * time.Millisecond)
 	})
 	if got := atomic.LoadInt32(&ran); got != 1 {
 		t.Errorf("expected defer to run, ran=%d", got)
@@ -138,12 +145,14 @@ func TestAfterFunc_PanicCaught(t *testing.T) {
 }
 
 func TestAfterFunc_NameAppearsInLog(t *testing.T) {
-	out := withCapturedLog(t, func() {
+	out := withCapturedLog(t, 1, func() {
 		timer := AfterFunc(time.Millisecond, "named-timer", func() {
 			panic("named-boom")
 		})
-		time.Sleep(50 * time.Millisecond)
-		_ = timer.Stop()
+		// Wait for the timer to fire. The new withCapturedLog
+		// will block on the expected-count, so we don't need
+		// a separate sleep here.
+		_ = timer
 	})
 	for _, want := range []string{"PANIC in timer:named-timer", "named-boom", "goroutine"} {
 		if !strings.Contains(out, want) {
@@ -174,7 +183,7 @@ func TestRecoverPanic_NilNoOp(t *testing.T) {
 func TestGo_NameAppearsInLog(t *testing.T) {
 	// Confirms the `name` argument is included in the formatted output, since
 	// it's the only handle for an operator to identify which goroutine died.
-	out := withCapturedLog(t, func() {
+	out := withCapturedLog(t, 1, func() {
 		var wg sync.WaitGroup
 		wg.Add(1)
 		Go("specific-name-xyz", func() {
@@ -182,7 +191,6 @@ func TestGo_NameAppearsInLog(t *testing.T) {
 			panic("see-name")
 		})
 		wg.Wait()
-		time.Sleep(20 * time.Millisecond)
 	})
 	for _, want := range []string{"specific-name-xyz", "see-name", "goroutine"} {
 		if !strings.Contains(out, want) {
