@@ -268,24 +268,26 @@ type InterfaceAddress struct {
 }
 
 type DeviceInfo struct {
-	ID              uint   `json:"id"`
-	Name            string `json:"name"`
-	IPAddress       string `json:"ip_address"`
-	SNMPPort        int    `json:"snmp_port"`
-	SNMPCommunity   string `json:"snmp_community"`
-	SNMPVersion     string `json:"snmp_version"`
-	SNMPV3Username  string `json:"snmpv3_username"`
-	SNMPV3AuthType  string `json:"snmpv3_auth_type"`
-	SNMPV3AuthPass  string `json:"snmpv3_auth_pass"`
-	SNMPV3PrivType  string `json:"snmpv3_priv_type"`
-	SNMPV3PrivPass  string `json:"snmpv3_priv_pass"`
-	Enabled         bool   `json:"enabled"`
-	Vendor          string `json:"vendor"`
-	SSHUsername     string `json:"ssh_username"`
-	SSHPassword     string `json:"ssh_password"`
-	SSHPort         int    `json:"ssh_port"`
-	SSHPollEnabled  bool   `json:"ssh_poll_enabled"`
-	SSHPollInterval int    `json:"ssh_poll_interval"`
+	ID               uint   `json:"id"`
+	Name             string `json:"name"`
+	IPAddress        string `json:"ip_address"`
+	SNMPPort         int    `json:"snmp_port"`
+	SNMPCommunity    string `json:"snmp_community"`
+	SNMPVersion      string `json:"snmp_version"`
+	SNMPV3Username   string `json:"snmpv3_username"`
+	SNMPV3AuthType   string `json:"snmpv3_auth_type"`
+	SNMPV3AuthPass   string `json:"snmpv3_auth_pass"`
+	SNMPV3PrivType   string `json:"snmpv3_priv_type"`
+	SNMPV3PrivPass   string `json:"snmpv3_priv_pass"`
+	Enabled          bool   `json:"enabled"`
+	Vendor           string `json:"vendor"`
+	SSHUsername      string `json:"ssh_username"`
+	SSHPassword      string `json:"ssh_password"`
+	SSHKeyFile       string `json:"ssh_key_file"`
+	SSHKeyPassphrase string `json:"ssh_key_passphrase"`
+	SSHPort          int    `json:"ssh_port"`
+	SSHPollEnabled   bool   `json:"ssh_poll_enabled"`
+	SSHPollInterval  int    `json:"ssh_poll_interval"`
 }
 
 type DevicesResponse struct {
