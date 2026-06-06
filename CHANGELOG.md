@@ -1,5 +1,6 @@
 # Changelog
 
+
 ## 1.2.93 - 2026-06-06
 
 ### Fixed
@@ -12,6 +13,15 @@
 
 ### Deferred
 - **Replace fork-exec `ping` with `golang.org/x/net/icmp`**: the `internal/ping/ping.go:130` shell-out to `/bin/ping` is what forces the `NET_RAW` capability on the container. A pure-Go ICMP implementation would let us drop `NET_RAW` entirely (rootless containers can open `IPPROTO_ICMP` sockets on modern kernels with `net.ipv4.ping_group_range` set, but only when bound to a raw socket — which still needs the cap, so the gain is smaller than it looks). Tracked as a follow-up; not in this release.
+
+## 1.2.94 - 2026-06-06
+
+### Added
+- **`internal/sflow/sflow_test.go`** — comprehensive sFlow v5 parser tests (closes AUDIT-062). Before this change the 417-line `internal/sflow/sflow.go` had 0% test coverage; the sFlow parser is one of three code paths that ingest **untrusted binary UDP from any host that can reach the collector** (alongside syslog and SNMP traps), and the audit flagged it as a high-severity stability risk. The test file contains 21 tests + 1 fuzz target covering:
+  - All required cases from AUDIT-062: `TruncatedAtVersion` (2-byte buffer), `AllZero` (64-byte zero buffer), `MalformedIPv4Header` (version=3, IHL=0), `RealisticFlowSample` (golden TCP SYN), `NumSamplesExceedsBuffer` (1000 claimed / 28 actual, must not hang), `RawHeader_Oversized` (header_length=2000 vs. 16-byte record), and the Go native `FuzzParseSFlowDatagram` fuzz target.
+  - Additional coverage not in the issue: UDP flow (`parseTransport` UDP branch), IPv6 flow (`parseIPv6`), expanded flow sample (format=3), IPv6 agent address (`addrType=2`), nil-handler early return, truncated record payload, 802.1Q VLAN-tagged Ethernet, truncated inner IPv4/IPv6, truncated TCP/UDP transport (the `data[13]` audit target), unknown agent address type, truncated agent address, truncated flow sample header, and `Stop()` idempotency.
+  - The fuzz target seeds 9 baseline corpora (valid TCP SYN datagram, empty, 1/2/4/27/64/1024-byte zero buffers, a structurally valid datagram with bogus IPs and 5 empty samples) and runs the parser in a goroutine with a 2s hang watchdog. CI nightly: `go test -run=^$ -fuzz=FuzzParseSFlowDatagram -fuzztime=30s ./internal/sflow/...`. A 10s local run executes ~1M iterations with no panic, no hang, no crash.
+
 
 ## 1.2.88 - 2026-06-06
 
