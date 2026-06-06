@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	mrand "math/rand"
 	"net/http"
 	"os"
@@ -365,7 +365,8 @@ func NewClient(cfg Config) *Client {
 
 	tlsConfig, err := buildTLSConfig(cfg)
 	if err != nil {
-		log.Fatalf("%v", err)
+		slog.Error("relay TLS config build failed", slog.Any("err", err))
+		os.Exit(1)
 	}
 
 	c := &Client{
@@ -393,8 +394,9 @@ func NewClient(cfg Config) *Client {
 // buildTLSConfig assembles the *tls.Config used by the relay's HTTP client
 // (AUDIT-048). It is split out of NewClient so the error paths are unit
 // testable without spawning a subprocess; NewClient turns every error into
-// log.Fatalf because they all represent startup misconfigurations that must
-// abort the process before the first request goes out.
+// a fatal slog.Error + os.Exit(1) because they all represent startup
+// misconfigurations that must abort the process before the first request
+// goes out.
 //
 // mTLS (PROBE_TLS_CERT + PROBE_TLS_KEY) is loaded here. Previously the cert
 // and key paths were parsed from env vars and stored on Config, but NewClient
@@ -443,7 +445,7 @@ func buildTLSConfig(cfg Config) (*tls.Config, error) {
 	}
 
 	if cfg.InsecureSkipVerify {
-		log.Println("WARNING: TLS certificate verification is disabled — do not use in production")
+		slog.Warn("TLS certificate verification is disabled — do not use in production")
 		tlsConfig.InsecureSkipVerify = true
 	}
 
@@ -524,9 +526,9 @@ func (c *Client) Register() error {
 	c.approved.Store(result.Approved)
 
 	if !result.Approved {
-		log.Println("Probe registered but waiting for approval in admin panel...")
+		slog.Info("probe registered but waiting for approval in admin panel")
 	} else {
-		log.Println("Probe registered and approved!")
+		slog.Info("probe registered and approved")
 	}
 
 	return nil
@@ -548,7 +550,7 @@ func (c *Client) tryReregister() bool {
 			c.mu.Unlock()
 			return false
 		}
-		log.Println("[Relay] Re-registration cooldown expired, resetting attempt counter")
+		slog.Info("re-registration cooldown expired, resetting attempt counter")
 		c.reregisterAttempts = 0
 		attempts = 0
 	} else if elapsed < 60*time.Second {
@@ -561,16 +563,19 @@ func (c *Client) tryReregister() bool {
 	c.mu.Unlock()
 
 	backoff := time.Duration(1<<uint(attempts))*10*time.Second + time.Duration(mrand.Intn(5000))*time.Millisecond
-	log.Printf("[Relay] Probe lost approval, attempting re-registration (attempt %d/%d) in %v...",
-		attempts+1, maxReregisterAttempts, backoff)
+	slog.Warn("probe lost approval, attempting re-registration",
+		slog.Int("attempt", attempts+1),
+		slog.Int("max_attempts", maxReregisterAttempts),
+		slog.Duration("backoff", backoff),
+	)
 	time.Sleep(backoff)
 
 	if err := c.Register(); err != nil {
-		log.Printf("[Relay] Re-registration failed: %v", err)
+		slog.Error("re-registration failed", slog.Any("err", err))
 		return false
 	}
 
-	log.Println("[Relay] Re-registration successful, probe approved again")
+	slog.Info("re-registration successful, probe approved again")
 	return true
 }
 
@@ -594,7 +599,7 @@ func (c *Client) IsApproved() bool {
 
 func (c *Client) HeartbeatLoop() error {
 	if err := c.SendHeartbeat(); err != nil {
-		log.Printf("Initial heartbeat error: %v", err)
+		slog.Error("initial heartbeat error", slog.Any("err", err))
 	}
 
 	ticker := time.NewTicker(c.Config.HeartbeatInterval)
@@ -604,7 +609,7 @@ func (c *Client) HeartbeatLoop() error {
 		select {
 		case <-ticker.C:
 			if err := c.SendHeartbeat(); err != nil {
-				log.Printf("Heartbeat error: %v", err)
+				slog.Error("heartbeat error", slog.Any("err", err))
 			}
 		case <-c.stopChan:
 			return nil
@@ -647,8 +652,11 @@ func (c *Client) sendHeartbeatWithStatus(status string) error {
 		}
 
 		backoff := time.Duration(1<<uint(attempts))*10*time.Second + time.Duration(mrand.Intn(5000))*time.Millisecond
-		log.Printf("Probe unauthorized (attempt %d/%d), retrying registration in %v...",
-			attempts+1, maxReregisterAttempts, backoff)
+		slog.Warn("probe unauthorized, retrying registration",
+			slog.Int("attempt", attempts+1),
+			slog.Int("max_attempts", maxReregisterAttempts),
+			slog.Duration("backoff", backoff),
+		)
 		time.Sleep(backoff)
 		return c.Register()
 	}
@@ -662,7 +670,9 @@ func (c *Client) SendTrap(trap *TrapEvent) {
 	c.trapMu.Lock()
 	if len(c.trapQueue) >= maxQueueSize {
 		c.trapQueue = append(c.trapQueue[:0], c.trapQueue[1:]...)
-		log.Println("[Relay] Trap queue full, dropping oldest entry")
+		slog.Warn("trap queue full, dropping oldest entry",
+			slog.Int("queue_size", maxQueueSize),
+		)
 	}
 	c.trapQueue = append(c.trapQueue, trap)
 	c.trapMu.Unlock()
@@ -672,7 +682,9 @@ func (c *Client) SendPingResult(result *PingResult) {
 	c.pingMu.Lock()
 	if len(c.pingQueue) >= maxQueueSize {
 		c.pingQueue = append(c.pingQueue[:0], c.pingQueue[1:]...)
-		log.Println("[Relay] Ping queue full, dropping oldest entry")
+		slog.Warn("ping queue full, dropping oldest entry",
+			slog.Int("queue_size", maxQueueSize),
+		)
 	}
 	c.pingQueue = append(c.pingQueue, result)
 	c.pingMu.Unlock()
@@ -682,7 +694,9 @@ func (c *Client) SendSyslogMessage(msg *SyslogMessage) {
 	c.syslogMu.Lock()
 	if len(c.syslogQueue) >= maxQueueSize {
 		c.syslogQueue = append(c.syslogQueue[:0], c.syslogQueue[1:]...)
-		log.Println("[Relay] Syslog queue full, dropping oldest entry")
+		slog.Warn("syslog queue full, dropping oldest entry",
+			slog.Int("queue_size", maxQueueSize),
+		)
 	}
 	c.syslogQueue = append(c.syslogQueue, msg)
 	c.syslogMu.Unlock()
@@ -692,7 +706,9 @@ func (c *Client) SendFlowSample(sample *FlowSample) {
 	c.flowMu.Lock()
 	if len(c.flowQueue) >= maxQueueSize {
 		c.flowQueue = append(c.flowQueue[:0], c.flowQueue[1:]...)
-		log.Println("[Relay] Flow queue full, dropping oldest entry")
+		slog.Warn("flow queue full, dropping oldest entry",
+			slog.Int("queue_size", maxQueueSize),
+		)
 	}
 	c.flowQueue = append(c.flowQueue, sample)
 	c.flowMu.Unlock()
@@ -732,7 +748,10 @@ func (c *Client) doDirectSend(endpoint string, name string, payload interface{})
 
 		// Attempt re-registration on auth/not-found errors
 		if resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 404 {
-			log.Printf("[Relay] Probe rejected (%d on %s), attempting re-registration...", resp.StatusCode, name)
+			slog.Warn("probe rejected by server, attempting re-registration",
+				slog.Int("status", resp.StatusCode),
+				slog.String("endpoint", name),
+			)
 			c.approved.Store(false)
 			if c.tryReregister() {
 				continue // retry the send after successful re-registration
@@ -865,7 +884,7 @@ func (c *Client) syncData() {
 	c.flowMu.Unlock()
 
 	if !c.approved.Load() {
-		log.Println("[Relay] Probe not approved, attempting re-registration before sync...")
+		slog.Warn("probe not approved, attempting re-registration before sync")
 		if !c.tryReregister() {
 			c.trapMu.Lock()
 			c.trapQueue = append(traps, c.trapQueue...)
@@ -957,13 +976,24 @@ func (c *Client) sendBatchesSequential(url, name string, items interface{}) {
 					c.requeueFlows(items2)
 				}
 			default:
-				log.Printf("[Relay] ERROR: Unknown batch name %q - attempting generic requeue", name)
+				slog.Error("unknown batch name, attempting generic requeue",
+					slog.String("name", name),
+				)
 				c.requeueGeneric(name, chunk)
 			}
-			log.Printf("[Relay] Failed to send %s batch chunk %d/%d", name, i+1, totalChunks)
+			slog.Error("failed to send batch chunk",
+				slog.String("name", name),
+				slog.Int("chunk", i+1),
+				slog.Int("total_chunks", totalChunks),
+			)
 			return
 		}
-		log.Printf("[Relay] Sent %s batch chunk %d/%d (%d items)", name, i+1, totalChunks, reflect.ValueOf(chunk).Len())
+		slog.Info("sent batch chunk",
+			slog.String("name", name),
+			slog.Int("chunk", i+1),
+			slog.Int("total_chunks", totalChunks),
+			slog.Int("items", reflect.ValueOf(chunk).Len()),
+		)
 	}
 }
 
@@ -1027,9 +1057,12 @@ func (c *Client) requeueTraps(items []*TrapEvent) {
 	}
 	if space > 0 {
 		c.trapQueue = append(items[:space], c.trapQueue...)
-		log.Printf("[Relay] Re-queued %d trap events", space)
+		slog.Warn("re-queued trap events", slog.Int("count", space))
 	} else {
-		log.Printf("[Relay] WARNING: Could not requeue %d traps - queue full", len(items))
+		slog.Error("could not requeue trap events, queue full",
+			slog.Int("dropped", len(items)),
+			slog.Int("queue_size", maxQueueSize),
+		)
 	}
 }
 
@@ -1042,9 +1075,12 @@ func (c *Client) requeuePings(items []*PingResult) {
 	}
 	if space > 0 {
 		c.pingQueue = append(items[:space], c.pingQueue...)
-		log.Printf("[Relay] Re-queued %d ping results", space)
+		slog.Warn("re-queued ping results", slog.Int("count", space))
 	} else {
-		log.Printf("[Relay] WARNING: Could not requeue %d pings - queue full", len(items))
+		slog.Error("could not requeue ping results, queue full",
+			slog.Int("dropped", len(items)),
+			slog.Int("queue_size", maxQueueSize),
+		)
 	}
 }
 
@@ -1057,9 +1093,12 @@ func (c *Client) requeueSyslogs(items []*SyslogMessage) {
 	}
 	if space > 0 {
 		c.syslogQueue = append(items[:space], c.syslogQueue...)
-		log.Printf("[Relay] Re-queued %d syslog messages", space)
+		slog.Warn("re-queued syslog messages", slog.Int("count", space))
 	} else {
-		log.Printf("[Relay] WARNING: Could not requeue %d syslog messages - queue full", len(items))
+		slog.Error("could not requeue syslog messages, queue full",
+			slog.Int("dropped", len(items)),
+			slog.Int("queue_size", maxQueueSize),
+		)
 	}
 }
 
@@ -1072,9 +1111,12 @@ func (c *Client) requeueFlows(items []*FlowSample) {
 	}
 	if space > 0 {
 		c.flowQueue = append(items[:space], c.flowQueue...)
-		log.Printf("[Relay] Re-queued %d flow samples", space)
+		slog.Warn("re-queued flow samples", slog.Int("count", space))
 	} else {
-		log.Printf("[Relay] WARNING: Could not requeue %d flow samples - queue full", len(items))
+		slog.Error("could not requeue flow samples, queue full",
+			slog.Int("dropped", len(items)),
+			slog.Int("queue_size", maxQueueSize),
+		)
 	}
 }
 
@@ -1090,7 +1132,10 @@ func isRetryableStatus(statusCode int) bool {
 func (c *Client) sendBatch(url, name string, data interface{}) bool {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
-		log.Printf("[Relay] Failed to marshal %s batch: %v", name, err)
+		slog.Error("failed to marshal batch",
+			slog.String("name", name),
+			slog.Any("err", err),
+		)
 		return false
 	}
 
@@ -1100,24 +1145,35 @@ func (c *Client) sendBatch(url, name string, data interface{}) bool {
 	for attempt := 0; attempt < 3; attempt++ {
 		resp, err := c.doAuthenticatedRequestH("POST", url, jsonData, map[string]string{"X-Probe-Batch-ID": batchID})
 		if err != nil {
-			log.Printf("[Relay] Failed to send %s batch (attempt %d/3): %v", name, attempt+1, err)
+			slog.Warn("failed to send batch",
+				slog.String("name", name),
+				slog.Int("attempt", attempt+1),
+				slog.Int("max_attempts", 3),
+				slog.Any("err", err),
+			)
 			time.Sleep(time.Duration(1<<uint(attempt)) * time.Second)
 			continue
 		}
 
 		bodyBytes, err := io.ReadAll(resp.Body)
 		if err != nil {
-			log.Printf("[Relay] Warning: failed to read %s response body: %v", name, err)
+			slog.Warn("failed to read batch response body",
+				slog.String("name", name),
+				slog.Any("err", err),
+			)
 		}
 		resp.Body.Close()
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			log.Printf("[Relay] Sent %s batch to server", name)
+			slog.Info("sent batch to server", slog.String("name", name))
 			return true
 		}
 
 		if resp.StatusCode == 404 || resp.StatusCode == 401 || resp.StatusCode == 403 {
-			log.Printf("[Relay] Probe not found/auth failed (%d on %s), attempting re-registration...", resp.StatusCode, name)
+			slog.Warn("probe not found/auth failed, attempting re-registration",
+				slog.Int("status", resp.StatusCode),
+				slog.String("name", name),
+			)
 			c.approved.Store(false)
 			if c.tryReregister() {
 				continue
@@ -1126,16 +1182,29 @@ func (c *Client) sendBatch(url, name string, data interface{}) bool {
 		}
 
 		if resp.StatusCode == 400 {
-			log.Printf("[Relay] Bad request (400) for %s batch: %s - not retrying", name, string(bodyBytes))
+			slog.Error("bad request for batch, not retrying",
+				slog.String("name", name),
+				slog.String("body", string(bodyBytes)),
+			)
 			return false
 		}
 
 		if !isRetryableStatus(resp.StatusCode) {
-			log.Printf("[Relay] Non-retryable status %d for %s batch: %s", resp.StatusCode, name, string(bodyBytes))
+			slog.Error("non-retryable status for batch",
+				slog.Int("status", resp.StatusCode),
+				slog.String("name", name),
+				slog.String("body", string(bodyBytes)),
+			)
 			return false
 		}
 
-		log.Printf("[Relay] Failed to send %s batch: status %d (attempt %d/3): %s", name, resp.StatusCode, attempt+1, string(bodyBytes))
+		slog.Warn("failed to send batch, retrying",
+			slog.String("name", name),
+			slog.Int("status", resp.StatusCode),
+			slog.Int("attempt", attempt+1),
+			slog.Int("max_attempts", 3),
+			slog.String("body", string(bodyBytes)),
+		)
 		time.Sleep(time.Duration(1<<uint(attempt)) * time.Second)
 	}
 	return false
@@ -1150,13 +1219,13 @@ func (c *Client) Stop() {
 		// Wait for DataSendLoop to finish its final flush
 		select {
 		case <-c.done:
-			log.Println("[Relay] Final data flush completed")
+			slog.Info("final data flush completed")
 		case <-time.After(15 * time.Second):
-			log.Println("[Relay] Timed out waiting for final data flush")
+			slog.Warn("timed out waiting for final data flush")
 		}
 
 		if err := c.sendHeartbeatWithStatus("offline"); err != nil {
-			log.Printf("Failed to send offline heartbeat: %v", err)
+			slog.Error("failed to send offline heartbeat", slog.Any("err", err))
 		}
 	})
 }
@@ -1237,10 +1306,17 @@ func (c *Client) SendConfigRevision(rev *ConfigRevision) error {
 	bodyBytes, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		log.Printf("[RELAY] SendConfigRevision success for device %d: %s", rev.DeviceID, string(bodyBytes))
+		slog.Info("SendConfigRevision success",
+			slog.Uint64("device_id", uint64(rev.DeviceID)),
+			slog.String("body", string(bodyBytes)),
+		)
 		return nil
 	}
-	log.Printf("[RELAY] SendConfigRevision failed for device %d - status %d: %s", rev.DeviceID, resp.StatusCode, string(bodyBytes))
+	slog.Error("SendConfigRevision failed",
+		slog.Uint64("device_id", uint64(rev.DeviceID)),
+		slog.Int("status", resp.StatusCode),
+		slog.String("body", string(bodyBytes)),
+	)
 	return fmt.Errorf("send config revision returned status %d: %s", resp.StatusCode, string(bodyBytes))
 }
 

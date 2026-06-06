@@ -126,6 +126,11 @@
 
 ## 1.2.100 - 2026-06-06
 
+### Fixed
+- **Replace `nil` context with `context.TODO()` in slog tests** (follow-up to AUDIT-056). The staticcheck step in the AUDIT-055 CI flagged `SA1012` (do not pass a nil Context, even if a function permits it) in `cmd/collector/slog_test.go:29,32,135,138,160` — all 5 sites of `slog.Default().Enabled(nil, ...)`. The `slog` `Enabled` method accepts `context.Context` (per the std-lib signature) and a `nil` value is technically permitted by the implementation, but the linter correctly flags it as brittle (a future slog refactor could call into a `Context.Done()`-sensitive path and NPE). Replaced all 5 with `context.TODO()` and added the `context` import.
+
+## 1.2.100 - 2026-06-06
+
 ### Changed
 - **`cmd/ssh-test/main.go` deleted; operator tool merged into `cmd/collector` as a subcommand** (closes AUDIT-060). The 597-line duplicate `cmd/ssh-test/main.go` was ~500 lines of copy-pasted `FortiGateClient`, `cleanOutput`, all 7 command-fetching helpers, and all 3 parsers — all of which had already drifted from the production code in `internal/ssh` (most visibly `isPromptLine` in `cmd/ssh-test/main.go:109-130` was using a string-slicing check, while production `internal/ssh/ssh.go:187-195` uses the regex `promptWithVDOMRegex` / `promptRegex`, so the operator tool could give different output than the collector). Now:
   - The operator runs `collector ssh-test --host=... --user=... <command>` and `cmd/collector/main.go` detects the `ssh-test` subcommand via `isSSHToolSubcommand(os.Args[1:])` at the top of `main()` and routes to `internal/sshtool`.
@@ -136,6 +141,26 @@
 ### Removed
 - **`cmd/ssh-test/main.go`** — 597 lines of duplicate SSH client / parser / command-routing code. The binary is no longer built; existing `ssh-test` invocations must use `collector ssh-test ...` instead. `wc -l cmd/ssh-test/main.go` no longer finds the file.
 - **`cmd/ssh-test/`** directory — empty after the file deletion; removed.
+
+
+## 1.2.101 - 2026-06-06
+
+### Changed
+- **Begin migration from `log.Printf` to `log/slog`** (closes AUDIT-056). The collector had 80+ unstructured `log.Printf` call sites with no log levels, no structure, no correlation IDs, and no redaction policy. This PR is the minimum viable scope: configure the default `slog` logger from env vars and migrate the critical paths (registration, heartbeat, data-send, batch send, panic recovery).
+  - **New env vars** (both optional, applied at process start in `cmd/collector/main.go`):
+    - `PROBE_LOG_LEVEL` — `debug` | `info` | `warn` | `error` (default: `info`).
+    - `PROBE_LOG_FORMAT` — `text` | `json` (default: `text`).
+    - `json` is intended for log aggregators (Loki, Splunk, Datadog) that need parseable structured fields. Unknown level values fall back to `info` and a one-time warning is written to stderr.
+  - **Migrated call sites in `cmd/collector/main.go`**: startup fatal errors (config load, missing `PROBE_REGISTRATION_KEY`, registration failure), heartbeat-loop error, data-send-loop error, initial device-fetch warning, SSH TFTP-candidate info.
+  - **Migrated call sites in `internal/relay/relay.go`**: `NewClient` TLS-config fatal, `buildTLSConfig` insecure-skip-verify warning, `Register` / `tryReregister` approval messages, `HeartbeatLoop` errors, queue-overflow warnings (traps, pings, syslog, flows), `doDirectSend` / `sendBatch` retry and rejection warnings, `requeue*` warnings, `sendBatchesSequential` sent/failed events, `Stop` flush lifecycle, `SendConfigRevision` success/failure. Errors now use `slog.Any("err", err)` so the wrapped error is a structured field instead of a formatted string.
+  - **Migrated call site in `internal/safego/safego.go`**: the panic-recovery log. The exported `logf` var keeps its `Printf`-style signature so existing tests that override it continue to work, but the default now forwards through `slog.Error` so panic messages flow through the same JSON/text handler as the rest of the process.
+  - **Unmigrated call sites** (intentional — the audit recommends an incremental rollout): TFTP server log lines, SSH poll-cycle log lines, SNMP poll-cycle log lines, syslog / sFlow / ping lifecycle lines. These still go to the standard `log` package with `LstdFlags | Lshortfile` until a follow-up PR migrates them. Mixing the two outputs is acceptable for the duration of the migration and the slog default handler does not capture `log.Printf` writes.
+
+### Added
+- `cmd/collector/slog_test.go` — five new tests covering the slog setup helper: default level/format, JSON parseability, debug-level emission, unknown-level fallback, and the level-string allow-list.
+
+### References
+- `tasks/REVIEW-REPORT.md` Section 1.3, 2.3, 4.2 (logging consistency), 6.1 O-1.
 
 
 ## 1.2.88 - 2026-06-06
