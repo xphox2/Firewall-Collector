@@ -41,6 +41,14 @@ type Server struct {
 	writeHandler WriteHandler
 	mu           sync.Mutex
 	running      bool
+	// handlerMu guards readHandler and writeHandler. SetHandler /
+	// SetWriteHandler take the write lock; handleWRQ / handleRRQ take
+	// the read lock around the handler field access. This is the
+	// AUDIT-081 fix — the previous code raced because the test
+	// (and any production caller) called SetWriteHandler from one
+	// goroutine while handleWRQ was already reading it from the
+	// listener goroutine.
+	handlerMu sync.RWMutex
 }
 
 func NewServer(cfg *Config) *Server {
@@ -54,11 +62,15 @@ func NewServer(cfg *Config) *Server {
 }
 
 func (s *Server) SetHandler(handler ReadHandler) {
+	s.handlerMu.Lock()
 	s.readHandler = handler
+	s.handlerMu.Unlock()
 }
 
 func (s *Server) SetWriteHandler(handler WriteHandler) {
+	s.handlerMu.Lock()
 	s.writeHandler = handler
+	s.handlerMu.Unlock()
 }
 
 func (s *Server) ListenAndServe() error {
@@ -155,7 +167,10 @@ func (s *Server) handleWRQ(reqPkt []byte, clientAddr *net.UDPAddr) {
 		}
 	}()
 
-	if s.writeHandler == nil {
+	s.handlerMu.RLock()
+	h := s.writeHandler
+	s.handlerMu.RUnlock()
+	if h == nil {
 		s.sendErrorOn(s.conn, clientAddr, 4, "Write not supported")
 		return
 	}
@@ -198,7 +213,10 @@ func (s *Server) handleWRQ(reqPkt []byte, clientAddr *net.UDPAddr) {
 				log.Printf("[TFTP] PANIC in writeHandler for %q: %v", filename, r)
 			}
 		}()
-		if err := s.writeHandler(filename, data, clientAddr); err != nil {
+		// Use the handler captured at request-arrival time. Calling
+		// s.writeHandler here would re-introduce the race against
+		// a concurrent SetWriteHandler (AUDIT-081).
+		if err := h(filename, data, clientAddr); err != nil {
 			log.Printf("[TFTP] writeHandler %q returned error: %v", filename, err)
 		}
 	}()
@@ -211,7 +229,10 @@ func (s *Server) handleRRQ(reqPkt []byte, clientAddr *net.UDPAddr) {
 		}
 	}()
 
-	if s.readHandler == nil {
+	s.handlerMu.RLock()
+	h := s.readHandler
+	s.handlerMu.RUnlock()
+	if h == nil {
 		s.sendErrorOn(s.conn, clientAddr, 0, "No handler")
 		return
 	}
@@ -222,7 +243,7 @@ func (s *Server) handleRRQ(reqPkt []byte, clientAddr *net.UDPAddr) {
 		return
 	}
 
-	data, err := s.readHandler(filename, clientAddr)
+	data, err := h(filename, clientAddr)
 	if err != nil {
 		s.sendErrorOn(s.conn, clientAddr, 0, err.Error())
 		return
