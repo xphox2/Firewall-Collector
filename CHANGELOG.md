@@ -14,6 +14,7 @@
 ### Deferred
 - **Replace fork-exec `ping` with `golang.org/x/net/icmp`**: the `internal/ping/ping.go:130` shell-out to `/bin/ping` is what forces the `NET_RAW` capability on the container. A pure-Go ICMP implementation would let us drop `NET_RAW` entirely (rootless containers can open `IPPROTO_ICMP` sockets on modern kernels with `net.ipv4.ping_group_range` set, but only when bound to a raw socket — which still needs the cap, so the gain is smaller than it looks). Tracked as a follow-up; not in this release.
 
+
 ## 1.2.94 - 2026-06-06
 
 ### Added
@@ -21,6 +22,34 @@
   - All required cases from AUDIT-062: `TruncatedAtVersion` (2-byte buffer), `AllZero` (64-byte zero buffer), `MalformedIPv4Header` (version=3, IHL=0), `RealisticFlowSample` (golden TCP SYN), `NumSamplesExceedsBuffer` (1000 claimed / 28 actual, must not hang), `RawHeader_Oversized` (header_length=2000 vs. 16-byte record), and the Go native `FuzzParseSFlowDatagram` fuzz target.
   - Additional coverage not in the issue: UDP flow (`parseTransport` UDP branch), IPv6 flow (`parseIPv6`), expanded flow sample (format=3), IPv6 agent address (`addrType=2`), nil-handler early return, truncated record payload, 802.1Q VLAN-tagged Ethernet, truncated inner IPv4/IPv6, truncated TCP/UDP transport (the `data[13]` audit target), unknown agent address type, truncated agent address, truncated flow sample header, and `Stop()` idempotency.
   - The fuzz target seeds 9 baseline corpora (valid TCP SYN datagram, empty, 1/2/4/27/64/1024-byte zero buffers, a structurally valid datagram with bogus IPs and 5 empty samples) and runs the parser in a goroutine with a 2s hang watchdog. CI nightly: `go test -run=^$ -fuzz=FuzzParseSFlowDatagram -fuzztime=30s ./internal/sflow/...`. A 10s local run executes ~1M iterations with no panic, no hang, no crash.
+
+## 1.2.90 - 2026-06-06
+
+### Added
+- **`internal/syslog/syslog_test.go`** — full coverage of the RFC 5424 parser trunk that every FortiGate, pfSense, OPNsense, and Palo Alto syslog line flows through (closes AUDIT-061):
+  - `TestParseRFC5424_FortiGateTypical` — real FortiGate line populates all 9 fields (priority 189 → facility 23, severity 5; timestamp `2025-04-10T05:01:53.000000-07:00`; hostname `FGT-1000`; app `fglog`; proc `1234`; msgid `MSG-001`; SD `[origin]`; DeviceID 1000 from hostname; multi-token message rejoined).
+  - `TestParseRFC5424_BSD3164Format` — pins the current "best-effort no-error" behaviour for BSD-style lines (`<34>Oct 11 22:14:15 fw-host sshd[123]: ...`). The parser's space-split misaligns every field after PRI; `parseTimestamp` then falls back to `time.Now()` for the unparseable token, so no hard error is returned. Documents the current behaviour so it cannot silently change.
+  - `TestParseRFC5424_MalformedPriority` — table-driven across `<abc>`, `<>`, `<0` (no closing `>`), `<999>`, and no-priority-bracket-at-all.
+  - `TestParsePriority_OutOfRange` — boundary table: 0, 191, 192, 200, 999, 9999, `<>`, `<abc>`, `no-bracket`, `<`.
+  - `TestParseTimestamp_AllSixFormats` — table-driven across all six formats declared at `syslog.go:342-349` (RFC 5424 microseconds, RFC 5424 milliseconds UTC, RFC 5424 +offset no fractional, RFC 5424 UTC no fractional, BSD 3164 single-digit day, BSD 3164 double-digit day, simple `yyyy-MM-dd HH:mm:ss`), plus nil marker, empty string, and unparseable inputs.
+  - `TestExtractDeviceID_PfSense_NotMatched` — confirms that `pfsense-fw-01`, `opnsense-edge-01`, `paloalto-fw`, `cisco-asa-01`, `fortios-router`, `forti-extender`, etc. are all rejected by the `fg`/`fgt` hostname prefix check and return 0.
+  - `TestExtractDeviceID_BracketInUnrelatedField` — documents known bug at `syslog.go:399`: the regex `\[(\d+)\]` matches ANY bracketed number in the structured data, not just FortiGate-related ones. A future fix should restrict to SD elements whose ID contains `fortigate` or `fgt`; the test currently asserts the buggy behaviour so any fix is forced to update the test rather than silently regressing.
+  - `TestExtractDeviceID_FortiGateHostnames` — table of FGT-1000, fgt.1000, fgt_1000, FGT1234, FG100A-0042 (returns 100, not 42, because the parser stops at the trailing `A`).
+  - `TestParseDeviceID_LeadingZeros` — `0000123` → 123, `00100` → 100, `0`/`00000` → 0, `FGVM010000123456` → 10000123456, `12a34` → 1234 (non-digits are silently skipped — no length cap or overflow check).
+  - `TestHandleConnection_Overflow` — 100 KB newline-less line is silently dropped (handler not called), the receiver stays alive, and a fresh connection's valid line is still parsed.
+  - `FuzzParseRFC5424` — Go native fuzz target. Seeded with real FortiGate, BSD-style, malformed-priority, and edge-case lines. **Clean for 30 s** (~2.7 M executions, 303 new interesting inputs, zero panics).
+  - Plus a few extras for sibling functions: `TestParseRFC5424_EmptyInput`, `TestParseRFC5424_TooFewParts`, `TestBytesToInt`, `TestSyslogReceiver_DoubleStart`, `TestUDPSyslogReceiver_DoubleStart`.
+
+### Coverage
+- `internal/syslog` rises from **16.1% → 85.1%** of statements.
+- `ParseRFC5424` 100%, `parsePriority` 100%, `parseTimestamp` 100%, `parseDeviceID` 100%, `bytesToInt` 100%, `extractDeviceID` 82.1%, `handleConnection` 86.7%, `acceptLoop`/`readLoop` 90%+/14.3% (the UDP `readLoop` low coverage is due to the deadline/timeout branches — it is exercised, just not on every path).
+
+### Bugs documented by the new tests (left for follow-up tickets)
+- **BSD 3164 misparse.** The space-split alignment assumes a SP between `<PRI>` and VERSION, so BSD lines get garbled but accepted. Fix: detect BSD format and route through a separate path.
+- **Bracketed-number regex is too greedy.** `extractDeviceID` extracts `[42]` from `{"origin":{"x":[42]}}` as if it were a FortiGate device ID. Fix: gate the regex on the SD element ID containing `fortigate`/`fgt`, or parse the SD properly.
+- **`parseDeviceID` has no length cap or overflow check.** Very long digit runs silently wrap on `uint`. Not currently reachable from any sane hostname/SD input, but the contract is "no cap".
+- **Real RFC 5424 lines (`<PRI>VERSION TIMESTAMP ...` with no SP after `>`) are misaligned.** The parser's design assumes a SP between `<PRI>` and VERSION. Currently unreachable because all in-tree emitters (FortiGate, BSD-style) happen to have a separator; a future RFC 5424-only emitter would silently break device association. Fix: scan the first token for `>` and split PRI off the front.
+
 
 
 ## 1.2.88 - 2026-06-06
