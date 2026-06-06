@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.83 - 2026-06-06
+
+### Fixed
+- **Safego test race under `-race`** (follow-up to AUDIT-081). The new race-detector CI from AUDIT-055 caught a second, unrelated race: `internal/safego/safego_test.go`'s `withCapturedLog` helper used `log.SetOutput(&buf)` and then read `buf.String()` after only a `time.Sleep(20ms)`. Under `-race` the write from `recoverPanic` could still be in flight when the test read the buffer, producing a data race on the `bytes.Buffer`'s internal state. Fix: rewrote `withCapturedLog(t, expected, fn)` to swap the package-level `logf` (not `log.SetOutput`) for one that writes to the buffer AND increments an atomic counter, then waits for `expected` calls via the existing `waitForCount` helper. This is race-safe regardless of goroutine scheduling. The TFTP handler race from AUDIT-081 is still in place; this is a strictly additive fix for the safego test infrastructure.
+
 ## 1.2.82 - 2026-06-06
 
 ### Fixed
