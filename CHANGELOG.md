@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.81 - 2026-06-06
+
+### Added
+- **CI: `test` job runs before the `build` job in `.github/workflows/docker.yml`** (closes AUDIT-055). Until now the only CI step was `docker buildx build` — no test, no vet, no race detector, no govulncheck, no linter, no `go mod tidy` check. The repo shipped a 624-line CHANGELOG and ~17% test coverage with no automated safety net, so a PR that broke `go build` on `master` could land undetected. The new `test` job runs on `ubuntu-latest` with `actions/setup-go@v5` (Go 1.25) and an `actions/cache@v4` step that caches both `~/.cache/go-build` and `~/go/pkg/mod`. The build job now `needs: test` so a failing test blocks the docker build.
+- **Seven CI steps in the new `test` job** (checkout + setup-go + cache are the three implicit setup steps):
+  1. `go vet ./...` — surfaces dead code, printf misuses, lock-copy mistakes, etc., that `go build` accepts but `go test` does not.
+  2. `go test -race -count=1 -timeout 120s ./...` — the race detector requires CGO, so this step sets `CGO_ENABLED=1` explicitly. The build job keeps the default CGO disabled, so this split is intentional.
+  3. `go mod tidy && git diff --exit-code go.mod go.sum` — fails the build if anyone adds a dep that isn't actually imported. Catches the "tested on my machine, forgot to go mod tidy" class of bug.
+  4. `staticcheck ./...` — installed via `go install honnef.co/go/tools/cmd/staticcheck@latest` at job start (no global tool install). Surfaces dead code, unused params, simplified-receiver opportunities, and a long tail of `SA1xxx`/`SA4xxx` issues that `go vet` misses.
+  5. `govulncheck ./...` — installed via `go install golang.org/x/vuln/cmd/govulncheck@latest`. Cross-references deps against the Go vulnerability DB. No-op today, but catches the day a CVE is published against `golang.org/x/crypto`, `golang.org/x/sys`, or `github.com/gosnmp/gosnmp`.
+- **Build job now depends on the test job** (`needs: test`). On the very first push to a PR branch, the test job runs in ~60–90 s (cached modules) and gates the multi-platform `docker buildx build` that follows. A failing test no longer wastes 5–10 min of CI time on a docker build.
+
 ## 1.2.80 - 2026-06-06
 
 ### Fixed
