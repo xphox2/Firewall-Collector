@@ -124,6 +124,20 @@
 - The central Firewall-Mon server's device-edit UI and `/api/devices` schema need to add `ssh_key_file` / `ssh_key_passphrase` fields so operators can actually populate them. This collector change is forward-compatible — the fields default to `""` when absent and the existing password path is preserved — but the server work is required before public-key auth can be used in production. Filed as a follow-up note to AUDIT-071.
 
 
+## 1.2.100 - 2026-06-06
+
+### Changed
+- **`cmd/ssh-test/main.go` deleted; operator tool merged into `cmd/collector` as a subcommand** (closes AUDIT-060). The 597-line duplicate `cmd/ssh-test/main.go` was ~500 lines of copy-pasted `FortiGateClient`, `cleanOutput`, all 7 command-fetching helpers, and all 3 parsers — all of which had already drifted from the production code in `internal/ssh` (most visibly `isPromptLine` in `cmd/ssh-test/main.go:109-130` was using a string-slicing check, while production `internal/ssh/ssh.go:187-195` uses the regex `promptWithVDOMRegex` / `promptRegex`, so the operator tool could give different output than the collector). Now:
+  - The operator runs `collector ssh-test --host=... --user=... <command>` and `cmd/collector/main.go` detects the `ssh-test` subcommand via `isSSHToolSubcommand(os.Args[1:])` at the top of `main()` and routes to `internal/sshtool`.
+  - `internal/sshtool` is a thin wrapper: flag parsing (`--host`, `--port`, `--user`, `--password-stdin`, `--format`), password resolution (`PROBE_TEST_PASSWORD` env var → `--password-stdin` → error), command dispatch (`all | sensor | process | interface | license | performance | vpn | ha | checksum | config`), and JSON or text output formatting. **Zero SSH or parser code is duplicated** — all SSH primitives and all parsers continue to live in `internal/ssh`.
+  - Output defaults to **JSON** (suitable for scripting / CI consumption). Use `--format=text` for human reading.
+  - Password source: `PROBE_TEST_PASSWORD` env var (preferred, matches the `cmd/diag-backup` pattern and SECURITY.md), or `--password-stdin` for one-line stdin. The old positional-arg form (`ssh-test host port user password`) is gone — passwords should never be on the command line.
+
+### Removed
+- **`cmd/ssh-test/main.go`** — 597 lines of duplicate SSH client / parser / command-routing code. The binary is no longer built; existing `ssh-test` invocations must use `collector ssh-test ...` instead. `wc -l cmd/ssh-test/main.go` no longer finds the file.
+- **`cmd/ssh-test/`** directory — empty after the file deletion; removed.
+
+
 ## 1.2.88 - 2026-06-06
 
 ### Changed
