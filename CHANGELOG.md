@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.80 - 2026-06-06
+
+### Fixed
+- **SNMP trap receiver no longer accepts spoofed traps from a default install** (closes AUDIT-051). `internal/snmp/trap.go` previously short-circuited its community check when `t.community == ""` (`if t.community != "" && packet.Community != t.community`), so a default Docker install with `PROBE_SNMP_TRAP_COMMUNITY=""` (Dockerfile:40, docker-compose.yml:38) accepted every trap from any source on the management LAN. Combined with no source-IP verification, the trap pipeline's integrity was fully attacker-controllable. The check is now refactored into a testable `(*TrapReceiver).allowCommunity` method and the empty-community short-circuit is gone — an empty configured community now drops every packet (and `Start()` refuses to start with an explanatory error).
+
+### Changed
+- **`config.Load()` now returns `(*Config, error)`** instead of `*Config`. The function rejects a missing `PROBE_SNMP_TRAP_COMMUNITY` whenever `PROBE_SNMP_TRAP_ENABLED=true` with a clear, actionable error: `"PROBE_SNMP_TRAP_COMMUNITY must be set when SNMP traps are enabled"`. The trap receiver itself also enforces the invariant in `Start()` as defense in depth for direct callers (e.g. tests) that bypass `config.Load()`. `main.go` calls `log.Fatalf` on the error, so the operator gets a single-line startup failure pointing at the env var. Operators with `PROBE_SNMP_TRAP_ENABLED=false` skip the check (empty community is fine when traps are off).
+
+### Added
+- **`(*TrapReceiver).allowCommunity(community string) bool` method** in `internal/snmp/trap.go`. Encapsulates the community comparison so it can be unit-tested without binding a real UDP listener. Logs a structured "community mismatch (expected %q, got %q)" line on every drop.
+- **3 tests in `internal/snmp/trap_test.go`**: `TestTrapReceiver_CommunityMismatch_Drops` (mismatching community returns false, empty packet community is dropped, matching community returns true), `TestTrapReceiver_CommunityMismatch_LogsDrop` (asserts the log line mentions both expected and got community), `TestTrapReceiver_Start_EmptyCommunity_RefusesError` (`Start()` with empty community returns a non-nil error naming `PROBE_SNMP_TRAP_COMMUNITY`).
 ## 1.2.79 - 2026-06-06
 
 ### Fixed

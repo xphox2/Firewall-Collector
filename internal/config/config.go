@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"time"
@@ -11,7 +12,6 @@ type Config struct {
 }
 
 type ProbeConfig struct {
-	// Server connection
 	RegistrationKey    string
 	ServerURL          string
 	TLSCertFile        string
@@ -19,7 +19,6 @@ type ProbeConfig struct {
 	CACertFile         string
 	InsecureSkipVerify bool
 
-	// Intervals
 	HeartbeatInterval     time.Duration
 	SyncInterval          time.Duration
 	PollInterval          time.Duration
@@ -28,32 +27,27 @@ type ProbeConfig struct {
 	PingTimeout           time.Duration
 	PingCount             int
 
-	// Listener config
 	ListenAddr    string
 	SNMPTrapPort  int
 	SyslogPort    int
 	SFlowPort     int
 	TrapCommunity string
 
-	// TFTP config fetch
 	TFTPConfigEnabled bool
 	TFTPListenAddr    string
 
-	// Queue & batch limits
 	MaxQueueSize int
 	MaxBatchSize int
 
-	// Feature toggles
 	SNMPTrapEnabled bool
 	SyslogEnabled   bool
 	SFlowEnabled    bool
 	PingEnabled     bool
 }
 
-func Load() *Config {
-	return &Config{
+func Load() (*Config, error) {
+	cfg := &Config{
 		Probe: ProbeConfig{
-			// Server connection
 			RegistrationKey:    os.Getenv("PROBE_REGISTRATION_KEY"),
 			ServerURL:          getEnv("PROBE_SERVER_URL", "https://stats.technicallabs.org"),
 			TLSCertFile:        os.Getenv("PROBE_TLS_CERT"),
@@ -61,7 +55,6 @@ func Load() *Config {
 			CACertFile:         os.Getenv("PROBE_CA_CERT"),
 			InsecureSkipVerify: os.Getenv("PROBE_INSECURE_SKIP_VERIFY") == "true",
 
-			// Intervals
 			HeartbeatInterval:     parseDurationSeconds("PROBE_HEARTBEAT_INTERVAL", 60),
 			SyncInterval:          parseDurationSeconds("PROBE_SYNC_INTERVAL", 30),
 			PollInterval:          parseDurationSeconds("PROBE_POLL_INTERVAL", 60),
@@ -70,28 +63,30 @@ func Load() *Config {
 			PingTimeout:           parseDurationSeconds("PROBE_PING_TIMEOUT", 5),
 			PingCount:             parseInt("PROBE_PING_COUNT", 4),
 
-			// Listener config
 			ListenAddr:    getEnv("PROBE_LISTEN_ADDR", "0.0.0.0"),
 			SNMPTrapPort:  parseInt("PROBE_SNMP_TRAP_PORT", 162),
 			SyslogPort:    parseInt("PROBE_SYSLOG_PORT", 514),
 			SFlowPort:     parseInt("PROBE_SFLOW_PORT", 6343),
 			TrapCommunity: os.Getenv("PROBE_SNMP_TRAP_COMMUNITY"),
 
-			// TFTP config fetch
 			TFTPConfigEnabled: parseBool("PROBE_TFTP_CONFIG_ENABLED", true),
 			TFTPListenAddr:    getEnv("PROBE_LISTEN_ADDR", "0.0.0.0") + ":" + getEnv("PROBE_TFTP_PORT", "69"),
 
-			// Queue & batch limits
 			MaxQueueSize: parseInt("PROBE_MAX_QUEUE_SIZE", 10000),
 			MaxBatchSize: parseInt("PROBE_MAX_BATCH_SIZE", 1000),
 
-			// Feature toggles (default enabled)
 			SNMPTrapEnabled: parseBool("PROBE_SNMP_TRAP_ENABLED", true),
 			SyslogEnabled:   parseBool("PROBE_SYSLOG_ENABLED", true),
 			SFlowEnabled:    parseBool("PROBE_SFLOW_ENABLED", true),
 			PingEnabled:     parseBool("PROBE_PING_ENABLED", true),
 		},
 	}
+
+	if cfg.Probe.SNMPTrapEnabled && cfg.Probe.TrapCommunity == "" {
+		return nil, fmt.Errorf("PROBE_SNMP_TRAP_COMMUNITY must be set when SNMP traps are enabled")
+	}
+
+	return cfg, nil
 }
 
 func getEnv(key, defaultValue string) string {
