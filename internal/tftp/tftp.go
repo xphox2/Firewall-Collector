@@ -122,10 +122,18 @@ func (s *Server) serve() {
 		switch opcode {
 		case opRRQ:
 			log.Printf("[TFTP] RRQ from %s", clientAddr.String())
-			go s.handleRRQ(pkt, clientAddr)
+			s.wg.Add(1)
+			go func() {
+				defer s.wg.Done()
+				s.handleRRQ(pkt, clientAddr)
+			}()
 		case opWRQ:
 			log.Printf("[TFTP] WRQ from %s", clientAddr.String())
-			go s.handleWRQ(pkt, clientAddr)
+			s.wg.Add(1)
+			go func() {
+				defer s.wg.Done()
+				s.handleWRQ(pkt, clientAddr)
+			}()
 		default:
 			log.Printf("[TFTP] Unexpected opcode %d on listen socket from %s — ignoring", opcode, clientAddr.String())
 		}

@@ -25,7 +25,7 @@ import (
 	"firewall-collector/internal/tftp"
 )
 
-const version = "1.2.76"
+const version = "1.2.77"
 
 type Collector struct {
 	cfg            *config.ProbeConfig
@@ -50,7 +50,13 @@ type Collector struct {
 	ifaceIPMap      map[string]uint // interface IP → device ID cache
 	ifaceIPMu       sync.RWMutex
 	stopChan        chan struct{}
+	stopOnce        sync.Once
 	pollWg          sync.WaitGroup
+	// sshPollWg tracks per-device SSH poll goroutines. runSSHPollCycle
+	// launches one per device that needs polling; they can outlive a
+	// stop() signal by up to 10 minutes (SSH command timeout) if not
+	// explicitly joined.
+	sshPollWg sync.WaitGroup
 	// Circuit breaker: consecutive failure counts per device
 	failCount   map[uint]int
 	failCountMu sync.Mutex
@@ -487,9 +493,11 @@ func (c *Collector) runSSHPollCycle() {
 
 		wg.Add(1)
 		sem <- struct{}{}
+		c.sshPollWg.Add(1)
 		dev := dev
 		safego.Go("ssh:device:"+dev.Name, func() {
 			defer wg.Done()
+			defer c.sshPollWg.Done()
 			defer func() { <-sem }()
 			c.sshPollDevice(dev)
 		})
@@ -1308,27 +1316,56 @@ func (c *Collector) cacheInterfaceAddresses(deviceID uint, addrs []relay.Interfa
 	}
 }
 
+// shutdownDrainTimeout caps how long c.stop() will wait for in-flight poll
+// goroutines (SNMP + SSH) before proceeding. Exposed as a var so tests can
+// override it; production value is 30s.
+var shutdownDrainTimeout = 30 * time.Second
+
 func (c *Collector) stop() {
-	close(c.stopChan)
+	c.stopOnce.Do(func() {
+		close(c.stopChan)
 
-	// Wait for in-flight SNMP polls to finish
-	c.pollWg.Wait()
+		// Bounded wait for in-flight poll goroutines. 30s is enough for
+		// the slowest SSH command (10-min commandTimeout per audit, but
+		// most return in seconds); 30s is the configured deadline for
+		// an orderly drain. If they don't all finish, we still proceed
+		// — better to ship a "slow shutdown" warning than hang forever.
+		done := make(chan struct{})
+		go func() {
+			c.pollWg.Wait()
+			c.sshPollWg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+			log.Printf("[Collector] All poll goroutines drained")
+		case <-time.After(shutdownDrainTimeout):
+			log.Printf("[Collector] WARNING: poll goroutines did not drain within %v, proceeding with shutdown", shutdownDrainTimeout)
+		}
 
-	if c.trapReceiver != nil {
-		c.trapReceiver.Stop()
-	}
-	if c.syslogTCP != nil {
-		c.syslogTCP.Stop()
-	}
-	if c.syslogUDP != nil {
-		c.syslogUDP.Stop()
-	}
-	if c.sflowReceiver != nil {
-		c.sflowReceiver.Stop()
-	}
-	if c.pingCollector != nil {
-		c.pingCollector.Stop()
-	}
+		if c.trapReceiver != nil {
+			c.trapReceiver.Stop()
+		}
+		if c.syslogTCP != nil {
+			c.syslogTCP.Stop()
+		}
+		if c.syslogUDP != nil {
+			c.syslogUDP.Stop()
+		}
+		if c.sflowReceiver != nil {
+			c.sflowReceiver.Stop()
+		}
+		if c.pingCollector != nil {
+			c.pingCollector.Stop()
+		}
+		if c.tftpServer != nil {
+			if err := c.tftpServer.Shutdown(); err != nil {
+				log.Printf("[Collector] TFTP shutdown error: %v", err)
+			}
+		}
 
-	c.relayClient.Stop()
+		if c.relayClient != nil {
+			c.relayClient.Stop()
+		}
+	})
 }
