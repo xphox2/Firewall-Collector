@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.75 - 2026-06-05
+
+### Added
+- **Comprehensive 2026-06 audit** (`tasks/REVIEW-REPORT.md`): a 30-issue review across 8 angles (security, stability, performance, code quality, test coverage, operational readiness, features) by 8 sub-agents with a 9th verification pass. Findings split into 23 collector issues (AUDIT-043 to AUDIT-072) in `xphox2/Firewall-Collector` and 7 server issues (AUDIT-065 to AUDIT-074) in `xphox2/Firewall-Monitoring`. Each issue carries severity + area labels and `file:line` references; close them with `Closes AUDIT-NNN` in commit messages.
+- **Issue labels** in both repos: `severity/{blocker,high,medium,low}`, `area/{security,stability,performance,code-quality,testing,ops,docs}`, and `audit`. Filter the audit work by label.
+
+### Verdict
+- **Public-release readiness: NOT READY.** 15 hard blockers across project hygiene (LICENSE, SECURITY.md, pinned image tags), security (SSH `InsecureIgnoreHostKey`, mTLS not wired, TFTP no source-IP filter, Docker runs as root on host network), and observability (no `/healthz`, no metrics, no panic recovery, no structured logs, CI runs only `docker build`). Top-3 leverage fixes: observability (slog + /healthz + /metrics), SSH security (known_hosts + public-key auth), and the three hygiene blockers. See `tasks/REVIEW-REPORT.md` for the full prioritized list and a Sprint 1/2/3 plan targeting a shippable v1.3.0 in 4-5 weeks.
+
 ## 1.2.74 - 2026-06-05
 
 ### Fixed
