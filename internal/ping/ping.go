@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"firewall-collector/internal/relay"
+	"firewall-collector/internal/safego"
 )
 
 type PingCollector struct {
@@ -48,7 +49,7 @@ func (p *PingCollector) Start(devices []relay.DeviceInfo, probeID uint, handler 
 	p.mu.Unlock()
 
 	p.wg.Add(1)
-	go p.run()
+	safego.Go("ping:run", p.run)
 	log.Printf("[Ping] Collector started (interval: %v, timeout: %v, count: %d)", p.interval, p.timeout, p.count)
 }
 
@@ -106,11 +107,12 @@ func (p *PingCollector) collectAll() {
 		}
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(d relay.DeviceInfo) {
+		dev := dev
+		safego.Go("ping:device:"+dev.Name, func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			p.pingDevice(d, probeID)
-		}(dev)
+			p.pingDevice(dev, probeID)
+		})
 	}
 	wg.Wait()
 }

@@ -17,6 +17,7 @@ import (
 	"firewall-collector/internal/config"
 	"firewall-collector/internal/ping"
 	"firewall-collector/internal/relay"
+	"firewall-collector/internal/safego"
 	"firewall-collector/internal/sflow"
 	"firewall-collector/internal/snmp"
 	"firewall-collector/internal/ssh"
@@ -24,7 +25,7 @@ import (
 	"firewall-collector/internal/tftp"
 )
 
-const version = "1.2.74"
+const version = "1.2.76"
 
 type Collector struct {
 	cfg            *config.ProbeConfig
@@ -45,11 +46,11 @@ type Collector struct {
 	// backup attempt. Per plan: 60s debounce.
 	cfgBackupTimers map[string]*time.Timer
 	cfgBackupMu     sync.Mutex
-	deviceMu       sync.RWMutex
-	ifaceIPMap     map[string]uint // interface IP → device ID cache
-	ifaceIPMu      sync.RWMutex
-	stopChan       chan struct{}
-	pollWg         sync.WaitGroup
+	deviceMu        sync.RWMutex
+	ifaceIPMap      map[string]uint // interface IP → device ID cache
+	ifaceIPMu       sync.RWMutex
+	stopChan        chan struct{}
+	pollWg          sync.WaitGroup
 	// Circuit breaker: consecutive failure counts per device
 	failCount   map[uint]int
 	failCountMu sync.Mutex
@@ -120,16 +121,16 @@ func main() {
 
 	// Start heartbeat + data sync loops
 	fmt.Println("[2/6] Starting heartbeat and data sync loops...")
-	go func() {
+	safego.Go("relay:heartbeat", func() {
 		if err := relayClient.HeartbeatLoop(); err != nil {
 			log.Printf("Heartbeat loop error: %v", err)
 		}
-	}()
-	go func() {
+	})
+	safego.Go("relay:dataSend", func() {
 		if err := relayClient.DataSendLoop(); err != nil {
 			log.Printf("Data send loop error: %v", err)
 		}
-	}()
+	})
 	fmt.Printf("  -> Heartbeat every %v, sync every %v\n\n", probeCfg.HeartbeatInterval, probeCfg.SyncInterval)
 
 	// Fetch initial device list
@@ -165,17 +166,17 @@ func main() {
 
 	// Start SNMP polling + device refresh
 	fmt.Println("[4/6] Starting SNMP polling...")
-	go c.snmpPollingLoop()
+	safego.Go("snmp:polling", c.snmpPollingLoop)
 	c.pollWg.Add(1)
-	go func() {
+	safego.Go("device:refresh", func() {
 		defer c.pollWg.Done()
 		c.deviceRefreshLoop()
-	}()
+	})
 	fmt.Printf("  -> Polling every %v, device refresh every %v\n\n", probeCfg.PollInterval, probeCfg.DeviceRefreshInterval)
 
 	// Start SSH polling for FortiGate devices
 	fmt.Println("[5/6] Starting SSH polling...")
-	go c.sshPollingLoop()
+	safego.Go("ssh:polling", c.sshPollingLoop)
 	fmt.Printf("  -> SSH polling every %v\n\n", 5*time.Minute)
 
 	// Conditionally start receivers
@@ -421,11 +422,12 @@ func (c *Collector) runPollCycle() {
 		enabledCount++
 		c.pollWg.Add(1)
 		sem <- struct{}{} // Acquire semaphore slot
-		go func(d relay.DeviceInfo) {
+		dev := dev
+		safego.Go("snmp:device:"+dev.Name, func() {
 			defer c.pollWg.Done()
 			defer func() { <-sem }() // Release semaphore slot
-			c.pollDevice(d)
-		}(dev)
+			c.pollDevice(dev)
+		})
 	}
 	if skippedCount > 0 {
 		log.Printf("[SNMP] Poll cycle: %d/%d devices enabled, %d skipped (backoff)", enabledCount, len(devices), skippedCount)
@@ -485,11 +487,12 @@ func (c *Collector) runSSHPollCycle() {
 
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(d relay.DeviceInfo) {
+		dev := dev
+		safego.Go("ssh:device:"+dev.Name, func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			c.sshPollDevice(d)
-		}(dev)
+			c.sshPollDevice(dev)
+		})
 	}
 	wg.Wait()
 }
@@ -1257,7 +1260,7 @@ func (c *Collector) scheduleConfigBackupWith(dev relay.DeviceInfo, ev *syslog.Fo
 	if existing, ok := c.cfgBackupTimers[key]; ok {
 		existing.Stop()
 	}
-	c.cfgBackupTimers[key] = time.AfterFunc(debounce, func() {
+	c.cfgBackupTimers[key] = safego.AfterFunc(debounce, "cfgBackup:debounce:"+key, func() {
 		c.cfgBackupMu.Lock()
 		delete(c.cfgBackupTimers, key)
 		c.cfgBackupMu.Unlock()

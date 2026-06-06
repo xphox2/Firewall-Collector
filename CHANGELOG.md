@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.2.76 - 2026-06-05
+
+### Added
+- **`internal/safego` package**: `safego.Go(name, fn)` and `safego.AfterFunc(d, name, fn)` wrappers that recover from any panic in the wrapped goroutine/timer. Recovered panics are logged with a full stack trace, tagged with the supplied name for traceability. 9 tests cover normal return, single panic, 100 concurrent panics, defer execution under panic, the `time.Timer` return contract, and a 1000-goroutine stress test for deadlock.
+
+### Changed
+- **All 9 long-lived goroutines now run under panic recovery** (closes AUDIT-052). Replaced bare `go func()` with `safego.Go(name, func() { ... })` in:
+  - `internal/syslog/syslog.go` — `acceptLoop`, `handleConnection` (per-conn), `readLoop` (UDP).
+  - `internal/sflow/sflow.go` — `readLoop`.
+  - `internal/snmp/trap.go` — `Listen` goroutine; per-trap `OnNewTrap` callback now runs in a `safego.Go` goroutine so a panic in the handler can't kill gosnmp's internal listener loop.
+  - `internal/ping/ping.go` — `p.run` and per-device `p.pingDevice` goroutines.
+  - `cmd/collector/main.go` — heartbeat loop, data-send loop, `snmpPollingLoop`, `deviceRefreshLoop`, `sshPollingLoop`, per-device SNMP poll, per-device SSH poll, and the `time.AfterFunc` config-backup debouncer.
+- **Goroutine names** in panic logs identify the subsystem and, where applicable, the device (`snmp:device:fw-nyc-01`, `ping:device:fw-lon-02`, `cfgBackup:debounce:<key>`, etc.). Operators can find the panicking code path in seconds.
+- **Per-iteration device capture**: each `for _, dev := range ...` loop that previously used a `func(d) { ... }(dev)` IIFE for Go 1.21- compatibility is now `dev := dev; safego.Go("...", func() { ... dev ... })`. The IIFE style was redundant on Go 1.25 anyway but was a holdover that the replacement made more obvious.
+
+### Tests
+- **`internal/safego/safego_test.go`** (9 tests): normal-return, panic-in-single-goroutine, 100 concurrent panics, defer-under-panic, 1000-goroutine deadlock check, `AfterFunc` panic recovery, `AfterFunc` returns usable `*time.Timer`, `AfterFunc` name in log, direct `recoverPanic` no-op when no panic active.
+
 ## 1.2.75 - 2026-06-05
 
 ### Added
