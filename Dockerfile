@@ -19,6 +19,15 @@ WORKDIR /app
 
 COPY --from=builder /build/firewall-collector .
 
+# Defense in depth (AUDIT-047): drop root in the runtime stage. Alpine ships
+# the `nobody` user/group at uid/gid 65534. The binary is copied as root, then
+# we explicitly strip the write bit and switch to the unprivileged user. A
+# future RCE in the syslog/sFlow/TFTP/SNMP-trap parsers no longer grants a
+# root shell on the management LAN.
+RUN chmod 555 /app/firewall-collector && \
+    chown 65534:65534 /app
+USER 65534:65534
+
 # Server connection
 ENV PROBE_REGISTRATION_KEY=""
 ENV PROBE_SERVER_URL="https://stats.technicallabs.org"

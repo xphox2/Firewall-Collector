@@ -8,9 +8,32 @@ services:
     # Host networking: container shares the host's network stack directly.
     # SNMP, ICMP, and all listeners use the host's IP — no NAT/bridge issues.
     # Note: "ports:" section is ignored when network_mode is host.
+    #
+    # SECURITY TRADEOFF: `network_mode: host` removes container network
+    # isolation. Combined with the rootless USER in the Dockerfile and the
+    # cap_drop below, a parser RCE still cannot escalate to a root shell on
+    # the host — but it CAN bind to any local port. If you don't need raw
+    # host networking (e.g. the probe is on a dedicated VLAN and you only
+    # use the default listeners), you can switch to bridged mode and map
+    # the four UDP/TCP ports explicitly:
+    #   network_mode: <unset, default bridge>
+    #   ports:
+    #     - "162:162/udp"   # SNMP traps
+    #     - "514:514/tcp"   # syslog (TCP)
+    #     - "514:514/udp"   # syslog (UDP)
+    #     - "6343:6343/udp" # sFlow
+    #     - "69:69/udp"     # TFTP config backup
+    # When bridged, ICMP via the fork-exec `ping` still works (NET_RAW cap
+    # covers it) but you lose the host-IP source address for outbound
+    # SNMP/SSH to devices. Test thoroughly before switching in production.
     network_mode: host
 
-    # Required for ICMP ping to monitored devices
+    # Defense in depth (AUDIT-047): drop every default capability, then
+    # re-add only the one we actually need for ICMP echo via fork-exec
+    # `ping`. The container runs as `nobody` (uid 65534) via the Dockerfile
+    # USER directive, so even with NET_RAW a parser RCE is unprivileged.
+    cap_drop:
+      - ALL
     cap_add:
       - NET_RAW
     sysctls:
