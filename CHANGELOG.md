@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.2.82 - 2026-06-06
+
+### Fixed
+- **TFTP handler data race** (closes AUDIT-081). `internal/tftp/tftp.go` had unprotected `readHandler` and `writeHandler` fields. `SetHandler` / `SetWriteHandler` wrote them without a lock; `handleWRQ` / `handleRRQ` read them without a lock. The race was invisible to the previous CI (which only ran `docker build`, no tests). The new race-detector CI from AUDIT-055 immediately caught it on the first run:
+  ```
+  WARNING: DATA RACE
+  Read at ... by goroutine 32:   firewall-collector/internal/tftp.(*Server).handleWRQ   tftp.go:158
+    ⮡ reads s.writeHandler
+  Previous write at ... by goroutine 30:  firewall-collector/internal/tftp.(*Server).SetWriteHandler   tftp.go:61
+    ⮡ writes s.writeHandler
+  ```
+  Fix: added a dedicated `handlerMu sync.RWMutex` to the `Server` struct (the existing `mu` only protected the `running` flag in `Shutdown`). `SetHandler` / `SetWriteHandler` take the write lock; `handleWRQ` / `handleRRQ` take the read lock and capture the handler into a local before spawning the inner write goroutine (which would otherwise re-introduce the race). No test changes needed.
+
+### Unblocks
+- `master` build (was red since AUDIT-055 merged).
+- All three open PRs (currently `Build and Push Docker Image` failures on `master`).
+
 ## 1.2.81 - 2026-06-06
 
 ### Added
