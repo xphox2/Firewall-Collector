@@ -126,6 +126,11 @@
 
 ## 1.2.100 - 2026-06-06
 
+### Fixed
+- **Replace `nil` context with `context.TODO()` in slog tests** (follow-up to AUDIT-056). The staticcheck step in the AUDIT-055 CI flagged `SA1012` (do not pass a nil Context, even if a function permits it) in `cmd/collector/slog_test.go:29,32,135,138,160` — all 5 sites of `slog.Default().Enabled(nil, ...)`. The `slog` `Enabled` method accepts `context.Context` (per the std-lib signature) and a `nil` value is technically permitted by the implementation, but the linter correctly flags it as brittle (a future slog refactor could call into a `Context.Done()`-sensitive path and NPE). Replaced all 5 with `context.TODO()` and added the `context` import.
+
+## 1.2.100 - 2026-06-06
+
 ### Changed
 - **`cmd/ssh-test/main.go` deleted; operator tool merged into `cmd/collector` as a subcommand** (closes AUDIT-060). The 597-line duplicate `cmd/ssh-test/main.go` was ~500 lines of copy-pasted `FortiGateClient`, `cleanOutput`, all 7 command-fetching helpers, and all 3 parsers — all of which had already drifted from the production code in `internal/ssh` (most visibly `isPromptLine` in `cmd/ssh-test/main.go:109-130` was using a string-slicing check, while production `internal/ssh/ssh.go:187-195` uses the regex `promptWithVDOMRegex` / `promptRegex`, so the operator tool could give different output than the collector). Now:
   - The operator runs `collector ssh-test --host=... --user=... <command>` and `cmd/collector/main.go` detects the `ssh-test` subcommand via `isSSHToolSubcommand(os.Args[1:])` at the top of `main()` and routes to `internal/sshtool`.
