@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.84 - 2026-06-06
+
+### Fixed
+- **Safego test race under `-race`** (follow-up to AUDIT-081). The first attempt in v1.2.83 swapped `log.SetOutput(&buf)` for `logf` + atomic counter, but Go's race detector does not infer happens-before from the atomic counter alone — a concurrent `fmt.Fprintf` on `&buf` could still be in flight when the test read `buf.String()`. Fix: add a `sync.Mutex` to the `withCapturedLog` closure, taken around the Fprintf (write) and again around the final `buf.String()` (read). The mutex makes the write/read pair serializable regardless of scheduling. After this fix, the AUDIT-055 test job on `master` is green.
+
 ## 1.2.83 - 2026-06-06
 
 ### Fixed
