@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"os"
@@ -26,10 +27,10 @@ func TestLogSetup_DefaultsToInfoText(t *testing.T) {
 	var buf bytes.Buffer
 	setupLoggerWith(&buf)
 
-	if got := slog.Default().Enabled(nil, slog.LevelInfo); !got {
+	if got := slog.Default().Enabled(context.TODO(), slog.LevelInfo); !got {
 		t.Error("default level should enable Info")
 	}
-	if got := slog.Default().Enabled(nil, slog.LevelDebug); got {
+	if got := slog.Default().Enabled(context.TODO(), slog.LevelDebug); got {
 		t.Error("default level should NOT enable Debug")
 	}
 
@@ -132,10 +133,10 @@ func TestLogSetup_UnknownLevelFallsBackToInfo(t *testing.T) {
 		t.Errorf("expected stderr warning mentioning PROBE_LOG_LEVEL, got: %q", stderrOut)
 	}
 
-	if got := slog.Default().Enabled(nil, slog.LevelInfo); !got {
+	if got := slog.Default().Enabled(context.TODO(), slog.LevelInfo); !got {
 		t.Error("fallback level should enable Info")
 	}
-	if got := slog.Default().Enabled(nil, slog.LevelDebug); got {
+	if got := slog.Default().Enabled(context.TODO(), slog.LevelDebug); got {
 		t.Error("fallback level should NOT enable Debug")
 	}
 }
@@ -157,7 +158,7 @@ func TestLogSetup_AllLevels(t *testing.T) {
 			withEnv(t, "PROBE_LOG_LEVEL", tc.level)
 			var buf bytes.Buffer
 			setupLoggerWith(&buf)
-			if got := slog.Default().Enabled(nil, tc.want); !got {
+			if got := slog.Default().Enabled(context.TODO(), tc.want); !got {
 				t.Errorf("level=%q: expected %v to be enabled", tc.level, tc.want)
 			}
 		})
