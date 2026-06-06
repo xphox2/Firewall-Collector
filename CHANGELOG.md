@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.93 - 2026-06-06
+
+### Fixed
+- **Run collector as non-root in Docker with minimal capabilities** (Closes AUDIT-047, the single biggest defense-in-depth failure in the deployment):
+  - **`Dockerfile`**: runtime stage now `USER 65534:65534` (`nobody` on Alpine), with `chmod 555` on the binary and `chown 65534:65534` on `/app` so the unprivileged user can still read configs and execute the probe. The Go build stage is unchanged — root is still required there for `go mod download` / `go build` — and root never appears in the final image's running process.
+  - **`docker-compose.yml`**: `cap_drop: [ALL]` + `cap_add: [NET_RAW]` instead of `cap_add: NET_RAW` alone. The probe only needs `NET_RAW` for the fork-exec `ping` (`internal/ping/ping.go:130`); every other default capability is now stripped. Combined with the rootless `USER`, a parser RCE in syslog/sFlow/TFTP/SNMP-trap is no longer a root shell on the management LAN.
+
+### Changed
+- **`docker-compose.yml`**: added a comment block above `network_mode: host` documenting the bridged alternative (remove `network_mode: host`, add explicit `ports:` mapping for 162/514/6343/69). Host networking remains the default for two reasons: (1) outbound ICMP/SNMP/SSH to monitored devices use the host's source address, which many vendors require; (2) no NAT surprises on listener ports. The comment explains when to switch and warns that bridged mode loses the host-IP source address for outbound probes.
+
+### Deferred
+- **Replace fork-exec `ping` with `golang.org/x/net/icmp`**: the `internal/ping/ping.go:130` shell-out to `/bin/ping` is what forces the `NET_RAW` capability on the container. A pure-Go ICMP implementation would let us drop `NET_RAW` entirely (rootless containers can open `IPPROTO_ICMP` sockets on modern kernels with `net.ipv4.ping_group_range` set, but only when bound to a raw socket — which still needs the cap, so the gain is smaller than it looks). Tracked as a follow-up; not in this release.
+
 ## 1.2.88 - 2026-06-06
 
 ### Changed
