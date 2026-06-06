@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.87 - 2026-06-06
+
+### Fixed
+- **Upgrade `golang.org/x/crypto` from `v0.48.0` to `v0.52.0`** (closes two GHSA advisories surfaced by AUDIT-055 `govulncheck` CI):
+  - **GO-2026-5017**: Invoking client can cause server deadlock on unexpected responses. (FortiGate SSH collector uses `ssh.Dial` at `internal/ssh/ssh.go:50` — affected.)
+  - **GO-2026-5013**: Invoking byte arithmetic causes underflow and panic. (FortiGate SSH collector uses `ssh.Session.CombinedOutput` / `ssh.Session.RequestPty` at `internal/ssh/ssh.go:129, 115` — affected.)
+  Both CVEs were reachable from the production SSH path to every FortiGate device. Transitive upgrade: `golang.org/x/sys` `v0.41.0` → `v0.45.0`, `golang.org/x/term` `v0.40.0` → `v0.43.0`. After this upgrade, `govulncheck ./...` reports 0 vulnerabilities affecting this codebase.
+
+### Unblocks
+- `master` build (was red since AUDIT-055 merged). All 6 CI steps (`go vet`, `go test -race`, `go mod tidy` check, `staticcheck`, `govulncheck`) now pass.
+
 ## 1.2.85 - 2026-06-06
 
 ### Removed
