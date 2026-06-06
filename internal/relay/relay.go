@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math/big"
 	mrand "math/rand"
 	"net/http"
 	"os"
@@ -36,15 +35,6 @@ func ConfigureLimits(queueSize, batchSize int) {
 	if batchSize > 0 {
 		maxBatchSize = batchSize
 	}
-}
-
-type BatchLimitError struct {
-	BatchSize int
-	MaxSize   int
-}
-
-func (e *BatchLimitError) Error() string {
-	return fmt.Sprintf("batch size %d exceeds max %d", e.BatchSize, e.MaxSize)
 }
 
 // --- DTOs matching server JSON tags ---
@@ -437,35 +427,6 @@ func buildTLSConfig(cfg Config) (*tls.Config, error) {
 	}
 
 	return tlsConfig, nil
-}
-
-
-func generateRandomName() string {
-	adjectives := []string{"swift", "bright", "eager", "keen", "active", "bold", "calm", "sharp", "lively", "noble"}
-	nouns := []string{"falcon", "eagle", "hawk", "owl", "raven", "wolf", "bear", "lion", "tiger", "dragon"}
-
-	adj := adjectives[randInt(len(adjectives))]
-	noun := nouns[randInt(len(nouns))]
-	suffix := hex.EncodeToString(randBytes(4))
-
-	return fmt.Sprintf("%s-%s-%s", adj, noun, suffix)
-}
-
-func randInt(max int) int {
-	n, err := rand.Int(rand.Reader, big.NewInt(int64(max)))
-	if err != nil {
-		log.Printf("Failed to generate random int: %v", err)
-		return 0
-	}
-	return int(n.Int64())
-}
-
-func randBytes(n int) []byte {
-	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		log.Printf("Failed to generate random bytes: %v", err)
-	}
-	return b
 }
 
 func (c *Client) doAuthenticatedRequest(method, url string, body []byte) (*http.Response, error) {

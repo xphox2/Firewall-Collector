@@ -25,7 +25,7 @@ import (
 	"firewall-collector/internal/tftp"
 )
 
-const version = "1.2.84"
+const version = "1.2.85"
 
 type Collector struct {
 	cfg            *config.ProbeConfig

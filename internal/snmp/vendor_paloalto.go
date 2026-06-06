@@ -22,10 +22,8 @@ var (
 	paOIDSwVersion     = ".1.3.6.1.4.1.25461.2.1.2.1.1.0"
 	paOIDHwVersion     = ".1.3.6.1.4.1.25461.2.1.2.1.2.0"
 	paOIDSerialNumber  = ".1.3.6.1.4.1.25461.2.1.2.1.3.0"
-	paOIDAppVersion    = ".1.3.6.1.4.1.25461.2.1.2.1.7.0"
 	paOIDAvVersion     = ".1.3.6.1.4.1.25461.2.1.2.1.8.0"
 	paOIDThreatVersion = ".1.3.6.1.4.1.25461.2.1.2.1.9.0"
-	paOIDWildfireVer   = ".1.3.6.1.4.1.25461.2.1.2.1.17.0"
 
 	// --- PAN-COMMON-MIB HA ---
 	paOIDHAState     = ".1.3.6.1.4.1.25461.2.1.2.1.11.0"
@@ -55,11 +53,8 @@ var (
 	paOIDSensorStatus    = ".1.3.6.1.2.1.99.1.1.1.5"
 
 	// --- ENTITY-MIB (for sensor names) ---
-	paOIDEntityName = ".1.3.6.1.2.1.47.1.1.1.1.7"
 
 	// --- PAN-COMMON-MIB Panorama ---
-	paOIDPanorama1Connected = ".1.3.6.1.4.1.25461.2.1.2.4.1.0"
-	paOIDPanorama2Connected = ".1.3.6.1.4.1.25461.2.1.2.4.2.0"
 )
 
 // PaloAltoProfile implements VendorProfile for Palo Alto Networks firewalls.

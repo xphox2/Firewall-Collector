@@ -155,7 +155,6 @@ func ParseProcessTop(output string) []ProcessInfo {
 
 var (
 	ifaceNameRegex  = regexp.MustCompile(`(?i)^name:\s*(\S+)`)
-	ifaceStatsRegex = regexp.MustCompile(`(?i)(RX|TX)\s+bytes\s+(\d+).*?errors\s+(\d+).*?discards\s+(\d+)`)
 	ifaceErrorRegex = regexp.MustCompile(`(?i)errors[:\s]+(\d+).*?discards[:\s]+(\d+)`)
 )
 
@@ -337,7 +336,6 @@ func ParseSensorInfo(output string) []SensorDetailInfo {
 var (
 	licenseStatusRegex = regexp.MustCompile(`(?i)^(?:License|VM License|SSL-VPN|SSLVPN|Explicit Proxy|FortiCare|FortiGuard|Antivirus|IPS|Web Filter|Email Filter|Application Control|Geo IP|IoT Detection|SD-WAN|Threat Feed|Virtual Domain)\s*[:.]*\s*(\w+)`)
 	licenseDetailRegex = regexp.MustCompile(`(?i)^(License|VM License|SSL-VPN|SSLVPN|Explicit Proxy|FortiCare|FortiGuard|Antivirus|IPS|Web Filter|Email Filter|Application Control|Geo IP|IoT Detection|SD-WAN|Threat Feed|Virtual Domain)\s*[:.]*\s*(.+)`)
-	versionRegex       = regexp.MustCompile(`(?i)^(?:Version|Firmware)\s*[:.]\s*(.+)`)
 )
 
 func ParseLicenseStatus(output string) []LicenseDetailInfo {

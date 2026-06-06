@@ -28,9 +28,6 @@ var (
 	swOIDCurrentConn  = ".1.3.6.1.4.1.8741.1.3.1.2.0" // sonicCurrentConnCacheEntries
 	swOIDCpuUtil      = ".1.3.6.1.4.1.8741.1.3.1.3.0" // sonicCurrentCPUUtil (%)
 	swOIDRamUtil      = ".1.3.6.1.4.1.8741.1.3.1.4.0" // sonicCurrentRAMUtil (%)
-	swOIDNatCount     = ".1.3.6.1.4.1.8741.1.3.1.5.0" // sonicNatTranslationCount
-	swOIDMgmtCpuUtil  = ".1.3.6.1.4.1.8741.1.3.1.6.0" // sonicCurrentManagementCPUUtil (%)
-	swOIDFwdCpuUtil   = ".1.3.6.1.4.1.8741.1.3.1.7.0" // sonicCurrentFwdAndInspectCPUUtil (%)
 
 	// --- VPN SA Statistics Table ---
 	swBaseOIDVPNSA       = ".1.3.6.1.4.1.8741.1.3.2.1.1.1"
@@ -39,7 +36,6 @@ var (
 	swOIDSASrcAddrEnd    = ".1.3.6.1.4.1.8741.1.3.2.1.1.1.4"
 	swOIDSADstAddrBegin  = ".1.3.6.1.4.1.8741.1.3.2.1.1.1.5"
 	swOIDSADstAddrEnd    = ".1.3.6.1.4.1.8741.1.3.2.1.1.1.6"
-	swOIDSACreateTime    = ".1.3.6.1.4.1.8741.1.3.2.1.1.1.7"
 	swOIDSAEncryptBytes  = ".1.3.6.1.4.1.8741.1.3.2.1.1.1.9"
 	swOIDSADecryptBytes  = ".1.3.6.1.4.1.8741.1.3.2.1.1.1.11"
 	swOIDSAUserName      = ".1.3.6.1.4.1.8741.1.3.2.1.1.1.14"
@@ -51,8 +47,6 @@ var (
 	swOIDSensorUnit      = ".1.3.6.1.4.1.8741.1.3.3.3.1.1.5"
 
 	// --- DPI-SSL Statistics ---
-	swOIDDpiSslCurrent = ".1.3.6.1.4.1.8741.1.3.5.1.0"
-	swOIDDpiSslMax     = ".1.3.6.1.4.1.8741.1.3.5.3.0"
 )
 
 // SonicWallProfile implements VendorProfile for SonicWall firewalls.

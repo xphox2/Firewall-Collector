@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.2.85 - 2026-06-06
+
+### Removed
+- **Dead code flagged by AUDIT-055 `staticcheck` CI** (closes AUDIT-082). 33 unused symbols across the codebase were removed:
+  - `internal/relay/relay.go`: `BatchLimitError` struct + `Error()` method (never returned, never matched by `errors.Is`/`errors.As`); `generateRandomName` / `randInt` / `randBytes` helpers (relic of an old probe-naming approach, replaced by the random `adj-noun-XXXX` issued at registration time).
+  - `cmd/diag-backup/main.go`: `err error` field on the `uploadResult` struct (never read).
+  - `internal/snmp/vendor_firewalla.go`: 6 unused OID constants (`fwBaseOIDStorage` family + `fwBaseOIDLmFanSensor`).
+  - `internal/snmp/vendor_fortigate.go`: empty `buildCIDR` stub that was duplicating the real one immediately below.
+  - `internal/snmp/vendor_paloalto.go`: 5 unused OID constants.
+  - `internal/snmp/vendor_pfsense.go`: 5 unused OID constants.
+  - `internal/snmp/vendor_sonicwall.go`: 6 unused OID constants.
+  - `internal/ssh/parser.go`: 2 unused regex vars (`ifaceStatsRegex`, `versionRegex`).
+  - `internal/ssh/ssh.go`: 2 unused regex vars (`checksumRegex`, `hexChecksumFinder`).
+- **Imports** `encoding/hex`, `math/rand`, `math/big` removed from `internal/relay/relay.go` (became unused after the random-helper removal).
+
 ## 1.2.84 - 2026-06-06
 
 ### Fixed

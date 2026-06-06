@@ -30,11 +30,6 @@ var (
 	fwOIDMemTotalSwap = ".1.3.6.1.4.1.2021.4.3.0"   // memTotalSwap (kB)
 
 	// --- HOST-RESOURCES-MIB Disk (1.3.6.1.2.1.25.2.3.1) ---
-	fwBaseOIDStorage      = ".1.3.6.1.2.1.25.2.3.1"
-	fwOIDStorageDescr     = ".1.3.6.1.2.1.25.2.3.1.3"  // hrStorageDescr
-	fwOIDStorageAllocUnit = ".1.3.6.1.2.1.25.2.3.1.4"  // hrStorageAllocationUnits (bytes)
-	fwOIDStorageSize      = ".1.3.6.1.2.1.25.2.3.1.5"  // hrStorageSize (units)
-	fwOIDStorageUsed      = ".1.3.6.1.2.1.25.2.3.1.6"  // hrStorageUsed (units)
 
 	// --- HOST-RESOURCES-MIB Processor (1.3.6.1.2.1.25.3.3.1) ---
 	fwBaseOIDProcessor  = ".1.3.6.1.2.1.25.3.3.1"
@@ -50,7 +45,6 @@ var (
 	fwOIDLmTempSensorDescr = ".1.3.6.1.4.1.2021.13.16.2.1.2"  // lmTempSensorsDevice
 	fwOIDLmTempSensorValue = ".1.3.6.1.4.1.2021.13.16.2.1.3"  // lmTempSensorsValue (milli°C)
 
-	fwBaseOIDLmFanSensor = ".1.3.6.1.4.1.2021.13.16.3.1"
 	fwOIDLmFanSensorDescr = ".1.3.6.1.4.1.2021.13.16.3.1.2"  // lmFanSensorsDevice
 	fwOIDLmFanSensorValue = ".1.3.6.1.4.1.2021.13.16.3.1.3"  // lmFanSensorsValue (RPM)
 )

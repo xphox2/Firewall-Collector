@@ -37,13 +37,13 @@ var (
 	fgOIDSSLVPNActive = ".1.3.6.1.4.1.12356.101.12.2.3.1.6.0"
 
 	// --- IPSec site-to-site VPN tunnel table ---
-	fgBaseOIDVPNTunnel        = ".1.3.6.1.4.1.12356.101.12.2.2.1"
+	fgBaseOIDVPNTunnel       = ".1.3.6.1.4.1.12356.101.12.2.2.1"
 	fgOIDVPNTunnelPhase1Name = ".1.3.6.1.4.1.12356.101.12.2.2.1.2"
 	fgOIDVPNTunnelName       = ".1.3.6.1.4.1.12356.101.12.2.2.1.3"
 	fgOIDVPNTunnelRemoteGW   = ".1.3.6.1.4.1.12356.101.12.2.2.1.4"
 	// Phase 2 selectors - source (local) subnet
-	fgOIDVPNTunnelSrcBeginIP = ".1.3.6.1.4.1.12356.101.12.2.2.1.8"  // Source selector begin IP
-	fgOIDVPNTunnelSrcEndIP   = ".1.3.6.1.4.1.12356.101.12.2.2.1.9"  // Source selector end IP
+	fgOIDVPNTunnelSrcBeginIP = ".1.3.6.1.4.1.12356.101.12.2.2.1.8" // Source selector begin IP
+	fgOIDVPNTunnelSrcEndIP   = ".1.3.6.1.4.1.12356.101.12.2.2.1.9" // Source selector end IP
 	// Phase 2 selectors - destination (remote) subnet
 	fgOIDVPNTunnelDstBeginIP = ".1.3.6.1.4.1.12356.101.12.2.2.1.11" // Destination selector begin IP
 	fgOIDVPNTunnelDstEndIP   = ".1.3.6.1.4.1.12356.101.12.2.2.1.12" // Destination selector end IP
@@ -53,22 +53,22 @@ var (
 	fgOIDVPNTunnelUpTime     = ".1.3.6.1.4.1.12356.101.12.2.2.1.21"
 
 	// fgVpnDialupTable — dial-up/dynamic VPN peers (hub-side of spoke/hub IPSec).
-	fgBaseOIDVPNDialup       = ".1.3.6.1.4.1.12356.101.12.2.1.1"
-	fgOIDVPNDialupGateway    = ".1.3.6.1.4.1.12356.101.12.2.1.1.2"
-	fgOIDVPNDialupLifetime   = ".1.3.6.1.4.1.12356.101.12.2.1.1.3"
-	fgOIDVPNDialupSrcBegin   = ".1.3.6.1.4.1.12356.101.12.2.1.1.5"
-	fgOIDVPNDialupSrcEnd     = ".1.3.6.1.4.1.12356.101.12.2.1.1.6"
-	fgOIDVPNDialupDstBegin   = ".1.3.6.1.4.1.12356.101.12.2.1.1.7"
-	fgOIDVPNDialupDstEnd     = ".1.3.6.1.4.1.12356.101.12.2.1.1.8"
-	fgOIDVPNDialupInOctets   = ".1.3.6.1.4.1.12356.101.12.2.1.1.9"
-	fgOIDVPNDialupOutOctets  = ".1.3.6.1.4.1.12356.101.12.2.1.1.10"
+	fgBaseOIDVPNDialup      = ".1.3.6.1.4.1.12356.101.12.2.1.1"
+	fgOIDVPNDialupGateway   = ".1.3.6.1.4.1.12356.101.12.2.1.1.2"
+	fgOIDVPNDialupLifetime  = ".1.3.6.1.4.1.12356.101.12.2.1.1.3"
+	fgOIDVPNDialupSrcBegin  = ".1.3.6.1.4.1.12356.101.12.2.1.1.5"
+	fgOIDVPNDialupSrcEnd    = ".1.3.6.1.4.1.12356.101.12.2.1.1.6"
+	fgOIDVPNDialupDstBegin  = ".1.3.6.1.4.1.12356.101.12.2.1.1.7"
+	fgOIDVPNDialupDstEnd    = ".1.3.6.1.4.1.12356.101.12.2.1.1.8"
+	fgOIDVPNDialupInOctets  = ".1.3.6.1.4.1.12356.101.12.2.1.1.9"
+	fgOIDVPNDialupOutOctets = ".1.3.6.1.4.1.12356.101.12.2.1.1.10"
 
 	// --- SSL-VPN tunnel table (Part 2) ---
-	fgBaseOIDSSLVPNTunnel      = ".1.3.6.1.4.1.12356.101.12.2.4.1"
-	fgOIDSSLVPNTunnelUserName  = ".1.3.6.1.4.1.12356.101.12.2.4.1.3"
-	fgOIDSSLVPNTunnelSrcIP     = ".1.3.6.1.4.1.12356.101.12.2.4.1.4"
-	fgOIDSSLVPNTunnelBytesIn   = ".1.3.6.1.4.1.12356.101.12.2.4.1.7"
-	fgOIDSSLVPNTunnelBytesOut  = ".1.3.6.1.4.1.12356.101.12.2.4.1.8"
+	fgBaseOIDSSLVPNTunnel     = ".1.3.6.1.4.1.12356.101.12.2.4.1"
+	fgOIDSSLVPNTunnelUserName = ".1.3.6.1.4.1.12356.101.12.2.4.1.3"
+	fgOIDSSLVPNTunnelSrcIP    = ".1.3.6.1.4.1.12356.101.12.2.4.1.4"
+	fgOIDSSLVPNTunnelBytesIn  = ".1.3.6.1.4.1.12356.101.12.2.4.1.7"
+	fgOIDSSLVPNTunnelBytesOut = ".1.3.6.1.4.1.12356.101.12.2.4.1.8"
 
 	// --- Hardware sensors ---
 	fgOIDHWSensorEntry = ".1.3.6.1.4.1.12356.101.4.3.2.1"
@@ -118,18 +118,18 @@ var (
 	fgOIDWFURLBlocked   = ".1.3.6.1.4.1.12356.101.10.1.2.1.1.3.1"
 
 	// --- SD-WAN health check (Part 5) ---
-	fgBaseOIDSDWANHealth     = ".1.3.6.1.4.1.12356.101.4.9"
-	fgOIDSDWANHealthName     = ".1.3.6.1.4.1.12356.101.4.9.2"
-	fgOIDSDWANHealthState    = ".1.3.6.1.4.1.12356.101.4.9.4"
-	fgOIDSDWANHealthLatency  = ".1.3.6.1.4.1.12356.101.4.9.5"
-	fgOIDSDWANHealthPktSend  = ".1.3.6.1.4.1.12356.101.4.9.7"
-	fgOIDSDWANHealthPktRecv  = ".1.3.6.1.4.1.12356.101.4.9.8"
-	fgOIDSDWANHealthIfName   = ".1.3.6.1.4.1.12356.101.4.9.14"
+	fgBaseOIDSDWANHealth    = ".1.3.6.1.4.1.12356.101.4.9"
+	fgOIDSDWANHealthName    = ".1.3.6.1.4.1.12356.101.4.9.2"
+	fgOIDSDWANHealthState   = ".1.3.6.1.4.1.12356.101.4.9.4"
+	fgOIDSDWANHealthLatency = ".1.3.6.1.4.1.12356.101.4.9.5"
+	fgOIDSDWANHealthPktSend = ".1.3.6.1.4.1.12356.101.4.9.7"
+	fgOIDSDWANHealthPktRecv = ".1.3.6.1.4.1.12356.101.4.9.8"
+	fgOIDSDWANHealthIfName  = ".1.3.6.1.4.1.12356.101.4.9.14"
 
 	// --- License/contract table (Part 6) ---
-	fgBaseOIDLicense     = ".1.3.6.1.4.1.12356.101.4.6.3.1.1"
-	fgOIDLicenseDesc     = ".1.3.6.1.4.1.12356.101.4.6.3.1.1.1"
-	fgOIDLicenseExpiry   = ".1.3.6.1.4.1.12356.101.4.6.3.1.1.2"
+	fgBaseOIDLicense   = ".1.3.6.1.4.1.12356.101.4.6.3.1.1"
+	fgOIDLicenseDesc   = ".1.3.6.1.4.1.12356.101.4.6.3.1.1.1"
+	fgOIDLicenseExpiry = ".1.3.6.1.4.1.12356.101.4.6.3.1.1.2"
 
 	// --- Traps ---
 	fgTrapVPNTunnelUp   = ".1.3.6.1.4.1.12356.101.2.0.301"
@@ -359,9 +359,6 @@ func (f *FortiGateProfile) ParseVPNStatus(pdus []gosnmp.SnmpPDU) []relay.VPNStat
 
 // buildCIDR combines an IP address and subnet mask into CIDR notation (e.g., "10.0.0.0/24").
 func buildCIDR(addr, mask string) string {
-	if addr == "" {
-		return ""
-	}
 	// Wildcard selector: 0.0.0.0/0.0.0.0 → "0.0.0.0/0" (Phase 2 "any" selector)
 	if addr == "0.0.0.0" {
 		if mask == "" || mask == "0.0.0.0" {

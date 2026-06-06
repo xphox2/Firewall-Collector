@@ -116,7 +116,6 @@ func main() {
 		bytes    int
 		from     net.Addr
 		when     time.Time
-		err      error
 	}
 	uploadCh := make(chan uploadResult, 4)
 

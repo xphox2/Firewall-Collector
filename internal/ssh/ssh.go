@@ -11,8 +11,6 @@ import (
 )
 
 var (
-	checksumRegex       = regexp.MustCompile(`(?i)is\s+([a-fA-F0-9]{32}|[a-fA-F0-9]{40})`)
-	hexChecksumFinder   = regexp.MustCompile(`([a-fA-F0-9]{32}|[a-fA-F0-9]{40})`)
 	promptRegex         = regexp.MustCompile(`^(FW-|FGT-|FG-).*\s[\$#]\s*$`)
 	promptWithVDOMRegex = regexp.MustCompile(`^(FW-|FGT-|FG-).*\((global|root)\)\s*[\$#]\s*$`)
 	commandTimeout      = 10 * time.Minute

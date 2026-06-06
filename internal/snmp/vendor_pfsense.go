@@ -31,12 +31,7 @@ var (
 	// --- BEGEMOT-PF-MIB (enterprise 12325 = FreeBSD/Begemot) ---
 	// PF state table — active sessions equivalent
 	pfOIDStateCount   = ".1.3.6.1.4.1.12325.1.200.1.3.1.0" // pfStateTableCount
-	pfOIDStateSearches = ".1.3.6.1.4.1.12325.1.200.1.3.2.0"
-	pfOIDStateInserts  = ".1.3.6.1.4.1.12325.1.200.1.3.3.0"
-	pfOIDStateRemovals = ".1.3.6.1.4.1.12325.1.200.1.3.4.0"
 	// PF counters
-	pfOIDCounterMatch  = ".1.3.6.1.4.1.12325.1.200.1.2.1.0" // Total rule matches
-	pfOIDCounterMemDrop = ".1.3.6.1.4.1.12325.1.200.1.2.6.0" // Memory drops
 	// PF status
 	pfOIDPfRunning = ".1.3.6.1.4.1.12325.1.200.1.1.1.0" // PF enabled (1=yes)
 
