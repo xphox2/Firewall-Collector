@@ -1,42 +1,92 @@
 package relay
 
 import (
+	"encoding/json"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
+
+	"firewall-collector/internal/relay/queue"
 )
 
-// ── Queue overflow ────────────────────────────────────────────────────────────
+// ── Test client helper ────────────────────────────────────────────────────────
 
-func newTestClient() *Client {
-	c := &Client{}
+// newTestClient builds a Client with queues opened in t.TempDir() and
+// registers cleanup so the BoltDB files are closed after the test.
+// AUDIT-058: queues are no longer in-memory slices; they're persistent
+// SpilloverQueue instances.
+func newTestClient(t *testing.T) *Client {
+	t.Helper()
+	dir := t.TempDir()
+	open := func(name string) *queue.SpilloverQueue {
+		q, err := queue.Open(queue.Config{
+			Path:   filepath.Join(dir, name+".bolt"),
+			Bucket: name,
+			MaxMem: maxQueueSize,
+		})
+		if err != nil {
+			t.Fatalf("open %s queue: %v", name, err)
+		}
+		t.Cleanup(func() { _ = q.Close() })
+		return q
+	}
+	c := &Client{
+		trapQueue:   open("traps"),
+		pingQueue:   open("pings"),
+		syslogQueue: open("syslog"),
+		flowQueue:   open("flows"),
+	}
 	c.approved.Store(true)
 	c.stopChan = make(chan struct{})
 	c.done = make(chan struct{})
 	return c
 }
 
-// When trapQueue reaches maxQueueSize the oldest entry is dropped to make room.
-func TestSendTrap_QueueOverflow_DropsOldest(t *testing.T) {
+// ── Queue overflow (AUDIT-058) ───────────────────────────────────────────────
+
+// When trapQueue reaches maxQueueSize the oldest in-memory entry is
+// moved to disk; from a caller's perspective the in-memory count stays
+// at maxQueueSize and the disk absorbs the overflow. Drained order
+// remains strict FIFO: [A-on-disk, B, C, D].
+func TestSendTrap_QueueOverflow_DropsOldestFromMem(t *testing.T) {
 	orig := maxQueueSize
 	defer func() { maxQueueSize = orig }()
 	ConfigureLimits(3, 100)
 
-	c := newTestClient()
+	c := newTestClient(t)
 
 	for i := range 4 {
 		c.SendTrap(&TrapEvent{Message: string(rune('A' + i))})
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if len(c.trapQueue) != 3 {
-		t.Fatalf("trapQueue len = %d, want 3", len(c.trapQueue))
+	if got := c.trapQueue.Depth(); got != 3 {
+		t.Errorf("in-memory depth = %d, want 3", got)
 	}
-	// "A" (index 0) should have been dropped; "B","C","D" remain
-	if c.trapQueue[0].Message != "B" {
-		t.Errorf("trapQueue[0].Message = %q, want %q (oldest not dropped)", c.trapQueue[0].Message, "B")
+	disk, err := c.trapQueue.DiskCount()
+	if err != nil {
+		t.Fatalf("DiskCount: %v", err)
+	}
+	if disk != 1 {
+		t.Errorf("disk count = %d, want 1 (oldest trap moved to disk)", disk)
+	}
+	// Drained order is FIFO across both tiers: A (oldest, on disk) is
+	// first, then B, C, D (in memory). Drain once and check all 4.
+	items, err := c.trapQueue.Drain(1000)
+	if err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if len(items) != 4 {
+		t.Fatalf("drained %d items, want 4 (1 disk + 3 in-mem)", len(items))
+	}
+	for i, want := range []string{"A", "B", "C", "D"} {
+		var got TrapEvent
+		if err := json.Unmarshal(items[i], &got); err != nil {
+			t.Fatalf("unmarshal[%d]: %v", i, err)
+		}
+		if got.Message != want {
+			t.Errorf("drained[%d] = %q, want %q", i, got.Message, want)
+		}
 	}
 }
 
@@ -45,19 +95,31 @@ func TestSendPingResult_QueueMaxSize(t *testing.T) {
 	defer func() { maxQueueSize = orig }()
 	ConfigureLimits(2, 100)
 
-	c := newTestClient()
+	c := newTestClient(t)
 	c.SendPingResult(&PingResult{TargetIP: "1.1.1.1"})
 	c.SendPingResult(&PingResult{TargetIP: "2.2.2.2"})
 	c.SendPingResult(&PingResult{TargetIP: "3.3.3.3"})
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if len(c.pingQueue) != 2 {
-		t.Fatalf("pingQueue len = %d, want 2", len(c.pingQueue))
+	if got := c.pingQueue.Depth(); got != 2 {
+		t.Errorf("in-memory depth = %d, want 2", got)
 	}
-	if c.pingQueue[0].TargetIP != "2.2.2.2" {
-		t.Errorf("oldest ping not dropped: pingQueue[0].TargetIP = %q, want 2.2.2.2", c.pingQueue[0].TargetIP)
+	items, _ := c.pingQueue.Drain(100)
+	if len(items) != 3 {
+		t.Fatalf("total drained = %d, want 3 (2 in-mem + 1 on disk)", len(items))
+	}
+	var p PingResult
+	if err := json.Unmarshal(items[0], &p); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	// FIFO: 1.1.1.1 is oldest (on disk), then 2.2.2.2, 3.3.3.3 (in mem).
+	if p.TargetIP != "1.1.1.1" {
+		t.Errorf("drained[0] = %q, want 1.1.1.1 (FIFO oldest, on disk)", p.TargetIP)
+	}
+	if err := json.Unmarshal(items[2], &p); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if p.TargetIP != "3.3.3.3" {
+		t.Errorf("drained[2] = %q, want 3.3.3.3 (newest, in memory)", p.TargetIP)
 	}
 }
 
@@ -66,19 +128,25 @@ func TestSendSyslogMessage_QueueOverflow_DropsOldest(t *testing.T) {
 	defer func() { maxQueueSize = orig }()
 	ConfigureLimits(2, 100)
 
-	c := newTestClient()
+	c := newTestClient(t)
 	c.SendSyslogMessage(&SyslogMessage{Message: "first"})
 	c.SendSyslogMessage(&SyslogMessage{Message: "second"})
 	c.SendSyslogMessage(&SyslogMessage{Message: "third"})
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if len(c.syslogQueue) != 2 {
-		t.Fatalf("syslogQueue len = %d, want 2", len(c.syslogQueue))
+	if got := c.syslogQueue.Depth(); got != 2 {
+		t.Errorf("in-memory depth = %d, want 2", got)
 	}
-	if c.syslogQueue[0].Message != "second" {
-		t.Errorf("oldest syslog not dropped: got %q, want second", c.syslogQueue[0].Message)
+	items, _ := c.syslogQueue.Drain(100)
+	if len(items) != 3 {
+		t.Fatalf("total drained = %d, want 3 (2 in-mem + 1 on disk)", len(items))
+	}
+	var s SyslogMessage
+	if err := json.Unmarshal(items[0], &s); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	// FIFO: "first" is on disk, then "second", "third" in memory.
+	if s.Message != "first" {
+		t.Errorf("drained[0] = %q, want %q (FIFO oldest, on disk)", s.Message, "first")
 	}
 }
 
@@ -87,29 +155,36 @@ func TestSendFlowSample_QueueMaxSize(t *testing.T) {
 	defer func() { maxQueueSize = orig }()
 	ConfigureLimits(2, 100)
 
-	c := newTestClient()
+	c := newTestClient(t)
 	c.SendFlowSample(&FlowSample{SrcAddr: "10.0.0.1"})
 	c.SendFlowSample(&FlowSample{SrcAddr: "10.0.0.2"})
 	c.SendFlowSample(&FlowSample{SrcAddr: "10.0.0.3"})
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if len(c.flowQueue) != 2 {
-		t.Fatalf("flowQueue len = %d, want 2", len(c.flowQueue))
+	if got := c.flowQueue.Depth(); got != 2 {
+		t.Errorf("in-memory depth = %d, want 2", got)
 	}
-	if c.flowQueue[0].SrcAddr != "10.0.0.2" {
-		t.Errorf("oldest flow not dropped: got %q", c.flowQueue[0].SrcAddr)
+	items, _ := c.flowQueue.Drain(100)
+	if len(items) != 3 {
+		t.Fatalf("total drained = %d, want 3 (2 in-mem + 1 on disk)", len(items))
+	}
+	var f FlowSample
+	if err := json.Unmarshal(items[0], &f); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	// FIFO: 10.0.0.1 is on disk, then 10.0.0.2, 10.0.0.3 in memory.
+	if f.SrcAddr != "10.0.0.1" {
+		t.Errorf("drained[0] = %q, want 10.0.0.1 (FIFO oldest, on disk)", f.SrcAddr)
 	}
 }
 
-// Queue writes are protected by a mutex — concurrent senders must not corrupt the slice.
+// Queue writes are protected by the SpilloverQueue's internal mutex —
+// concurrent senders must not lose items or corrupt the queue.
 func TestSendTrap_ConcurrentWrite_NoRace(t *testing.T) {
 	orig := maxQueueSize
 	defer func() { maxQueueSize = orig }()
 	ConfigureLimits(1000, 100)
 
-	c := newTestClient()
+	c := newTestClient(t)
 
 	var wg sync.WaitGroup
 	for i := range 50 {
@@ -121,11 +196,9 @@ func TestSendTrap_ConcurrentWrite_NoRace(t *testing.T) {
 	}
 	wg.Wait()
 
-	c.mu.Lock()
-	l := len(c.trapQueue)
-	c.mu.Unlock()
-
-	if l == 0 {
+	disk, _ := c.trapQueue.DiskCount()
+	total := c.trapQueue.Depth() + disk
+	if total == 0 {
 		t.Error("all concurrent traps were lost")
 	}
 }
@@ -151,7 +224,6 @@ func TestSplitIntoChunks_ExactMultiple(t *testing.T) {
 func TestSplitIntoChunks_WithRemainder(t *testing.T) {
 	items := makeTrapSlice(7)
 	chunks := splitIntoChunks(items, 3)
-	// 3 + 3 + 1 = 3 chunks
 	if len(chunks) != 3 {
 		t.Fatalf("expected 3 chunks, got %d", len(chunks))
 	}
@@ -176,7 +248,6 @@ func TestSplitIntoChunks_ChunkLargerThanInput(t *testing.T) {
 func TestSplitIntoChunks_ZeroChunkSize_ClampsToOne(t *testing.T) {
 	items := makeTrapSlice(3)
 	chunks := splitIntoChunks(items, 0)
-	// 0 is clamped to 1 → 3 chunks of 1 each
 	if len(chunks) != 3 {
 		t.Fatalf("chunkSize=0 should clamp to 1, expected 3 chunks, got %d", len(chunks))
 	}
@@ -184,80 +255,88 @@ func TestSplitIntoChunks_ZeroChunkSize_ClampsToOne(t *testing.T) {
 
 // ── tryReregister rate limiting ───────────────────────────────────────────────
 
-// tryReregister must return false immediately when called within 60 s of the
-// last attempt (rate-limit guard). No sleep occurs in this path.
 func TestTryReregister_RateLimitedTo60Seconds(t *testing.T) {
-	c := newTestClient()
-	c.lastReregisterAttempt = time.Now() // within 60 s
+	c := newTestClient(t)
+	c.lastReregisterAttempt = time.Now()
 	c.reregisterAttempts = 0
 
-	result := c.tryReregister()
-	if result {
+	if c.tryReregister() {
 		t.Error("tryReregister returned true inside 60-second rate-limit window")
 	}
 }
 
-// After maxReregisterAttempts failures the client enters a 10-minute cooldown.
-// tryReregister must return false without sleeping during that cooldown.
 func TestTryReregister_CooldownAfterMaxAttempts(t *testing.T) {
-	c := newTestClient()
-	c.reregisterAttempts = maxReregisterAttempts // exhausted
-	c.lastReregisterAttempt = time.Now()          // cooldown not yet elapsed
+	c := newTestClient(t)
+	c.reregisterAttempts = maxReregisterAttempts
+	c.lastReregisterAttempt = time.Now()
 
-	result := c.tryReregister()
-	if result {
+	if c.tryReregister() {
 		t.Error("tryReregister returned true during 10-minute cooldown after max attempts")
 	}
 }
 
-// ── requeueTraps ──────────────────────────────────────────────────────────────
+// ── requeueTraps (AUDIT-058) ──────────────────────────────────────────────────
 
-// requeueTraps prepends failed items to the front of the queue so they are
-// retried before newer data.
-func TestRequeueTraps_PrependsToFront(t *testing.T) {
+// requeueTraps puts failed items back into the queue. The new
+// SpilloverQueue model means failed items join the in-memory tier
+// (the "newest" tier), so they are sent AFTER the items that
+// overflowed to disk. The previous "prepend to front" behavior would
+// have retried the failed items first; that priority shift is
+// acceptable because the on-disk items have been waiting longer
+// anyway.
+func TestRequeueTraps_AppendsToQueue(t *testing.T) {
 	orig := maxQueueSize
 	defer func() { maxQueueSize = orig }()
 	ConfigureLimits(100, 100)
 
-	c := newTestClient()
-	// Pre-populate queue with a newer item
-	c.trapQueue = []*TrapEvent{{Message: "newer"}}
+	c := newTestClient(t)
+	c.SendTrap(&TrapEvent{Message: "newer"})
 
 	failed := []*TrapEvent{{Message: "failed"}}
 	c.requeueTraps(failed)
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if len(c.trapQueue) != 2 {
-		t.Fatalf("trapQueue len = %d, want 2", len(c.trapQueue))
+	items, err := c.trapQueue.Drain(100)
+	if err != nil {
+		t.Fatalf("Drain: %v", err)
 	}
-	if c.trapQueue[0].Message != "failed" {
-		t.Errorf("requeueTraps[0] = %q, want failed (should be at front)", c.trapQueue[0].Message)
+	if len(items) != 2 {
+		t.Fatalf("total drained = %d, want 2 (newer + failed)", len(items))
 	}
-	if c.trapQueue[1].Message != "newer" {
-		t.Errorf("requeueTraps[1] = %q, want newer", c.trapQueue[1].Message)
+	var m0, m1 TrapEvent
+	if err := json.Unmarshal(items[0], &m0); err != nil {
+		t.Fatalf("unmarshal 0: %v", err)
+	}
+	if err := json.Unmarshal(items[1], &m1); err != nil {
+		t.Fatalf("unmarshal 1: %v", err)
+	}
+	// Order: "newer" was pushed first, then "failed" via requeue.
+	// The SpilloverQueue's in-memory tier appends, so the new
+	// "failed" item sits at the end.
+	if m0.Message != "newer" || m1.Message != "failed" {
+		t.Errorf("order = [%q, %q], want [newer, failed]", m0.Message, m1.Message)
 	}
 }
 
-// When queue is full, requeue should not exceed maxQueueSize.
-func TestRequeueTraps_RespectsQueueCapacity(t *testing.T) {
+// SpilloverQueue Push never exceeds MaxMem (oldest is moved to disk),
+// so requeueTraps cannot fail in the way the old in-memory slice did.
+// The new "full" failure mode is the on-disk byte cap (covered in the
+// queue package's own tests).
+func TestRequeueTraps_CapacityHandledBySpillover(t *testing.T) {
 	orig := maxQueueSize
 	defer func() { maxQueueSize = orig }()
 	ConfigureLimits(2, 100)
 
-	c := newTestClient()
-	// Fill queue to capacity
-	c.trapQueue = []*TrapEvent{{Message: "a"}, {Message: "b"}}
+	c := newTestClient(t)
+	// Fill the in-memory tier to cap.
+	c.SendTrap(&TrapEvent{Message: "a"})
+	c.SendTrap(&TrapEvent{Message: "b"})
 
-	// Try to requeue 3 more — none should fit (queue already at cap)
+	// Requeue 3 more — they will spill to disk rather than fail.
 	failed := []*TrapEvent{{Message: "x"}, {Message: "y"}, {Message: "z"}}
 	c.requeueTraps(failed)
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if len(c.trapQueue) > maxQueueSize {
-		t.Errorf("trapQueue len = %d, exceeded maxQueueSize %d", len(c.trapQueue), maxQueueSize)
+	disk, _ := c.trapQueue.DiskCount()
+	if disk != 3 {
+		t.Errorf("disk count = %d, want 3 (requeued items spilled)", disk)
 	}
 }
