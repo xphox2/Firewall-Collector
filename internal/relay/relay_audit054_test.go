@@ -67,16 +67,6 @@ func revisionQueueDepth(c *Client) int {
 	return c.revisionQueue.Depth()
 }
 
-// revisionQueueDiskCount returns the number of items persisted to the
-// revision queue's BoltDB file. Used by the restart-survival test.
-func revisionQueueDiskCount(c *Client) int {
-	n, err := c.revisionQueue.DiskCount()
-	if err != nil {
-		return -1
-	}
-	return n
-}
-
 func sampleRevision() *ConfigRevision {
 	return &ConfigRevision{
 		DeviceID:      7,
