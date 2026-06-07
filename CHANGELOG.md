@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.107 - 2026-06-06
+
+### Changed
+- **Standardize all `.md` filenames on UPPERCASE** (housekeeping). The repo had a mix of `README.md`/`CHANGELOG.md`/`SECURITY.md`/etc. (UPPERCASE) and `tasks/server-notes.md`/`.github/ISSUE_TEMPLATE/{bug_report,feature_request}.md` (lowercase). The UPPERCASE files are the de facto GitHub-community-standard names (auto-discovered by the UI); the lowercase ones were project-specific files that had drifted. Three renames:
+  - `tasks/server-notes.md` → `tasks/SERVER-NOTES.md`
+  - `.github/ISSUE_TEMPLATE/bug_report.md` → `.github/ISSUE_TEMPLATE/BUG_REPORT.md`
+  - `.github/ISSUE_TEMPLATE/feature_request.md` → `.github/ISSUE_TEMPLATE/FEATURE_REQUEST.md`
+- **No code changes** — these are filename-only renames, detected as renames by `git mv` (the R status in `git status` confirms git tracked the rename, not a delete+add). The issue-template H1 headings (`# Bug Report`, `# Feature Request`) are unchanged, so the GitHub issue-picker labels are unchanged. No inbound links to update (verified: `git ls-files | xargs grep` found no `[label](path)` references to the old lowercase names).
+
 ## 1.2.106 - 2026-06-06
 
 ### Fixed
