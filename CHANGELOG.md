@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.2.109 - 2026-06-07
+
+### Added
+- **Doc-unification pass across `xphox2/Firewall-Collector` and `xphox2/Firewall-Monitoring`** (docs-only). The two repos were drifting: the collector's README was 138 lines and last meaningfully rewritten around 1.2.50 (missing TFTP backup, SSH polling, mTLS, observability, schema versioning, the disk-spillover queue, the `ssh-test` subcommand, the `diag-backup` binary, and most hardening); the server had its own ad-hoc structure; cross-references to `MIGRATING.md` / `SUPPORT-MATRIX.md` / `ARCHITECTURE.md` were dangling in the collector. This release brings both repos to the **same section order, the same role-tag convention, and the same "single canonical home" rule for cross-cutting docs**:
+  - New `docs/STRUCTURE.md` in both repos — the index of where every topic lives, with absolute github.com cross-links for anyone reading either repo in isolation.
+  - New `docs/ARCHITECTURE.md` (collector) and a cross-link to the server's `docs/architecture.md` (full) — collector-side package map, lifecycle diagram, schema-version handshake narrative.
+  - New `docs/COMPATIBILITY.md` (collector, 1-pager) pointing at the server's `docs/SUPPORT-MATRIX.md` (canonical, full table). The single source of truth is the server; the collector gets a 1-pager so the file isn't 404 for a standalone clone.
+  - New `docs/ENV-VARS.md` (collector) — authoritative env-var reference derived from `internal/config/config.go`, replacing the 9-row table that was inline in the old README.
+  - New `docs/FEATURES.md` (collector) — website-ready feature inventory with `Stable` / `Beta` / `Planned` status, `[Probe]` / `[Server]` / `[Both]` role tags, and "since" version for every row. Covers all 28 features the collector ships, the 8 in-tree vendor profiles, the 5 deferred items from the audit, and coverage stats.
+  - New `docs/CUSTOM-VENDOR.md` (collector) — how to add a `VendorProfile` to the collector's registry.
+  - New `docs/FORTIGATE-SETUP.md` (collector) — collector-side FortiGate walkthrough (syslog-triggered config backup, `ssh-test` subcommand, `diag-backup` binary).
+  - New `docs/FEATURES.md` (server) — companion website-ready inventory covering the server's 60+ stable features, the 9 in-tree vendor profiles, the planned items, and the 5 entries from `KNOWN-ISSUES.md` with their AUDIT-NNN tracking IDs.
+  - **New `README.md` for both repos** — same 14-section structure (Sibling project → Features → Architecture → Quick Start → Configuration → Upgrading → Compatibility → Operations → Security → API/Wire format → Contributing → License → Support), the same role-tag convention on every feature, the same wording for the canonical-home pointers. The collector README grew from 138 → ~340 lines; the server README was restructured in place to match the new order.
+  - **Cleanup of stray files** that should never have been committed: `session-ses_1613.md` (a 4,939-line leaked Claude session transcript), `tasks/SERVER-NOTES.md` (described server-side code — wrong repo), `docs/CSS.md` and `docs/SCAN.md` (raw `govulncheck` dumps left in the server's `docs/` folder by a CI run). Also added `session-ses_*.md` to `.gitignore` to prevent re-commits.
+- **Cross-cutting-docs policy (per the user's explicit sign-off, 2026-06-07)**: `MIGRATING.md`, `SUPPORT-MATRIX.md`, `OPERATIONS.md`, `DATA-RETENTION.md`, `FORTIGATE-SNMP-SETUP.md`, `CERT-ROTATION.md`, and the combined `architecture.md` live **only in `xphox2/Firewall-Monitoring`**. The collector points to them with absolute github.com URLs. The rationale: these topics only matter to operators of the central server, so duplicating them in the collector risks drift. A future server-side PR can rename the three legacy-lowercase files (`architecture.md`, `custom-vendor.md`, `partition-migration.md`) to UPPERCASE — they're pinned by shell-guard tests (`TestArchitectureDiagram_AUDIT108`, `TestCustomVendorDoc_AUDIT170`, `TestEnsurePartitions_SurfacesWarning_AUDIT146`) so the rename is a separate change.
+- **Docs tasks**: `tasks/PLAN.md` (the file-by-file plan), `tasks/lessons.md` (the cross-repo structural rules to follow at session start) — both new in this repo.
+
+### Notes
+- **Docs-only.** No code change. No env-var additions. No new public types or functions. `go build ./...` and `go test -race ./...` should pass unchanged (the doc change doesn't touch any non-doc file).
+- The collector's existing 1.2.108 schema-version handshake, the disk-spillover queue, mTLS, observability, and all 28 shipping features are now **mentioned by name in the README** for the first time — the previous README was 4 versions behind on what the binary actually does.
+
 ## 1.2.108 - 2026-06-07
 
 ### Added

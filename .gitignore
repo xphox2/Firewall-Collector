@@ -29,6 +29,9 @@ desktop.ini
 
 # Claude Code local settings
 .claude/
+# Claude Code session transcripts (auto-saved next to the working dir;
+# do not commit — they leak the full session to the public repo).
+session-ses_*.md
 
 # Environment / secrets
 .env
