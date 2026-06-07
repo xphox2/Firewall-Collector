@@ -3,6 +3,32 @@
 ## 1.2.103 - 2026-06-06
 
 ### Fixed
+- **TFTP WRQ accepts from any source with no size cap** (closes AUDIT-050). `internal/tftp/tftp.go` `handleWRQ` previously allowed any UDP peer that could reach UDP/69 to upload an arbitrary config blob for any device ID — corrupting the central server's config-change monitoring — and `receiveTransfer` would `append` indefinitely (bounded only by a 5-minute `transferTimeout`), letting a single peer drive the collector to OOM. The fix layers three defenses, all library-side, all opt-in except the size cap:
+  - **Hard 2 MB per-transfer size cap** (new `maxTransferSize` const). Real FortiGate configs are <500 KB; 2 MB leaves comfortable headroom. Enforced in `receiveTransfer` *before* the `append` so a malicious peer can never force the collector to allocate beyond the cap. On overflow, `receiveTransfer` returns an error and `handleWRQ` translates it to a TFTP ERROR 0 back to the client. **This cap is unconditional — it applies to every production caller, even those that never opt into the allowlist or rate limit.**
+  - **Per-source-IP allowlist** via the new `Server.SetAllowedSourceIPs([]string)` (defaults to `nil` = "no policy, accept all", preserving backward compatibility for every existing caller; non-nil empty = explicit deny-all). Entries are normalized through `net.ParseIP(...).String()` so "127.0.0.001" and "::ffff:127.0.0.1" both match a peer reporting "127.0.0.1". The check runs before any state mutation — blocked peers cannot consume a session socket, a goroutine, or poison the rate-limit map. Guarded by the existing `handlerMu` RWMutex that AUDIT-081 already added for the handler setters (same race concern — `SetAllowedSourceIPs` from one goroutine racing `handleWRQ` from the listener).
+  - **Per-source-IP rate limit** via the new `Server.SetMinWRQInterval(time.Duration)` (defaults to `0` = disabled, preserving the existing behavior). A WRQ from a source IP is refused (TFTP ERROR 0, sent from the listen socket — no session allocated) if a WRQ from the same IP was accepted less than the configured interval ago. Backed by a `sync.Mutex`-protected `map[string]time.Time`.
+
+### Added
+- 8 new tests in `internal/tftp/tftp_srcip_test.go`:
+  - `TestTFTPReceiveTransfer_SizeCapEnforced` — drives 3 MB of DATA into `receiveTransfer` and asserts the cap error fires before the safetyLimit and that ACKs stop being sent.
+  - `TestTFTPHandleWRQ_SourceIPBlocked` — blocked source IP must get ERROR 2 from the *listen* socket (no session allocated) and the write handler must never be invoked.
+  - `TestTFTPHandleWRQ_SourceIPAllowed` — regression guard: an allowed source IP completes the full WRQ end-to-end.
+  - `TestTFTPHandleWRQ_AllowlistEmpty_DeniesAll` — non-nil empty allowlist means deny-all (distinct from the nil default).
+  - `TestTFTPHandleWRQ_RateLimitRefused` — second WRQ from same source within `minWRQInterval` is refused; rejection comes from the listen socket (no session allocated).
+  - `TestTFTPHandleWRQ_RateLimitDisabledByDefault` — without an explicit `SetMinWRQInterval`, two back-to-back WRQs from the same source both succeed.
+  - `TestTFTPSetAllowedSourceIPs_NormalizesIPv4Mapped` — allowlist normalization is symmetric.
+  - `TestTFTPSetAllowedSourceIPs_NilSemantics` — `nil` / `[]string{}` / populated tri-state is documented and tested.
+
+### Security notes
+- The size cap is the only change that is active by default. The allowlist and rate limit are opt-in: production callers must explicitly call `SetAllowedSourceIPs(...)` and/or `SetMinWRQInterval(...)` to activate them. Wiring them into the production collector (cmd/collector/main.go `startTFTPServer`) is intentionally out of scope for this PR — it requires either a static config-driven IP list (no device→IP mapping exists at startup) or a "first WRQ pins the source IP" bootstrap, which is a follow-up.
+- Follow-up (not in this PR): HMAC the TFTP filename so an on-path attacker cannot forge a `fgt_<id>_config` for a device they don't own.
+
+### Unblocks
+- AUDIT-050 review item (C-2, H-3, 2.1.4 from `tasks/REVIEW-REPORT.md`).
+
+## 1.2.103 - 2026-06-06
+
+### Fixed
 - **Master `cmd/collector/main.go` is duplicated and references undefined functions** — `git log --follow` on the file shows two v1.2.89 commits on the `audit-064-per-queue-mutex` branch (`abb400e` broken, `e06e455` clean). The broken one was used for the master merge of PR #38 (AUDIT-064), so master has been carrying a 2752-line `main.go` (lines 1–1379 + a verbatim copy of lines 1–1373 at 1380+) that fails to compile: `cmd\collector\main.go:1380:1: syntax error: non-declaration statement outside function body`.
 - **`setupLoggerWith` and `isSSHToolSubcommand` were referenced by tests but never defined in `main.go`**. PR #46 (AUDIT-056 slog, 1.2.100) shipped `cmd/collector/slog_test.go` (5 tests calling `setupLoggerWith(&buf)`) and PR #44 (AUDIT-060 ssh-test-dup, 1.2.98) shipped `cmd/collector/ssh_test_cmd_test.go` (2 tests calling `isSSHToolSubcommand(args)`), but neither PR's `main.go` change actually contained the functions (both were 2-line version-bump-only diffs). CI was green because the build was already broken at a different line, so the undefined symbols were never reached. The tests are now buildable.
 - **Replaced `main.go` with the clean v1.2.89 base (`e06e455:cmd/collector/main.go`, 1379 lines)** and added the two missing functions at the end of the file. `isSSHToolSubcommand` is the routing helper: returns `len(args) > 0 && args[0] == "ssh-test"`. The pinned test cases are: `["ssh-test"]` → true, `["ssh-test", ...]` → true, `[]` → false, `["--debug", "ssh-test"]` → false (flags-then-subcommand is explicitly rejected because main() only inspects `os.Args[1]`). `setupLoggerWith(buf *bytes.Buffer)` configures `slog.SetDefault` from `PROBE_LOG_LEVEL` (debug/info/warn/warning/error; anything else → info + one-shot warning to `os.Stderr`) and `PROBE_LOG_FORMAT` (text/json; anything else → text). The buffer parameter makes the helper testable; production wiring in `main()` passes `os.Stderr`.
@@ -169,7 +195,6 @@
 
 ### References
 - `tasks/REVIEW-REPORT.md` Section 1.3, 2.3, 4.2 (logging consistency), 6.1 O-1.
-
 
 ## 1.2.88 - 2026-06-06
 
