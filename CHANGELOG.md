@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.2.106 - 2026-06-06
+
+### Fixed
+- **SendConfigRevision retry-with-backoff + restart-survival (v2 of AUDIT-054, closes the issue)**. The first attempt at this fix (closed PR #45) used a plain `[]*ConfigRevision` slice guarded by `c.mu`, matching the trap/ping/syslog/flow pattern. That was the wrong primitive: it lost every pending revision on a process restart, which defeats the whole point of config archival. This v2 reuses the disk-persistent `*queue.SpilloverQueue` (introduced in AUDIT-058 / PR #48) for the same reason the 4 event queues use it: durability across crashes. Concretely:
+  - `internal/relay/relay.go`: new `revisionQueue *queue.SpilloverQueue` field, opened in `ensureQueues()` alongside the 4 event queues (`<QueueDiskPath>/revisions.bolt`), closed in `Stop()`. `SendConfigRevision` now enqueues the marshaled JSON on both transport errors and non-2xx responses (returns an error to the caller as before, but the revision is preserved for the next drain). `syncData` drains the queue in bounded chunks (same `drainChunk` as the event queues) and hands each batch to a new `sendRevisionBatch` helper.
+  - `sendRevisionBatch` (new) and `sendOneRevisionWithRetry` (new) implement the retry policy: 3 attempts per revision with 1s/2s backoff between attempts, re-registration on 401/403/404, drop-on-400 (a permanent client error, not worth re-queuing), and re-queue on total failure. The re-queue goes to the tail of the queue (FIFO Push), so a re-failed revision will be retried within the next syncData cycle (default 30s).
+  - **Restart-survival**: pending revisions live in BoltDB. A collector crash mid-retry, a 5-minute outage during a config push, or a routine `kill -9` does not drop the only copy of the config backup. This is the headline win over v1 (the closed PR #45).
+- **Requeue semantic change vs v1**: v1's `requeueRevisions` prepended failed items to the FRONT of a plain slice (priority semantics). v2 uses a `SpilloverQueue` (strict FIFO), so failed items are pushed to the TAIL. The behavioral change is acceptable for the use case: revisions are infrequent (one per config-change event), and "retry on the next cycle" is sufficient. If strict priority matters later, `SpilloverQueue` can be extended with a `PushFront` primitive.
+- **Issue's "body read after defer close" sub-claim is a misread of Go semantics** and was a no-op in the v1 PR. `defer` runs at function return, not at the `defer` statement, so the existing `defer resp.Body.Close()` + immediate `io.ReadAll(resp.Body)` ordering is correct. The "body always empty" bug never existed. `TestSendConfigRevision_ResponseBodyRead_AUDIT054` pins the current behavior so a future refactor can't regress it.
+- **15 new tests** in `internal/relay/relay_audit054_test.go`:
+  - `TestSendConfigRevision_NoRetryOnFailure_AUDIT054` — single POST + enqueue on 500.
+  - `TestSendConfigRevision_EnqueuesOnFailure_AUDIT054` — 502 round-trips through the queue as valid JSON.
+  - `TestSendConfigRevision_EnqueuesOnTransportError_AUDIT054` — unreachable server enqueues.
+  - `TestSendConfigRevision_NotApproved_ReturnsError_AUDIT054` — approval gate, no enqueue.
+  - `TestSendConfigRevision_ResponseBodyRead_AUDIT054` — body readable on 503.
+  - `TestSendConfigRevision_SuccessResponse_BodyReadable_AUDIT054` — body readable on 200.
+  - `TestSendConfigRevision_RequestShape_AUDIT054` — POST /api/probes/{id}/config-revision + Bearer + JSON.
+  - `TestEnqueueRevisionBytes_OverflowDropsOldest_AUDIT054` — SpilloverQueue cap moves oldest to disk; FIFO preserved across tiers.
+  - `TestEnqueueRevisionBytes_QueueDisabledWhenDiskPathEmpty_AUDIT054` — silent no-op when QueueDiskPath is empty (no panic).
+  - `TestSendRevisionBatch_SuccessClearsQueue_AUDIT054` — all-success drain leaves queue empty.
+  - `TestSendRevisionBatch_RetriesAndRequeues_AUDIT054` — 3 attempts on 500, then re-queue.
+  - `TestSendRevisionBatch_400IsNotRetried_AUDIT054` — 400 is permanent, no retry, no requeue.
+  - `TestSyncData_DrainsRevisionQueue_AUDIT054` — end-to-end via the public syncData path.
+  - `TestSyncData_NotApprovedDoesNotDrain_AUDIT054` — approval gate at the drain level (does not count reregister calls).
+  - `TestSendConfigRevision_TLSEndpointAccepted_AUDIT054` — smoke test for the TLS handshake path.
+  - `TestRevisionQueue_RestartSurvivesPendingItems_AUDIT054` — **the headline v2 test**: open → push 3 → close → reopen → assert 3 items survive in FIFO order.
+
 ## 1.2.105 - 2026-06-06
 
 ### Fixed
