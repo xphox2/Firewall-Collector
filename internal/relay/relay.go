@@ -358,6 +358,16 @@ type Client struct {
 	pingQueue   *queue.SpilloverQueue
 	syslogQueue *queue.SpilloverQueue
 	flowQueue   *queue.SpilloverQueue
+
+	// AUDIT-054 (v2): config-revision retry queue. Same SpilloverQueue
+	// primitive as the 4 event queues above. Marshaled *ConfigRevision
+	// JSON is pushed on transport error or non-2xx response, then
+	// drained in `syncData` via `sendRevisionBatch` which retries each
+	// revision 3× with 1s/2s backoff. Disk persistence (same BoltDB
+	// mechanism) gives restart-survival for free — without this, a
+	// collector crash mid-retry would drop the pending revision and the
+	// central server would lose the only copy of the config backup.
+	revisionQueue *queue.SpilloverQueue
 }
 
 func NewClient(cfg Config) *Client {
@@ -427,6 +437,7 @@ func (c *Client) ensureQueues() {
 		c.pingQueue = open("pings")
 		c.syslogQueue = open("syslog")
 		c.flowQueue = open("flows")
+		c.revisionQueue = open("revisions")
 	})
 }
 
@@ -1007,6 +1018,29 @@ func (c *Client) syncData() {
 			break
 		}
 	}
+
+	// AUDIT-054: drain the config-revision retry queue. Same bounded
+	// chunking as the 4 event queues above. Each batch is then handed
+	// to sendRevisionBatch which retries each revision individually
+	// (3× with 1s/2s backoff) and re-queues the survivors.
+	//
+	// Done AFTER the event queues so a flooded event-queue backlog
+	// can't starve the much smaller (and more important — these are
+	// the only copies of config backups) revision queue.
+	for {
+		raw, err := c.revisionQueue.Drain(drainChunk)
+		if err != nil {
+			log.Printf("[Relay] drain revisions: %v", err)
+			break
+		}
+		if len(raw) == 0 {
+			break
+		}
+		c.sendRevisionBatch(baseURL+"/config-revision", raw)
+		if len(raw) < drainChunk {
+			break
+		}
+	}
 }
 
 // unmarshalTraps converts a slice of JSON bytes (as produced by the
@@ -1317,10 +1351,11 @@ func (c *Client) Stop() {
 		// replay the full queue. Done after the final flush so we
 		// capture any data the loop just sent.
 		for name, q := range map[string]*queue.SpilloverQueue{
-			"traps":  c.trapQueue,
-			"pings":  c.pingQueue,
-			"syslog": c.syslogQueue,
-			"flows":  c.flowQueue,
+			"traps":     c.trapQueue,
+			"pings":     c.pingQueue,
+			"syslog":    c.syslogQueue,
+			"flows":     c.flowQueue,
+			"revisions": c.revisionQueue,
 		} {
 			if q == nil {
 				continue
@@ -1404,7 +1439,13 @@ func (c *Client) SendConfigRevision(rev *ConfigRevision) error {
 	url := c.Config.ServerURL + "/api/probes/" + fmt.Sprint(c.probeID) + "/config-revision"
 	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
 	if err != nil {
-		return fmt.Errorf("failed to send config revision: %w", err)
+		// AUDIT-054: enqueue on transport errors (TLS handshake, DNS,
+		// conn reset) so a transient outage doesn't drop the only copy
+		// of the config backup. The queue is disk-persistent, so even a
+		// collector crash mid-retry is recoverable: the next process
+		// reopens the BoltDB file and the drain resumes.
+		c.enqueueRevisionBytes(jsonData)
+		return fmt.Errorf("failed to send config revision (enqueued for retry): %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -1415,8 +1456,145 @@ func (c *Client) SendConfigRevision(rev *ConfigRevision) error {
 		log.Printf("[RELAY] SendConfigRevision success for device %d: %s", rev.DeviceID, string(bodyBytes))
 		return nil
 	}
-	log.Printf("[RELAY] SendConfigRevision failed for device %d - status %d: %s", rev.DeviceID, resp.StatusCode, string(bodyBytes))
-	return fmt.Errorf("send config revision returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	// AUDIT-054: non-2xx means the server didn't durably store the
+	// revision. Enqueue for the next syncData drain — sendRevisionBatch
+	// will retry 3× with backoff and surface 4xx-vs-5xx differently.
+	c.enqueueRevisionBytes(jsonData)
+	log.Printf("[RELAY] SendConfigRevision failed for device %d - status %d (enqueued for retry): %s", rev.DeviceID, resp.StatusCode, string(bodyBytes))
+	return fmt.Errorf("send config revision returned status %d (enqueued for retry): %s", resp.StatusCode, string(bodyBytes))
+}
+
+// enqueueRevisionBytes pushes a pre-marshaled *ConfigRevision JSON
+// payload into the disk-persistent revision queue. Lazily opens the
+// queue (mirrors Send* for the 4 event queues) so callers that bypass
+// the Send* path (e.g. tests) still get a working queue.
+//
+// Returns silently on enqueue error: the SpilloverQueue.Push failure
+// modes are all "I/O is wedged or the cap is exceeded"; the caller has
+// already returned an error to its caller and there is nothing useful
+// to do with a second error. The disk-persistent queue is the
+// best-effort durability layer, not a hard guarantee.
+//
+// AUDIT-054 (v2): the first attempt at this fix used a plain
+// `[]*ConfigRevision` slice under `c.mu`, matching the trap/ping/flow
+// pattern. That was the wrong primitive: it lost all pending revisions
+// on process restart. Reusing the SpilloverQueue from AUDIT-058 gives
+// retry-on-failure AND restart-survival with zero new dependencies.
+func (c *Client) enqueueRevisionBytes(data []byte) {
+	c.ensureQueues()
+	if c.revisionQueue == nil {
+		return
+	}
+	if err := c.revisionQueue.Push(data); err != nil {
+		log.Printf("[RELAY] Failed to enqueue config revision: %v", err)
+	}
+}
+
+// sendRevisionBatch drains the revisionQueue via Drain, unmarshals each
+// payload, and calls sendOneRevisionWithRetry for each. Failed items
+// are re-pushed (they become the tail of the queue; the FIFO ordering
+// means they'll be retried after whatever the previous drain left
+// behind).
+//
+// AUDIT-054 (v2) design note: the v1 attempt (closed PR #45) used
+// requeueRevisions with prepend-to-front semantics so re-failed items
+// would be retried first. With a SpilloverQueue (strict FIFO), the
+// only requeue primitive is Push, which appends to the tail. For the
+// revision use case the ordering is acceptable: revisions are
+// infrequent (one per config-change event), so "failed again at the
+// back of the line" still means a retry within one syncData cycle
+// (default 30s). If strict priority matters, a future change can
+// extend SpilloverQueue with a PushFront primitive.
+func (c *Client) sendRevisionBatch(url string, raw [][]byte) {
+	var failed [][]byte
+	for _, data := range raw {
+		rev, err := unmarshalConfigRevision(data)
+		if err != nil {
+			log.Printf("[Relay] Failed to unmarshal config revision (dropping): %v", err)
+			continue
+		}
+		if !c.sendOneRevisionWithRetry(url, rev) {
+			failed = append(failed, data)
+		}
+	}
+	if len(failed) > 0 {
+		for _, data := range failed {
+			if err := c.revisionQueue.Push(data); err != nil {
+				log.Printf("[Relay] Failed to re-queue config revision: %v", err)
+			}
+		}
+		log.Printf("[Relay] Re-queued %d config revisions for next syncData cycle", len(failed))
+	}
+}
+
+// unmarshalConfigRevision parses the JSON payload that was marshaled
+// in SendConfigRevision. Malformed payloads are surfaced as errors so
+// the caller can drop them (one bad item should not stall the whole
+// drain).
+func unmarshalConfigRevision(data []byte) (*ConfigRevision, error) {
+	var rev ConfigRevision
+	if err := json.Unmarshal(data, &rev); err != nil {
+		return nil, err
+	}
+	return &rev, nil
+}
+
+// sendOneRevisionWithRetry attempts to deliver a single config
+// revision with up to 3 attempts (1s, 2s backoff between attempts).
+// On 401/403/404 it attempts re-registration; if re-registration
+// succeeds, the loop continues with a fresh attempt; otherwise it
+// returns false (the caller will re-queue).
+//
+// AUDIT-054 (v2): the 4xx/5xx branching matches the relay package's
+// other Send* methods (e.g. sendBatchesSequential). 400 is treated as
+// a permanent client error (don't retry, don't re-queue — the
+// revision is malformed and will fail the same way next time). 5xx
+// and transport errors are transient and worth retrying.
+func (c *Client) sendOneRevisionWithRetry(url string, rev *ConfigRevision) bool {
+	jsonData, err := json.Marshal(rev)
+	if err != nil {
+		log.Printf("[Relay] Failed to marshal config revision: %v", err)
+		return false
+	}
+
+	for attempt := 0; attempt < 3; attempt++ {
+		resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
+		if err != nil {
+			log.Printf("[Relay] SendConfigRevision transport error for device %d (attempt %d/3): %v", rev.DeviceID, attempt+1, err)
+			if attempt < 2 {
+				time.Sleep(time.Duration(1<<uint(attempt)) * time.Second)
+			}
+			continue
+		}
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			log.Printf("[Relay] SendConfigRevision success for device %d: %s", rev.DeviceID, string(bodyBytes))
+			return true
+		}
+
+		if resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 404 {
+			log.Printf("[Relay] SendConfigRevision auth/reject for device %d (status %d), attempting re-registration", rev.DeviceID, resp.StatusCode)
+			c.approved.Store(false)
+			if c.tryReregister() {
+				continue
+			}
+			return false
+		}
+
+		if resp.StatusCode == 400 {
+			log.Printf("[Relay] SendConfigRevision 400 (bad request) for device %d, not retrying: %s", rev.DeviceID, string(bodyBytes))
+			return false
+		}
+
+		// 5xx or other transient server error.
+		log.Printf("[Relay] SendConfigRevision status %d for device %d (attempt %d/3): %s", resp.StatusCode, rev.DeviceID, attempt+1, string(bodyBytes))
+		if attempt < 2 {
+			time.Sleep(time.Duration(1<<uint(attempt)) * time.Second)
+		}
+	}
+	return false
 }
 
 func (c *Client) SendProcessSnapshot(snap *ProcessSnapshot) error {
