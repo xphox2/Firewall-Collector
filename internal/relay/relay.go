@@ -320,8 +320,25 @@ type Config struct {
 	QueueMaxBytes int64
 }
 
+// SchemaVersionMin / SchemaVersionMax pin the probe↔server relay wire-format
+// range this collector speaks. They MUST stay in lockstep with the server's
+// relay.SchemaVersionMin / relay.SchemaVersionMax (xphox2/Firewall-Monitoring
+// internal/relay/relay.go) and the MIGRATING.md / SUPPORT-MATRIX.md docs. The
+// collector advertises SchemaVersionMax on register; a server that supports
+// only an older range replies HTTP 426 (Upgrade Required) with the supported
+// range in the X-Probe-Schema-Version-Supported header.
+const (
+	SchemaVersionMin = 1
+	SchemaVersionMax = 1
+)
+
 type RegisterRequest struct {
 	RegistrationKey string `json:"registration_key"`
+	// SchemaVersion advertises the relay wire-format version this collector
+	// speaks. Pre-handshake servers (< v0.10.382) ignore the unknown field, so
+	// sending it is always backward-compatible; a handshake-aware server
+	// validates it and replies 426 if it's outside the server's range.
+	SchemaVersion int `json:"schema_version,omitempty"`
 }
 
 type RegisterResponse struct {
@@ -330,6 +347,9 @@ type RegisterResponse struct {
 	ProbeName string `json:"probe_name"`
 	Message   string `json:"message"`
 	Approved  bool   `json:"approved"`
+	// SchemaVersion is the version the server selected for this probe. A
+	// pre-handshake server omits it (zero value) → the collector assumes v1.
+	SchemaVersion int `json:"schema_version,omitempty"`
 }
 
 type Client struct {
@@ -537,6 +557,7 @@ func newBatchID() string {
 func (c *Client) Register() error {
 	data := RegisterRequest{
 		RegistrationKey: c.Config.RegistrationKey,
+		SchemaVersion:   SchemaVersionMax,
 	}
 
 	jsonData, err := json.Marshal(data)
@@ -549,6 +570,19 @@ func (c *Client) Register() error {
 		return fmt.Errorf("registration request failed: %w", err)
 	}
 	defer resp.Body.Close()
+
+	// The server rejects an unsupported wire-format version with 426. Surface
+	// an actionable error naming the range the server advertises so the
+	// operator knows to upgrade the server (or roll this probe back) — see
+	// MIGRATING.md. The probe keeps its on-disk queue, so no data is lost.
+	if resp.StatusCode == http.StatusUpgradeRequired {
+		supported := resp.Header.Get("X-Probe-Schema-Version-Supported")
+		if supported == "" {
+			supported = "unknown"
+		}
+		return fmt.Errorf("registration rejected: this collector speaks schema_version %d but the server supports %s — upgrade the server first (see MIGRATING.md)",
+			SchemaVersionMax, supported)
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("registration failed with HTTP status %d", resp.StatusCode)
@@ -574,10 +608,17 @@ func (c *Client) Register() error {
 
 	c.approved.Store(result.Approved)
 
+	// The server echoes the schema_version it selected for this probe. A
+	// pre-handshake server (< v0.10.382) omits it → assume v1.
+	negotiated := result.SchemaVersion
+	if negotiated == 0 {
+		negotiated = 1
+	}
+
 	if !result.Approved {
-		log.Println("Probe registered but waiting for approval in admin panel...")
+		log.Printf("Probe registered (schema_version %d) but waiting for approval in admin panel...", negotiated)
 	} else {
-		log.Println("Probe registered and approved!")
+		log.Printf("Probe registered and approved! (schema_version %d)", negotiated)
 	}
 
 	return nil

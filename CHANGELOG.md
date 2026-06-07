@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.108 - 2026-06-07
+
+### Added
+- **Advertise `schema_version` on register (probe half of the probe↔server wire-format handshake)**. The collector and the central server are deployed and upgraded independently; until now the relay handshake carried no version field, so a server-side change to a required field or a DTO's semantics could break a deployed collector with no graceful signal. The server side landed in `Firewall-Monitoring` v0.10.382 (validates `schema_version` on `/api/probes/register`, replies HTTP 426 for an out-of-range value); this is the matching collector half. Concretely, in `internal/relay/relay.go`:
+  - New exported consts `SchemaVersionMin` / `SchemaVersionMax` (currently `1`/`1`) pinning the wire-format range this collector speaks. They MUST stay in lockstep with the server's `relay.SchemaVersionMin`/`Max` and the `MIGRATING.md` / `SUPPORT-MATRIX.md` docs.
+  - `RegisterRequest` gains `SchemaVersion int \`json:"schema_version,omitempty"\``; `Register()` sends `SchemaVersionMax`. The field is `omitempty`, so a **pre-handshake server (< v0.10.382) ignores the unknown field** — advertising it is always backward-compatible.
+  - `RegisterResponse` gains `SchemaVersion`; on success the collector logs the version the server **selected** for it (a server that omits the field → assume v1).
+  - `Register()` now handles **HTTP 426 (Upgrade Required)** explicitly: instead of the generic `registration failed with HTTP status 426`, it returns an actionable error naming the server's supported range (read from the `X-Probe-Schema-Version-Supported` response header) and pointing at `MIGRATING.md`. No data is lost on a 426 — the probe keeps its on-disk queue.
+- Two tests in `internal/relay/relay_schemaversion_test.go`: `TestRegister_AdvertisesSchemaVersion` (the request body carries `schema_version: SchemaVersionMax`; the echoed version is accepted) and `TestRegister_ServerRejectsVersion_Returns426Error` (a 426 with the supported-range header yields an error naming the range, not the generic HTTP-status fallback).
+
 ## 1.2.107 - 2026-06-06
 
 ### Changed
