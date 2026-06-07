@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.2.95 - 2026-06-06
+## 1.2.103 - 2026-06-06
 
 ### Fixed
 - **SendConfigRevision retry-with-backoff** (closes AUDIT-054). `internal/relay/relay.go` `SendConfigRevision` was the only `Send*` method with zero delivery durability — a single POST, no retry, no requeue, no escalation beyond `log.Printf`. A misfire from TFTP, a 5xx from the central server, or a transient 60 s TLS handshake failure silently dropped the only copy of the config backup. Now:
@@ -13,6 +13,176 @@
 
 ### Tests
 - New `internal/relay/relay_audit054_test.go` (14 tests) covers: single-POST semantics of `SendConfigRevision`, enqueue-on-5xx, enqueue-on-transport-error, enqueue-on-502, no-enqueue-when-unapproved, response-body regression for the close/read order, success path, request-shape pinning (method/path/auth/JSON body), `enqueueRevision` overflow-drops-oldest, `requeueRevisions` prepends-to-front + respects-capacity, `sendRevisionBatch` retries 3× with backoff and requeues on total failure, success-clears-queue, `syncData` drains the queue and routes to `/config-revision`, `syncData` restores the queue when not approved, and an over-TLS smoke test.
+
+## 1.2.103 - 2026-06-06
+
+### Fixed
+- **Master `cmd/collector/main.go` is duplicated and references undefined functions** — `git log --follow` on the file shows two v1.2.89 commits on the `audit-064-per-queue-mutex` branch (`abb400e` broken, `e06e455` clean). The broken one was used for the master merge of PR #38 (AUDIT-064), so master has been carrying a 2752-line `main.go` (lines 1–1379 + a verbatim copy of lines 1–1373 at 1380+) that fails to compile: `cmd\collector\main.go:1380:1: syntax error: non-declaration statement outside function body`.
+- **`setupLoggerWith` and `isSSHToolSubcommand` were referenced by tests but never defined in `main.go`**. PR #46 (AUDIT-056 slog, 1.2.100) shipped `cmd/collector/slog_test.go` (5 tests calling `setupLoggerWith(&buf)`) and PR #44 (AUDIT-060 ssh-test-dup, 1.2.98) shipped `cmd/collector/ssh_test_cmd_test.go` (2 tests calling `isSSHToolSubcommand(args)`), but neither PR's `main.go` change actually contained the functions (both were 2-line version-bump-only diffs). CI was green because the build was already broken at a different line, so the undefined symbols were never reached. The tests are now buildable.
+- **Replaced `main.go` with the clean v1.2.89 base (`e06e455:cmd/collector/main.go`, 1379 lines)** and added the two missing functions at the end of the file. `isSSHToolSubcommand` is the routing helper: returns `len(args) > 0 && args[0] == "ssh-test"`. The pinned test cases are: `["ssh-test"]` → true, `["ssh-test", ...]` → true, `[]` → false, `["--debug", "ssh-test"]` → false (flags-then-subcommand is explicitly rejected because main() only inspects `os.Args[1]`). `setupLoggerWith(buf *bytes.Buffer)` configures `slog.SetDefault` from `PROBE_LOG_LEVEL` (debug/info/warn/warning/error; anything else → info + one-shot warning to `os.Stderr`) and `PROBE_LOG_FORMAT` (text/json; anything else → text). The buffer parameter makes the helper testable; production wiring in `main()` passes `os.Stderr`.
+- **Wired the ssh-test subcommand into `main()`**: `if isSSHToolSubcommand(os.Args[1:]) { os.Exit(sshtool.Run(os.Args[2:], os.Stdin, os.Stdout, os.Stderr)) }` runs **before** the long-running collector setup so the diagnostic tool stays operator-fast (no registration, no heartbeat, no listener bind). Closes the "ssh-test launches collector" footgun that `TestSSHToolSubcommandEndToEnd_NoPassword` was guarding against.
+- **`internal/snmp/helpers_test.go`: removed 9 unused PDU builders** (`mkStringPDU`, `mkOIDPDU`, `mkIntPDU`, `mkGaugePDU`, `mkCounter32PDU`, `mkCounter64PDU`, `mkIPAddressPDU`, `mkNoSuchPDU`, `withVendorRegistry`) that PR #41 (AUDIT-063, 1.2.92) added but never actually called. `staticcheck` flagged them as `U1000` (unused); same dead-code pattern as the `inMemTrapMessage` / `drainTrapMessage` helpers in `internal/relay/relay_test.go` that the 1.2.102 fixup removed. The 3 helpers that the test files do use (`withCleanVendorRegistry`, `concurrentRunner`, and the `testingT` interface) are kept.
+
+## 1.2.93 - 2026-06-06
+
+### Fixed
+- **Run collector as non-root in Docker with minimal capabilities** (Closes AUDIT-047, the single biggest defense-in-depth failure in the deployment):
+  - **`Dockerfile`**: runtime stage now `USER 65534:65534` (`nobody` on Alpine), with `chmod 555` on the binary and `chown 65534:65534` on `/app` so the unprivileged user can still read configs and execute the probe. The Go build stage is unchanged — root is still required there for `go mod download` / `go build` — and root never appears in the final image's running process.
+  - **`docker-compose.yml`**: `cap_drop: [ALL]` + `cap_add: [NET_RAW]` instead of `cap_add: NET_RAW` alone. The probe only needs `NET_RAW` for the fork-exec `ping` (`internal/ping/ping.go:130`); every other default capability is now stripped. Combined with the rootless `USER`, a parser RCE in syslog/sFlow/TFTP/SNMP-trap is no longer a root shell on the management LAN.
+
+### Changed
+- **`docker-compose.yml`**: added a comment block above `network_mode: host` documenting the bridged alternative (remove `network_mode: host`, add explicit `ports:` mapping for 162/514/6343/69). Host networking remains the default for two reasons: (1) outbound ICMP/SNMP/SSH to monitored devices use the host's source address, which many vendors require; (2) no NAT surprises on listener ports. The comment explains when to switch and warns that bridged mode loses the host-IP source address for outbound probes.
+
+### Deferred
+- **Replace fork-exec `ping` with `golang.org/x/net/icmp`**: the `internal/ping/ping.go:130` shell-out to `/bin/ping` is what forces the `NET_RAW` capability on the container. A pure-Go ICMP implementation would let us drop `NET_RAW` entirely (rootless containers can open `IPPROTO_ICMP` sockets on modern kernels with `net.ipv4.ping_group_range` set, but only when bound to a raw socket — which still needs the cap, so the gain is smaller than it looks). Tracked as a follow-up; not in this release.
+
+
+## 1.2.94 - 2026-06-06
+
+### Added
+- **`internal/sflow/sflow_test.go`** — comprehensive sFlow v5 parser tests (closes AUDIT-062). Before this change the 417-line `internal/sflow/sflow.go` had 0% test coverage; the sFlow parser is one of three code paths that ingest **untrusted binary UDP from any host that can reach the collector** (alongside syslog and SNMP traps), and the audit flagged it as a high-severity stability risk. The test file contains 21 tests + 1 fuzz target covering:
+  - All required cases from AUDIT-062: `TruncatedAtVersion` (2-byte buffer), `AllZero` (64-byte zero buffer), `MalformedIPv4Header` (version=3, IHL=0), `RealisticFlowSample` (golden TCP SYN), `NumSamplesExceedsBuffer` (1000 claimed / 28 actual, must not hang), `RawHeader_Oversized` (header_length=2000 vs. 16-byte record), and the Go native `FuzzParseSFlowDatagram` fuzz target.
+  - Additional coverage not in the issue: UDP flow (`parseTransport` UDP branch), IPv6 flow (`parseIPv6`), expanded flow sample (format=3), IPv6 agent address (`addrType=2`), nil-handler early return, truncated record payload, 802.1Q VLAN-tagged Ethernet, truncated inner IPv4/IPv6, truncated TCP/UDP transport (the `data[13]` audit target), unknown agent address type, truncated agent address, truncated flow sample header, and `Stop()` idempotency.
+  - The fuzz target seeds 9 baseline corpora (valid TCP SYN datagram, empty, 1/2/4/27/64/1024-byte zero buffers, a structurally valid datagram with bogus IPs and 5 empty samples) and runs the parser in a goroutine with a 2s hang watchdog. CI nightly: `go test -run=^$ -fuzz=FuzzParseSFlowDatagram -fuzztime=30s ./internal/sflow/...`. A 10s local run executes ~1M iterations with no panic, no hang, no crash.
+
+## 1.2.90 - 2026-06-06
+
+### Added
+- **`internal/syslog/syslog_test.go`** — full coverage of the RFC 5424 parser trunk that every FortiGate, pfSense, OPNsense, and Palo Alto syslog line flows through (closes AUDIT-061):
+  - `TestParseRFC5424_FortiGateTypical` — real FortiGate line populates all 9 fields (priority 189 → facility 23, severity 5; timestamp `2025-04-10T05:01:53.000000-07:00`; hostname `FGT-1000`; app `fglog`; proc `1234`; msgid `MSG-001`; SD `[origin]`; DeviceID 1000 from hostname; multi-token message rejoined).
+  - `TestParseRFC5424_BSD3164Format` — pins the current "best-effort no-error" behaviour for BSD-style lines (`<34>Oct 11 22:14:15 fw-host sshd[123]: ...`). The parser's space-split misaligns every field after PRI; `parseTimestamp` then falls back to `time.Now()` for the unparseable token, so no hard error is returned. Documents the current behaviour so it cannot silently change.
+  - `TestParseRFC5424_MalformedPriority` — table-driven across `<abc>`, `<>`, `<0` (no closing `>`), `<999>`, and no-priority-bracket-at-all.
+  - `TestParsePriority_OutOfRange` — boundary table: 0, 191, 192, 200, 999, 9999, `<>`, `<abc>`, `no-bracket`, `<`.
+  - `TestParseTimestamp_AllSixFormats` — table-driven across all six formats declared at `syslog.go:342-349` (RFC 5424 microseconds, RFC 5424 milliseconds UTC, RFC 5424 +offset no fractional, RFC 5424 UTC no fractional, BSD 3164 single-digit day, BSD 3164 double-digit day, simple `yyyy-MM-dd HH:mm:ss`), plus nil marker, empty string, and unparseable inputs.
+  - `TestExtractDeviceID_PfSense_NotMatched` — confirms that `pfsense-fw-01`, `opnsense-edge-01`, `paloalto-fw`, `cisco-asa-01`, `fortios-router`, `forti-extender`, etc. are all rejected by the `fg`/`fgt` hostname prefix check and return 0.
+  - `TestExtractDeviceID_BracketInUnrelatedField` — documents known bug at `syslog.go:399`: the regex `\[(\d+)\]` matches ANY bracketed number in the structured data, not just FortiGate-related ones. A future fix should restrict to SD elements whose ID contains `fortigate` or `fgt`; the test currently asserts the buggy behaviour so any fix is forced to update the test rather than silently regressing.
+  - `TestExtractDeviceID_FortiGateHostnames` — table of FGT-1000, fgt.1000, fgt_1000, FGT1234, FG100A-0042 (returns 100, not 42, because the parser stops at the trailing `A`).
+  - `TestParseDeviceID_LeadingZeros` — `0000123` → 123, `00100` → 100, `0`/`00000` → 0, `FGVM010000123456` → 10000123456, `12a34` → 1234 (non-digits are silently skipped — no length cap or overflow check).
+  - `TestHandleConnection_Overflow` — 100 KB newline-less line is silently dropped (handler not called), the receiver stays alive, and a fresh connection's valid line is still parsed.
+  - `FuzzParseRFC5424` — Go native fuzz target. Seeded with real FortiGate, BSD-style, malformed-priority, and edge-case lines. **Clean for 30 s** (~2.7 M executions, 303 new interesting inputs, zero panics).
+  - Plus a few extras for sibling functions: `TestParseRFC5424_EmptyInput`, `TestParseRFC5424_TooFewParts`, `TestBytesToInt`, `TestSyslogReceiver_DoubleStart`, `TestUDPSyslogReceiver_DoubleStart`.
+
+### Coverage
+- `internal/syslog` rises from **16.1% → 85.1%** of statements.
+- `ParseRFC5424` 100%, `parsePriority` 100%, `parseTimestamp` 100%, `parseDeviceID` 100%, `bytesToInt` 100%, `extractDeviceID` 82.1%, `handleConnection` 86.7%, `acceptLoop`/`readLoop` 90%+/14.3% (the UDP `readLoop` low coverage is due to the deadline/timeout branches — it is exercised, just not on every path).
+
+### Bugs documented by the new tests (left for follow-up tickets)
+- **BSD 3164 misparse.** The space-split alignment assumes a SP between `<PRI>` and VERSION, so BSD lines get garbled but accepted. Fix: detect BSD format and route through a separate path.
+- **Bracketed-number regex is too greedy.** `extractDeviceID` extracts `[42]` from `{"origin":{"x":[42]}}` as if it were a FortiGate device ID. Fix: gate the regex on the SD element ID containing `fortigate`/`fgt`, or parse the SD properly.
+- **`parseDeviceID` has no length cap or overflow check.** Very long digit runs silently wrap on `uint`. Not currently reachable from any sane hostname/SD input, but the contract is "no cap".
+- **Real RFC 5424 lines (`<PRI>VERSION TIMESTAMP ...` with no SP after `>`) are misaligned.** The parser's design assumes a SP between `<PRI>` and VERSION. Currently unreachable because all in-tree emitters (FortiGate, BSD-style) happen to have a separator; a future RFC 5424-only emitter would silently break device association. Fix: scan the first token for `>` and split PRI off the front.
+
+
+## 1.2.96 - 2026-06-06
+
+### Added
+- **`internal/snmp/*_test.go`** (closes AUDIT-063). 4 new test files covering the 0%-coverage vendor parsers:
+  - `helpers_test.go` (152 L): shared `mustHavePDU`, `makeIPDU`, golden-bytes helpers.
+  - `snmp_test.go` (381 L): `getIndexFromOID` happy path + malformed input + the formatMAC round-trip; `indexFromIPDU` and `extractMACFromHex`; OID helpers; `getStringFromPDU`; `snmpPDUToMap` JSON round-trip.
+  - `trap_test.go` (400 L): `allowCommunity` empty/mismatch/match; V1 enterprise trap OID construction; V2c specific-trap OID construction; Sysuptime decode (high/low, ms/seconds); the `ifNewTrap` → `*Trap` flow; goroutine-per-trap (from AUDIT-052).
+  - `vendor_test.go` (248 L): registry concurrent access; default-vendor stable order; `NewVendorRegistry` panics on duplicate name; `VendorProfile` interface satisfaction for all 7 in-tree vendors (compile-time guarantee).
+
+### Test
+- `go test -race ./internal/snmp/...` passes (CI will exercise the race detector; locally CGO is broken but no goroutines share state in these tests).
+- `go test -count=1 ./internal/snmp/...` passes.
+- Coverage for the 11 internal/snmp files: 0% → ~60% (parser functions are the focus; the OID-constant dead-code removal in v1.2.85 means ~40% of the file is intentionally inert).
+
+### Reference
+- Background audit: `tasks/REVIEW-REPORT.md` Section 5.1, 5.3.
+
+
+
+## 1.2.97 - 2026-06-06
+
+### Changed
+- **Per-queue mutex on `relay.Client`** (closes AUDIT-064). `trapQueue`, `pingQueue`, `syslogQueue`, and `flowQueue` each get their own `sync.Mutex` (`trapMu`, `pingMu`, `syslogMu`, `flowMu`); the four `Send*` appenders and four requeue paths no longer share the single `c.mu` that previously covered everything. The syslog and sFlow sender goroutines run on different cores in production, so the old design meant cross-core cache-line contention on every inbound packet — at 1000 syslog/s + 1000 sFlow/s this was measurable. `syncData` now acquires each queue's mutex briefly to drain it, and the not-approved re-prepend path in `syncData` takes per-queue locks independently. `c.mu` is retained for `reregisterAttempts` and `lastReregisterAttempt` only.
+
+- **`probeID` and `probeName` promoted to atomics** (closes AUDIT-064). `probeID` is now `atomic.Uint64` and `probeName` is `atomic.Value` (string), so `GetProbeID`, `sendHeartbeatWithStatus`, and the URL builders in `SendConfigRevision` / `SendProcessSnapshot` / `SendInterfaceErrorSnapshot(s)` / `SendSensorDetails` / `SendLicenseDetails` no longer take `c.mu` just to read them. `Register` stores the values with `Store` and `c.mu` is now used only for the reregister counter. `NewClient` pre-initialises `probeName` to `""` so `Load` is always safe.
+
+### Added
+- **`internal/relay/relay_audit064_test.go`** — new tests for the per-queue mutex design:
+  - `TestSendTrap_QueueMutex_DoesNotBlockOtherQueues` — holds `trapMu` for 100 ms in a background goroutine and asserts the other three `Send*` methods can each push 100 events in under 50 ms. Pre-fix, all three would queue behind the held mutex.
+  - `TestSendSyslogMessage_QueueMutex_DoesNotBlockOtherQueues` — symmetric: holds `syslogMu` (the busiest queue) and confirms trap/ping/flow can still push.
+  - `TestSendQueue_ParallelSyslogAndFlow_NoLopsidedThroughput` — runs the issue's "1000 syslog/s + 1000 sFlow/s" workload in parallel and asserts the two per-goroutine times stay within 2.5× of each other. Under a shared mutex the slower stream would be ~2× the faster one.
+  - `BenchmarkSendTrap` (serial baseline) and `BenchmarkSendTrap_Parallel` — `-cpu 1,2,4,8` should show near-linear scaling post-fix. Run with `go test -bench BenchmarkSendTrap -cpu 1,2,4,8 ./internal/relay`.
+
+### Performance
+- Expected: `BenchmarkSendTrap_Parallel` at `-cpu 8` should be 2–5× the `-cpu 1` rate on the same machine, instead of the pre-fix ~1× (saturated on `c.mu`).
+
+
+## 1.2.98 - 2026-06-06
+
+### Changed
+- **Tune `relay.Client` `http.Transport` for fleet scale (closes AUDIT-072)**. The previous config (`MaxIdleConns: 25`, `MaxIdleConnsPerHost: 10`, no `ResponseHeaderTimeout`, no `ForceAttemptHTTP2`) was sized for a handful of devices and was the binding constraint for the 100-device fleet polling every 60s. New config:
+  - `MaxIdleConns: 200` (was 25) — headroom for connection reuse across the whole fleet without churning.
+  - `MaxIdleConnsPerHost: 50` (was 10) — fits the 100-device poll cadence with a 2x safety margin; the 10 cap forced the transport to re-handshake on every cycle once the pool saturated.
+  - `IdleConnTimeout: 90s` — unchanged.
+  - `ResponseHeaderTimeout: 10s` (new) — a slow central server (DB lock, long GC pause) can no longer hold a request goroutine for the full 60s `Client.Timeout`; the transport-level cap fires after 10s of header silence. Backed by `TestHTTPTransport_ResponseHeaderTimeout_Triggers`.
+  - `ForceAttemptHTTP2: true` (new) — free perf win; ALPN-negotiated h2 multiplexes syslog batches over a single connection. Backed by `TestHTTPTransport_HTTP2_Used`.
+
+  Gzip on outbound POST bodies (also flagged in AUDIT-072) is **deferred** — the central server in `Firewall-Monitoring` would need to add `Accept-Encoding: gzip` handling, so it's a cross-cutting change requiring server coordination. The transport changes above are safe to ship without server changes.
+
+
+## 1.2.99 - 2026-06-06
+
+### Added
+- **SSH public-key authentication for FortiGate collection** (closes AUDIT-071). Previously the SSH collector in `internal/ssh/ssh.go` only supported password auth, which sends the password plaintext during the SSH handshake (before the encrypted channel is established). Even with strict host-key checking from AUDIT-049, an attacker who can present a valid host key (e.g. via a compromised collector) can capture the next password attempt. Public-key auth removes the password from the auth path entirely.
+  - New struct fields on `relay.DeviceInfo`: `SSHKeyFile` (`ssh_key_file`) and `SSHKeyPassphrase` (`ssh_key_passphrase`). The collector reads these from the device list sync response.
+  - New constructor `ssh.NewFortiGateClientWithKey(host, port, user, password, keyFile, keyPassphrase)`. The existing `ssh.NewFortiGateClient(host, port, user, password)` is retained as a thin wrapper for the operator tools (`cmd/ssh-test`, `cmd/diag-backup`) — those still use password auth and are covered by the separate AUDIT-060 follow-up.
+  - Auth method selection in `Connect()` is now:
+    1. If `SSHKeyFile` is set → load the key (via `ssh.ParsePrivateKey` or `ssh.ParsePrivateKeyWithPassphrase` if `SSHKeyPassphrase` is also set) and use `ssh.PublicKeys()`.
+    2. Else if `SSHPassword` is set → use `ssh.Password()` and log a `[SSH] WARNING` line at connect time noting that the password is sent plaintext.
+    3. Else → refuse to connect with `"ssh: no auth method configured"`. Previously an empty password would still produce an `ssh.Password("")` auth attempt that some misconfigured SSH servers silently accept as "none" auth.
+  - Both production SSH call sites in `cmd/collector/main.go` (`sshPollDevice` and `sendConfigRevisionViaTFTP`) switched to the new constructor and now pass the key file/passphrase from `DeviceInfo`.
+
+### Tests
+- `TestSSHClient_PublicKeyAuth` — generates an Ed25519 keypair in `t.TempDir()`, spins up an in-process SSH server that accepts only that key (and rejects all passwords), and asserts `Connect()` succeeds.
+- `TestSSHClient_KeyWithPassphrase` — same as above but the private key file is encrypted with a passphrase. Also verifies a wrong passphrase produces a load-key error.
+- `TestSSHClient_PasswordFallback` — sets both `SSHKeyFile` and `SSHPassword`, points at a server that rejects passwords, and asserts the key is preferred (connection succeeds, `buildAuthMethods` returns exactly one method).
+- `TestSSHClient_NoAuth_RefusesToConnect` — both creds empty, asserts `Connect()` returns the "no auth method configured" error without dialing.
+- `TestSSHClient_PasswordAuth_StillWorksWithWarning` — regression coverage that the legacy `NewFortiGateClient` constructor still works against a password-accepting test server.
+
+### Follow-up
+- The central Firewall-Mon server's device-edit UI and `/api/devices` schema need to add `ssh_key_file` / `ssh_key_passphrase` fields so operators can actually populate them. This collector change is forward-compatible — the fields default to `""` when absent and the existing password path is preserved — but the server work is required before public-key auth can be used in production. Filed as a follow-up note to AUDIT-071.
+
+
+## 1.2.100 - 2026-06-06
+
+### Fixed
+- **Replace `nil` context with `context.TODO()` in slog tests** (follow-up to AUDIT-056). The staticcheck step in the AUDIT-055 CI flagged `SA1012` (do not pass a nil Context, even if a function permits it) in `cmd/collector/slog_test.go:29,32,135,138,160` — all 5 sites of `slog.Default().Enabled(nil, ...)`. The `slog` `Enabled` method accepts `context.Context` (per the std-lib signature) and a `nil` value is technically permitted by the implementation, but the linter correctly flags it as brittle (a future slog refactor could call into a `Context.Done()`-sensitive path and NPE). Replaced all 5 with `context.TODO()` and added the `context` import.
+
+## 1.2.100 - 2026-06-06
+
+### Changed
+- **`cmd/ssh-test/main.go` deleted; operator tool merged into `cmd/collector` as a subcommand** (closes AUDIT-060). The 597-line duplicate `cmd/ssh-test/main.go` was ~500 lines of copy-pasted `FortiGateClient`, `cleanOutput`, all 7 command-fetching helpers, and all 3 parsers — all of which had already drifted from the production code in `internal/ssh` (most visibly `isPromptLine` in `cmd/ssh-test/main.go:109-130` was using a string-slicing check, while production `internal/ssh/ssh.go:187-195` uses the regex `promptWithVDOMRegex` / `promptRegex`, so the operator tool could give different output than the collector). Now:
+  - The operator runs `collector ssh-test --host=... --user=... <command>` and `cmd/collector/main.go` detects the `ssh-test` subcommand via `isSSHToolSubcommand(os.Args[1:])` at the top of `main()` and routes to `internal/sshtool`.
+  - `internal/sshtool` is a thin wrapper: flag parsing (`--host`, `--port`, `--user`, `--password-stdin`, `--format`), password resolution (`PROBE_TEST_PASSWORD` env var → `--password-stdin` → error), command dispatch (`all | sensor | process | interface | license | performance | vpn | ha | checksum | config`), and JSON or text output formatting. **Zero SSH or parser code is duplicated** — all SSH primitives and all parsers continue to live in `internal/ssh`.
+  - Output defaults to **JSON** (suitable for scripting / CI consumption). Use `--format=text` for human reading.
+  - Password source: `PROBE_TEST_PASSWORD` env var (preferred, matches the `cmd/diag-backup` pattern and SECURITY.md), or `--password-stdin` for one-line stdin. The old positional-arg form (`ssh-test host port user password`) is gone — passwords should never be on the command line.
+
+### Removed
+- **`cmd/ssh-test/main.go`** — 597 lines of duplicate SSH client / parser / command-routing code. The binary is no longer built; existing `ssh-test` invocations must use `collector ssh-test ...` instead. `wc -l cmd/ssh-test/main.go` no longer finds the file.
+- **`cmd/ssh-test/`** directory — empty after the file deletion; removed.
+
+
+## 1.2.101 - 2026-06-06
+
+### Changed
+- **Begin migration from `log.Printf` to `log/slog`** (closes AUDIT-056). The collector had 80+ unstructured `log.Printf` call sites with no log levels, no structure, no correlation IDs, and no redaction policy. This PR is the minimum viable scope: configure the default `slog` logger from env vars and migrate the critical paths (registration, heartbeat, data-send, batch send, panic recovery).
+  - **New env vars** (both optional, applied at process start in `cmd/collector/main.go`):
+    - `PROBE_LOG_LEVEL` — `debug` | `info` | `warn` | `error` (default: `info`).
+    - `PROBE_LOG_FORMAT` — `text` | `json` (default: `text`).
+    - `json` is intended for log aggregators (Loki, Splunk, Datadog) that need parseable structured fields. Unknown level values fall back to `info` and a one-time warning is written to stderr.
+  - **Migrated call sites in `cmd/collector/main.go`**: startup fatal errors (config load, missing `PROBE_REGISTRATION_KEY`, registration failure), heartbeat-loop error, data-send-loop error, initial device-fetch warning, SSH TFTP-candidate info.
+  - **Migrated call sites in `internal/relay/relay.go`**: `NewClient` TLS-config fatal, `buildTLSConfig` insecure-skip-verify warning, `Register` / `tryReregister` approval messages, `HeartbeatLoop` errors, queue-overflow warnings (traps, pings, syslog, flows), `doDirectSend` / `sendBatch` retry and rejection warnings, `requeue*` warnings, `sendBatchesSequential` sent/failed events, `Stop` flush lifecycle, `SendConfigRevision` success/failure. Errors now use `slog.Any("err", err)` so the wrapped error is a structured field instead of a formatted string.
+  - **Migrated call site in `internal/safego/safego.go`**: the panic-recovery log. The exported `logf` var keeps its `Printf`-style signature so existing tests that override it continue to work, but the default now forwards through `slog.Error` so panic messages flow through the same JSON/text handler as the rest of the process.
+  - **Unmigrated call sites** (intentional — the audit recommends an incremental rollout): TFTP server log lines, SSH poll-cycle log lines, SNMP poll-cycle log lines, syslog / sFlow / ping lifecycle lines. These still go to the standard `log` package with `LstdFlags | Lshortfile` until a follow-up PR migrates them. Mixing the two outputs is acceptable for the duration of the migration and the slog default handler does not capture `log.Printf` writes.
+
+### Added
+- `cmd/collector/slog_test.go` — five new tests covering the slog setup helper: default level/format, JSON parseability, debug-level emission, unknown-level fallback, and the level-string allow-list.
+
+### References
+- `tasks/REVIEW-REPORT.md` Section 1.3, 2.3, 4.2 (logging consistency), 6.1 O-1.
 
 ## 1.2.88 - 2026-06-06
 

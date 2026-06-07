@@ -26,7 +26,7 @@ func newConfigRevisionClient(t *testing.T, srv *httptest.Server, approved bool) 
 		},
 		httpClient: srv.Client(),
 	}
-	c.probeID = 42
+	c.probeID.Store(42)
 	c.approved.Store(approved)
 	return c
 }

@@ -3,6 +3,8 @@ package ssh
 import (
 	"context"
 	"fmt"
+	"log"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -17,31 +19,42 @@ var (
 )
 
 type FortiGateClient struct {
-	host     string
-	port     int
-	username string
-	password string
-	client   *ssh.Client
+	host          string
+	port          int
+	username      string
+	password      string
+	keyFile       string
+	keyPassphrase string
+	client        *ssh.Client
 }
 
 func NewFortiGateClient(host string, port int, username, password string) *FortiGateClient {
+	return NewFortiGateClientWithKey(host, port, username, password, "", "")
+}
+
+func NewFortiGateClientWithKey(host string, port int, username, password, keyFile, keyPassphrase string) *FortiGateClient {
 	if port == 0 {
 		port = 22
 	}
 	return &FortiGateClient{
-		host:     host,
-		port:     port,
-		username: username,
-		password: password,
+		host:          host,
+		port:          port,
+		username:      username,
+		password:      password,
+		keyFile:       keyFile,
+		keyPassphrase: keyPassphrase,
 	}
 }
 
 func (c *FortiGateClient) Connect() error {
+	auth, err := c.buildAuthMethods()
+	if err != nil {
+		return err
+	}
+
 	config := &ssh.ClientConfig{
-		User: c.username,
-		Auth: []ssh.AuthMethod{
-			ssh.Password(c.password),
-		},
+		User:            c.username,
+		Auth:            auth,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         30 * time.Second,
 	}
@@ -54,6 +67,40 @@ func (c *FortiGateClient) Connect() error {
 	c.client = client
 
 	return nil
+}
+
+func (c *FortiGateClient) buildAuthMethods() ([]ssh.AuthMethod, error) {
+	if c.keyFile != "" {
+		signer, err := loadPrivateKey(c.keyFile, c.keyPassphrase)
+		if err != nil {
+			return nil, fmt.Errorf("load ssh key %q: %w", c.keyFile, err)
+		}
+		return []ssh.AuthMethod{ssh.PublicKeys(signer)}, nil
+	}
+	if c.password != "" {
+		log.Printf("[SSH] WARNING: device %s using password auth (key file not configured) — password is sent plaintext during the SSH handshake before encryption (AUDIT-071)", c.host)
+		return []ssh.AuthMethod{ssh.Password(c.password)}, nil
+	}
+	return nil, fmt.Errorf("ssh: no auth method configured for %s (set SSHKeyFile or SSHPassword)", c.host)
+}
+
+func loadPrivateKey(path, passphrase string) (ssh.Signer, error) {
+	pemBytes, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read key file: %w", err)
+	}
+	if passphrase != "" {
+		signer, err := ssh.ParsePrivateKeyWithPassphrase(pemBytes, []byte(passphrase))
+		if err != nil {
+			return nil, fmt.Errorf("parse encrypted key: %w", err)
+		}
+		return signer, nil
+	}
+	signer, err := ssh.ParsePrivateKey(pemBytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse key: %w", err)
+	}
+	return signer, nil
 }
 
 func (c *FortiGateClient) Close() {
