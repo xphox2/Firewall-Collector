@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.104 - 2026-06-06
+
+### Fixed
+- **Re-apply AUDIT-058 disk-spillover queue on top of master's 1.2.103 fix**. The 1.2.101 disk-spillover commit landed in a separate branch (this PR) that branched off the pre-1.2.103 master, so it was never integrated with the master breakage fixes. After master was fixed (1.2.103, which removed the duplicated `cmd/collector/main.go` and added the missing `setupLoggerWith` / `isSSHToolSubcommand` functions), PR #48 needed a rebase to also pick up the per-queue mutex removal (AUDIT-064) and the http.Transport tuning (AUDIT-072). The per-queue mutexes were no longer needed because `SpilloverQueue` has its own internal locking; the http.Transport tuning was a clean drop-in replacement for the default transport.
+
+### Removed
+- **`internal/relay/relay_audit064_test.go`** — the AUDIT-064 per-queue mutex isolation test is no longer applicable after the SpilloverQueue rewrite (SpilloverQueue's internal mutexing is exercised by the new `internal/relay/queue/queue_test.go` `TestQueue_ConcurrentPush_*` and `TestQueue_Overflow_ConcurrentReaders` cases).
+
+### Added
+- **`internal/relay/queue/queue_test.go`** — the AUDIT-058 SpilloverQueue test suite (re-applied on top of master 1.2.103).
+- **`internal/relay/queue/queue.go`** — the `SpilloverQueue` implementation (re-applied on top of master 1.2.103).
+
 ## 1.2.103 - 2026-06-06
 
 ### Fixed
