@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"fmt"
 	"log"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
@@ -21,11 +22,12 @@ import (
 	"firewall-collector/internal/sflow"
 	"firewall-collector/internal/snmp"
 	"firewall-collector/internal/ssh"
+	"firewall-collector/internal/sshtool"
 	"firewall-collector/internal/syslog"
 	"firewall-collector/internal/tftp"
 )
 
-const version = "1.2.94"
+const version = "1.2.103"
 
 type Collector struct {
 	cfg            *config.ProbeConfig
@@ -67,6 +69,10 @@ type Collector struct {
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+	if isSSHToolSubcommand(os.Args[1:]) {
+		os.Exit(sshtool.Run(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+	}
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -1371,4 +1377,53 @@ func (c *Collector) stop() {
 			c.relayClient.Stop()
 		}
 	})
+}
+
+// isSSHToolSubcommand reports whether args[0] is the ssh-test subcommand.
+// Only an exact first-arg match of "ssh-test" is supported: "ssh-test"
+// must appear as os.Args[1]. Flags-then-subcommand forms (e.g. "--debug ssh-test")
+// are explicitly rejected — main() only checks os.Args[1], so routing
+// anything else would silently start the long-running collector and
+// ignore the operator's intent to invoke the diagnostic tool.
+func isSSHToolSubcommand(args []string) bool {
+	return len(args) > 0 && args[0] == "ssh-test"
+}
+
+// setupLoggerWith configures the process-wide slog default logger to
+// write into buf (handy for tests; production passes os.Stderr) using
+// the level/format chosen by the PROBE_LOG_LEVEL and PROBE_LOG_FORMAT
+// environment variables.
+//
+// Level allow-list: debug | info | warn | warning | error. Anything else
+// is silently clamped to info and a one-shot warning is written to
+// os.Stderr (the production stderr, not buf — so test stderr capture
+// can see it).
+//
+// Format allow-list: text | json. Unknown values are silently treated
+// as text.
+func setupLoggerWith(buf *bytes.Buffer) {
+	lvl := slog.LevelInfo
+	levelStr := strings.ToLower(strings.TrimSpace(os.Getenv("PROBE_LOG_LEVEL")))
+	switch levelStr {
+	case "debug":
+		lvl = slog.LevelDebug
+	case "info", "":
+		lvl = slog.LevelInfo
+	case "warn", "warning":
+		lvl = slog.LevelWarn
+	case "error":
+		lvl = slog.LevelError
+	default:
+		fmt.Fprintf(os.Stderr, "setupLoggerWith: unknown PROBE_LOG_LEVEL=%q, falling back to info\n", os.Getenv("PROBE_LOG_LEVEL"))
+		lvl = slog.LevelInfo
+	}
+
+	handlerOpts := &slog.HandlerOptions{Level: lvl}
+	var handler slog.Handler
+	if strings.EqualFold(os.Getenv("PROBE_LOG_FORMAT"), "json") {
+		handler = slog.NewJSONHandler(buf, handlerOpts)
+	} else {
+		handler = slog.NewTextHandler(buf, handlerOpts)
+	}
+	slog.SetDefault(slog.New(handler))
 }

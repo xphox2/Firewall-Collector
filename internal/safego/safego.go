@@ -12,14 +12,21 @@
 package safego
 
 import (
-	"log"
+	"fmt"
+	"log/slog"
 	"runtime/debug"
 	"time"
 )
 
 // logf is the function used to record recovered panics. It is a var so tests
-// can override it to capture output.
-var logf = log.Printf
+// can override it to capture output. The default implementation forwards to
+// slog.Error so panic messages flow through the same JSON/text handler the
+// rest of the collector uses (AUDIT-056). Tests that need to capture raw
+// output should swap this for a printf-style function — the signature is
+// deliberately kept identical to log.Printf.
+var logf = func(format string, args ...interface{}) {
+	slog.Error("goroutine panic", slog.String("details", fmt.Sprintf(format, args...)))
+}
 
 // Go runs fn in a new goroutine, recovering from any panic so the process
 // survives. The name is included in the log message for traceability — pick
