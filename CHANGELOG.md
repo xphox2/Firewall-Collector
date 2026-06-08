@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.114 - 2026-06-08
+
+### Changed
+- **Re-licensed from Apache 2.0 to MIT** to match the sibling [Firewall-Monitoring](https://github.com/xphox2/Firewall-Monitoring) server. The collector was added under Apache 2.0 by AUDIT-043 (commit `94c6e1f`) before the server's license was checked; the two repos are a paired client/server and should ship under the same terms. MIT is permissive, Go-standard, and compatible with every direct and indirect dependency in `go.mod` (all BSD, MIT, or Apache-2.0 — no GPL/AGPL). Prior copies distributed under Apache 2.0 remain under those terms (a license grant is irrevocable); this change applies to future distributions. Aligns the `README.md` badge, the License section text, and the `LICENSE` file.
+
 ## 1.2.113 - 2026-06-08
 
 ### Fixed

@@ -11,7 +11,7 @@
 
 [![CI](https://img.shields.io/badge/CI-passing-brightgreen)](https://github.com/xphox2/Firewall-Collector/actions)
 [![Version](https://img.shields.io/badge/version-1.2.108-blue)](CHANGELOG.md)
-[![License](https://img.shields.io/badge/license-Apache_2.0-blue)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.25.0+-00ADD8)](go.mod)
 
 ## Sibling project
@@ -362,4 +362,4 @@ in 1.2.107).
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).
