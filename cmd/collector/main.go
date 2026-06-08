@@ -52,7 +52,7 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
-const version = "1.2.110"
+const version = "1.2.111"
 
 type Collector struct {
 	cfg            *config.ProbeConfig
@@ -145,6 +145,7 @@ func main() {
 		CACertFile:         probeCfg.CACertFile,
 		InsecureSkipVerify: probeCfg.InsecureSkipVerify,
 		MaxBatchSize:       probeCfg.MaxBatchSize,
+		QueueDiskPath:      probeCfg.QueueDiskPath,
 	})
 
 	// Observability (AUDIT-057): start the metrics + probe server

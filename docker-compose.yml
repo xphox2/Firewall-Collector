@@ -65,18 +65,31 @@ services:
       PROBE_SFLOW_PORT: "6343"
       PROBE_SNMP_TRAP_COMMUNITY: ""   # OPTIONAL allowlist filter; empty = accept traps from any community (per-device communities live on the server)
 
+      # Disk-spillover queue (AUDIT-058): buffers telemetry to /queue when the
+      # server is unreachable so nothing is lost during an outage/restart. The
+      # named volume below makes it durable across container recreation. Set to
+      # "" to disable.
+      PROBE_QUEUE_DISK_PATH: "/queue"
+
       # Feature toggles (set to "false" to disable)
       PROBE_SNMP_TRAP_ENABLED: "true"
       PROBE_SYSLOG_ENABLED: "true"
       PROBE_SFLOW_ENABLED: "true"
       PROBE_PING_ENABLED: "true"
 
-    # Uncomment to mount custom TLS certificates
-    # volumes:
-    #   - ./certs/ca.pem:/app/certs/ca.pem:ro
-    #   - ./certs/client.pem:/app/certs/client.pem:ro
-    #   - ./certs/client-key.pem:/app/certs/client-key.pem:ro
-    # environment:
+    volumes:
+      # AUDIT-058 disk-spillover: durable telemetry buffer across container
+      # recreation. The named volume inherits /queue's ownership (uid 65534)
+      # from the image, so the rootless user can write to it.
+      - firewall-collector-queue:/queue
+      # Uncomment to mount custom TLS certificates:
+      # - ./certs/ca.pem:/app/certs/ca.pem:ro
+      # - ./certs/client.pem:/app/certs/client.pem:ro
+      # - ./certs/client-key.pem:/app/certs/client-key.pem:ro
+    # environment (mTLS — uncomment alongside the cert mounts above):
     #   PROBE_CA_CERT_FILE: "/app/certs/ca.pem"
     #   PROBE_TLS_CERT_FILE: "/app/certs/client.pem"
     #   PROBE_TLS_KEY_FILE: "/app/certs/client-key.pem"
+
+volumes:
+  firewall-collector-queue:

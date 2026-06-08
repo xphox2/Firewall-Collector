@@ -431,7 +431,14 @@ func (c *Client) ensureQueues() {
 	c.queuesOnce.Do(func() {
 		diskPath := c.Config.QueueDiskPath
 		if diskPath == "" {
-			log.Println("[Relay] QueueDiskPath is empty; queues disabled (Send* will log warnings)")
+			log.Println("[Relay] PROBE_QUEUE_DISK_PATH not set; spillover queues DISABLED — telemetry is dropped (not buffered) while the central server is unreachable. Set it to a writable, persistent directory to survive server outages and restarts.")
+			return
+		}
+
+		// Create the directory if it doesn't exist (e.g. a fresh volume mount)
+		// so a valid-but-not-yet-created path doesn't fail the queue open.
+		if err := os.MkdirAll(diskPath, 0o755); err != nil {
+			log.Printf("[Relay] WARNING: cannot create queue directory %s: %v — spillover queues DISABLED (telemetry dropped during outages). Fix the path/permissions and restart.", diskPath, err)
 			return
 		}
 
@@ -440,15 +447,26 @@ func (c *Client) ensureQueues() {
 			maxBytes = 1 << 30 // 1 GiB default (issue spec)
 		}
 
+		// Fail SOFT: if any spool can't be opened (e.g. an unwritable mounted
+		// volume on a rootless container), warn and run queue-disabled rather
+		// than log.Fatalf'ing into a crash-loop. Send* methods null-check each
+		// queue, so a disabled queue degrades to live-relay-only safely.
+		var openErr error
 		open := func(name string) *queue.SpilloverQueue {
+			if openErr != nil {
+				return nil
+			}
+			path := filepath.Join(diskPath, name+".bolt")
 			q, err := queue.Open(queue.Config{
-				Path:     filepath.Join(diskPath, name+".bolt"),
+				Path:     path,
 				Bucket:   name,
 				MaxMem:   maxQueueSize,
 				MaxBytes: maxBytes,
 			})
 			if err != nil {
-				log.Fatalf("[Relay] Failed to open %s queue at %s: %v", name, filepath.Join(diskPath, name+".bolt"), err)
+				openErr = err
+				log.Printf("[Relay] WARNING: cannot open %s queue at %s: %v — spillover queues DISABLED.", name, path, err)
+				return nil
 			}
 			return q
 		}
@@ -458,6 +476,20 @@ func (c *Client) ensureQueues() {
 		c.syslogQueue = open("syslog")
 		c.flowQueue = open("flows")
 		c.revisionQueue = open("revisions")
+
+		if openErr != nil {
+			// Partial open: close whatever succeeded and run fully disabled,
+			// rather than with an inconsistent subset of queues.
+			for _, q := range []*queue.SpilloverQueue{c.trapQueue, c.pingQueue, c.syslogQueue, c.flowQueue, c.revisionQueue} {
+				if q != nil {
+					_ = q.Close()
+				}
+			}
+			c.trapQueue, c.pingQueue, c.syslogQueue, c.flowQueue, c.revisionQueue = nil, nil, nil, nil, nil
+			return
+		}
+
+		log.Printf("[Relay] Spillover queues enabled at %s (cap %d MiB per queue) — telemetry survives server outages and restarts.", diskPath, maxBytes>>20)
 	})
 }
 

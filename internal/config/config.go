@@ -38,6 +38,13 @@ type ProbeConfig struct {
 	MaxQueueSize int
 	MaxBatchSize int
 
+	// QueueDiskPath is the directory for the disk-spillover queues (AUDIT-058).
+	// Empty disables spillover — telemetry is dropped (not buffered) while the
+	// central server is unreachable. Set it to a writable, persistent directory
+	// to survive server outages and restarts. The Docker image defaults it to
+	// /queue (created and chowned to the rootless uid; mount a volume there).
+	QueueDiskPath string
+
 	SNMPTrapEnabled bool
 	SyslogEnabled   bool
 	SFlowEnabled    bool
@@ -73,6 +80,8 @@ func Load() (*Config, error) {
 
 			MaxQueueSize: parseInt("PROBE_MAX_QUEUE_SIZE", 10000),
 			MaxBatchSize: parseInt("PROBE_MAX_BATCH_SIZE", 1000),
+
+			QueueDiskPath: os.Getenv("PROBE_QUEUE_DISK_PATH"),
 
 			SNMPTrapEnabled: parseBool("PROBE_SNMP_TRAP_ENABLED", true),
 			SyslogEnabled:   parseBool("PROBE_SYSLOG_ENABLED", true),

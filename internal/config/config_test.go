@@ -28,6 +28,7 @@ var envKeys = []string{
 	"PROBE_TFTP_PORT",
 	"PROBE_MAX_QUEUE_SIZE",
 	"PROBE_MAX_BATCH_SIZE",
+	"PROBE_QUEUE_DISK_PATH",
 	"PROBE_SNMP_TRAP_ENABLED",
 	"PROBE_SYSLOG_ENABLED",
 	"PROBE_SFLOW_ENABLED",
@@ -91,6 +92,31 @@ func TestConfigLoad_SNMPTrapEnabled_WithCommunity_OK(t *testing.T) {
 	}
 	if !cfg.Probe.SNMPTrapEnabled {
 		t.Errorf("SNMPTrapEnabled = false, want true (default)")
+	}
+}
+
+func TestConfigLoad_QueueDiskPath(t *testing.T) {
+	defer withClearedEnv(t)()
+
+	// Default is empty at the library level (spillover is opt-in for bare
+	// binaries; the Docker image sets PROBE_QUEUE_DISK_PATH=/queue to enable
+	// it for the standard deployment).
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.Probe.QueueDiskPath != "" {
+		t.Errorf("default QueueDiskPath = %q, want empty", cfg.Probe.QueueDiskPath)
+	}
+
+	// An explicit value is read through to the config.
+	os.Setenv("PROBE_QUEUE_DISK_PATH", "/queue")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.Probe.QueueDiskPath != "/queue" {
+		t.Errorf("QueueDiskPath = %q, want %q", cfg.Probe.QueueDiskPath, "/queue")
 	}
 }
 

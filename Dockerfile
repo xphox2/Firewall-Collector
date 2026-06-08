@@ -25,7 +25,8 @@ COPY --from=builder /build/firewall-collector .
 # future RCE in the syslog/sFlow/TFTP/SNMP-trap parsers no longer grants a
 # root shell on the management LAN.
 RUN chmod 555 /app/firewall-collector && \
-    chown 65534:65534 /app
+    mkdir -p /queue && \
+    chown 65534:65534 /app /queue
 USER 65534:65534
 
 # Server connection
@@ -47,6 +48,12 @@ ENV PROBE_SNMP_TRAP_PORT="162"
 ENV PROBE_SYSLOG_PORT="514"
 ENV PROBE_SFLOW_PORT="6343"
 ENV PROBE_SNMP_TRAP_COMMUNITY=""
+
+# Disk-spillover queue (AUDIT-058): buffers telemetry to disk when the central
+# server is unreachable so nothing is lost during an outage or restart. /queue
+# is created and chowned to the rootless uid above; mount a volume there for
+# durability across container recreation. Set to "" to disable spillover.
+ENV PROBE_QUEUE_DISK_PATH="/queue"
 
 # Feature toggles (set to "false" to disable)
 ENV PROBE_SNMP_TRAP_ENABLED="true"

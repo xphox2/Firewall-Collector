@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.111 - 2026-06-08
+
+### Fixed
+- **Disk-spillover queue is now actually wired up (AUDIT-058 was inert).** `relay.NewClient` never set `Config.QueueDiskPath`, and no env var mapped to it, so `ensureQueues` always logged `"QueueDiskPath is empty; queues disabled"` and **every** `Send*` dropped telemetry whenever the central server was unreachable — there was no buffering despite the queue machinery being fully implemented. This bit a real server outage (telemetry lost instead of buffered). Now: a new `PROBE_QUEUE_DISK_PATH` env var → `config.ProbeConfig.QueueDiskPath` → `relay.Config.QueueDiskPath`, so the 5 BoltDB spools (traps/pings/syslog/flows/revisions) open and survive server outages **and** process restarts. The Docker image defaults it to `/queue` (created and `chown`ed to the rootless uid `65534` in the Dockerfile), and `docker-compose.yml` mounts a named volume `firewall-collector-queue:/queue` so it's durable across container recreation. Library default stays empty (opt-in) for bare-binary deployments.
+- **`ensureQueues` no longer crash-loops on an unwritable queue path.** It previously `log.Fatalf`'d if any spool failed to open — fatal on a rootless container with a mis-permissioned mounted volume. It now `MkdirAll`s the directory, and on any failure **warns and runs queue-disabled** (closing any partially-opened spools) instead of killing the process; `Send*` already null-checks each queue, so this degrades to live-relay-only. New `TestEnsureQueues_AUDIT058` (empty path → disabled; valid path → all 5 spools open, dir created on demand) and `TestConfigLoad_QueueDiskPath`.
+
 ## 1.2.110 - 2026-06-08
 
 ### Fixed
