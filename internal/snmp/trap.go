@@ -37,7 +37,7 @@ func NewTrapReceiver(listenAddr string, port int, community string) *TrapReceive
 
 func (t *TrapReceiver) Start(handler func(*relay.TrapEvent)) error {
 	if t.community == "" {
-		return fmt.Errorf("SNMP trap community is empty: PROBE_SNMP_TRAP_COMMUNITY must be set when traps are enabled")
+		log.Printf("[SNMP Trap] WARNING: PROBE_SNMP_TRAP_COMMUNITY is not set — accepting traps from ANY community (community filtering disabled). Set it to restrict the receiver to a single community.")
 	}
 
 	t.handler = handler
@@ -86,6 +86,9 @@ func (t *TrapReceiver) Stop() {
 }
 
 func (t *TrapReceiver) allowCommunity(community string) bool {
+	if t.community == "" {
+		return true // filtering disabled — no community configured (accept any)
+	}
 	if community != t.community {
 		log.Printf("[SNMP Trap] Dropped: community mismatch (expected %q, got %q)", t.community, community)
 		return false

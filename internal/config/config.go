@@ -1,7 +1,6 @@
 package config
 
 import (
-	"fmt"
 	"os"
 	"strconv"
 	"time"
@@ -82,9 +81,12 @@ func Load() (*Config, error) {
 		},
 	}
 
-	if cfg.Probe.SNMPTrapEnabled && cfg.Probe.TrapCommunity == "" {
-		return nil, fmt.Errorf("PROBE_SNMP_TRAP_COMMUNITY must be set when SNMP traps are enabled")
-	}
+	// PROBE_SNMP_TRAP_COMMUNITY is an OPTIONAL allowlist filter, not a
+	// requirement. SNMP communities are configured per-device on the server,
+	// so there is rarely a single shared trap community. Leave it empty to
+	// accept traps from any community (the snmptrapd default); set it only to
+	// restrict the receiver to one community. The trap receiver logs a warning
+	// at startup when filtering is disabled (see snmp.TrapReceiver.Start).
 
 	return cfg, nil
 }

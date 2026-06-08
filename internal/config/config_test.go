@@ -2,7 +2,6 @@ package config
 
 import (
 	"os"
-	"strings"
 	"testing"
 )
 
@@ -55,17 +54,24 @@ func withClearedEnv(t *testing.T) func() {
 	}
 }
 
-func TestConfigLoad_SNMPTrapEnabled_EmptyCommunity_ReturnsError(t *testing.T) {
+func TestConfigLoad_SNMPTrapEnabled_EmptyCommunity_OK(t *testing.T) {
 	defer withClearedEnv(t)()
+	// PROBE_SNMP_TRAP_COMMUNITY is an OPTIONAL allowlist filter. With traps
+	// enabled (the default) and no community set, Load() must succeed —
+	// community filtering is simply disabled and the receiver accepts traps
+	// from any community (communities are per-device on the server).
 	cfg, err := Load()
-	if err == nil {
-		t.Fatalf("Load() = %+v, nil error; want an error explaining the spoofing hazard", cfg)
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error for empty community: %v", err)
 	}
-	if cfg != nil {
-		t.Errorf("Load() returned non-nil cfg on error path: %+v", cfg)
+	if cfg == nil {
+		t.Fatal("Load() returned nil cfg with no error")
 	}
-	if !strings.Contains(err.Error(), "PROBE_SNMP_TRAP_COMMUNITY") {
-		t.Errorf("error should name the env var, got: %v", err)
+	if !cfg.Probe.SNMPTrapEnabled {
+		t.Errorf("SNMPTrapEnabled = false, want true (default)")
+	}
+	if cfg.Probe.TrapCommunity != "" {
+		t.Errorf("TrapCommunity = %q, want empty", cfg.Probe.TrapCommunity)
 	}
 }
 

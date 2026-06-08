@@ -53,15 +53,16 @@ func TestTrapReceiver_CommunityMismatch_LogsDrop(t *testing.T) {
 	}
 }
 
-func TestTrapReceiver_Start_EmptyCommunity_RefusesError(t *testing.T) {
-	tr := NewTrapReceiver("127.0.0.1", 1162, "")
-
-	err := tr.Start(func(*relay.TrapEvent) {})
-	if err == nil {
-		t.Fatal("Start() with empty community returned nil error; want an error that explains the spoofing hazard")
-	}
-	if !strings.Contains(err.Error(), "PROBE_SNMP_TRAP_COMMUNITY") {
-		t.Errorf("error should name the env var, got: %v", err)
+func TestTrapReceiver_EmptyCommunity_AcceptsAny(t *testing.T) {
+	// PROBE_SNMP_TRAP_COMMUNITY is an OPTIONAL allowlist filter. With no
+	// community configured the receiver accepts traps from ANY community
+	// (filtering disabled) instead of refusing — communities are per-device
+	// on the server, so there is rarely a single shared trap community.
+	tr := NewTrapReceiver("127.0.0.1", 0, "")
+	for _, c := range []string{"", "public", "private", "anything"} {
+		if !tr.allowCommunity(c) {
+			t.Errorf("allowCommunity(%q) = false, want true (filtering disabled when community unset)", c)
+		}
 	}
 }
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.110 - 2026-06-08
+
+### Fixed
+- **`PROBE_SNMP_TRAP_COMMUNITY` is now optional — it no longer blocks startup.** Previously, with SNMP traps enabled (the default) and no `PROBE_SNMP_TRAP_COMMUNITY` set, both `config.Load()` and `TrapReceiver.Start()` returned a fatal error, so the collector refused to boot. That assumed a single shared trap community, but SNMP communities are configured **per-device on the server**, so there is rarely one global value. The community is now an **optional allowlist filter**: set it to restrict the receiver to one community; leave it empty to accept traps from any community (the `snmptrapd` default), with a one-time startup `WARNING` that filtering is disabled. `allowCommunity` accepts any packet when no community is configured; a configured community still drops mismatches as before. `config_test.go` / `trap_test.go` updated to pin the new behavior.
+- **`docker-compose.yml`: rootless privileged-port binding + host-networking shim crash.** The hardened rootless image (`USER 65534`, AUDIT-047) could not bind ports 69/162/514 because the compose granted only `NET_RAW`; added `NET_BIND_SERVICE`. Also removed the `sysctls: net.ipv4.ping_group_range` block — it is **incompatible with `network_mode: host`** (Docker/runc rejects network-namespaced sysctls in the host net namespace and fails with `failed to create shim task: … not allowed with host net namespace`). `NET_RAW` already grants raw ICMP, so the sysctl was unnecessary. Both surfaced when deploying on Synology Container Manager.
+
 ## 1.2.109 - 2026-06-07
 
 ### Added
