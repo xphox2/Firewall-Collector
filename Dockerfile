@@ -24,9 +24,23 @@ COPY --from=builder /build/firewall-collector .
 # we explicitly strip the write bit and switch to the unprivileged user. A
 # future RCE in the syslog/sFlow/TFTP/SNMP-trap parsers no longer grants a
 # root shell on the management LAN.
+#
+# Rootless privileged-port binding: the probe binds 69/162/514 (all < 1024)
+# but runs as 'nobody'. `cap_add` in compose only adds caps to the container's
+# BOUNDING set; a non-root process needs the capability in its EFFECTIVE set,
+# which Docker does NOT guarantee for a non-root USER (no ambient-capability
+# promotion on some runtimes — notably Synology Container Manager), so the bind
+# fails with EACCES. File capabilities fix this: `setcap +ep` makes the binary
+# acquire the caps on exec regardless of uid/ambient state. cap_net_raw also
+# covers ICMP ping. The compose must still list NET_RAW + NET_BIND_SERVICE in
+# cap_add so the bounding set permits them (file caps can't exceed it). setcap
+# runs LAST so the preceding chown can't drop the capability xattr.
 RUN chmod 555 /app/firewall-collector && \
     mkdir -p /queue && \
-    chown 65534:65534 /app /queue
+    chown 65534:65534 /app /queue && \
+    apk add --no-cache --virtual .setcap libcap && \
+    setcap 'cap_net_bind_service=+ep cap_net_raw=+ep' /app/firewall-collector && \
+    apk del .setcap
 USER 65534:65534
 
 # Server connection

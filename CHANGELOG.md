@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.112 - 2026-06-08
+
+### Fixed
+- **Rootless image could not bind privileged ports 69/162/514 (`bind: permission denied`).** The hardened image runs as `nobody` (uid 65534, AUDIT-047). Adding `NET_BIND_SERVICE` to the compose `cap_add` was **not enough**: Docker puts `cap_add` capabilities in the container's *bounding* set, but a non-root process needs the capability in its *effective* set, and Docker does not promote `cap_add` to the ambient set for a non-root `USER` on every runtime — notably **Synology Container Manager** — so the bind still failed with `EACCES`. Fix: bake **file capabilities** into the binary in the Dockerfile — `setcap 'cap_net_bind_service=+ep cap_net_raw=+ep' /app/firewall-collector` (via a throwaway `libcap` build dep) — so it acquires the caps on `exec` regardless of uid/ambient promotion. `cap_net_raw` also covers ICMP ping. The compose must still list `NET_RAW` + `NET_BIND_SERVICE` in `cap_add` (file caps can't exceed the bounding set); `setcap` runs after `chown` so the capability xattr isn't cleared. Dockerfile-only — rebuild the image to pick it up. Immediate no-rebuild workaround: add `user: "0:0"` to the compose to run as root (sacrifices the rootless hardening until the rebuilt image is deployed).
+
 ## 1.2.111 - 2026-06-08
 
 ### Fixed
