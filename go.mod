@@ -8,6 +8,8 @@ require (
 	golang.org/x/crypto v0.52.0
 )
 
+require golang.org/x/net v0.55.0
+
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect

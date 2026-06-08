@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.113 - 2026-06-08
+
+### Fixed
+- **Every ping reported `latency=0.00ms loss=100%` — ICMP never actually worked in the rootless container.** The ping collector shelled out to the external `ping` binary (`exec.Command("ping", …)`). 1.2.112 added `cap_net_raw` to the **collector binary** via `setcap` and noted it "also covers ICMP ping" — but a forked child process does **not** inherit the parent's *file* capabilities, and in the hardened image (runs as `nobody`, no `net.ipv4.ping_group_range`, and — under `network_mode: host` — no way to set that sysctl) the busybox `ping` child could not open an ICMP socket, so it exited non-zero and the collector recorded 100% loss for **every** device. Fix: ping **in-process** using a raw ICMP socket (`golang.org/x/net/icmp`, `icmp.ListenPacket("ip4:icmp", …)`), which uses the `cap_net_raw` the binary already carries — no external `ping`, no `ping_group_range`, no Dockerfile change. Replies are matched by source IP + ICMP id + seq so concurrent device pings (which share the raw socket's view of all ICMP traffic) don't cross-count, and the IPv4 header that Linux raw sockets prepend on receive is stripped before parsing. Packet loss is now computed from the actual replied/sent ratio instead of a binary 0/100. New `TestMatchEchoReply` pins the header-strip + id/seq matching. **Rebuild + redeploy the image to pick it up** (the binary already has `cap_net_raw` from 1.2.112, so no compose change is needed).
+
 ## 1.2.112 - 2026-06-08
 
 ### Fixed
