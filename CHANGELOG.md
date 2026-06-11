@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.115 - 2026-06-11
+
+### Added
+- **Paired-repo CTO loop audit (2026-06-11) saved as `tasks/CTO-LOOP-2026-06-11.md` in the sibling [Firewall-Monitoring](https://github.com/xphox2/Firewall-Monitoring) repo.** Six parallel subagent reviewers per repo (security, performance, reliability, code-quality, test coverage, ops/DX) plus a cross-repo integration reviewer produced 172 findings — 13 blocker, 41 high, 67 medium, 51 low — with file:line refs and concrete fixes on both sides. The headline finding **corrects the 06-10 audit's mis-attribution**: the "probe never sends `Authorization: Bearer`" claim (H-3) is **true for the server's own bundled `cmd/probe`** at `Firewall-Mon/internal/relay/relay.go`, not for this collector (which sends the header correctly at `internal/relay/relay.go:568`). **Top 5 must-fix on the collector side** (see the report for the full list):
+  1. **COLSEC-1 [blocker]** — `internal/ssh/ssh.go:58` still has `HostKeyCallback: ssh.InsecureIgnoreHostKey()`. AUDIT-049 was filed as fixed in 1.2.99; the fix did not land. Any on-path attacker can MITM the SSH session and exfiltrate the FortiGate admin password in cleartext.
+  2. **COLSEC-2 [blocker]** — `relay.DeviceInfo` has no `SSHKeyFile` / `SSHKeyPassphrase` fields. The 1.2.99 "SSH public-key auth" support is dead code — every FortiGate password traverses the (unverified) SSH channel in cleartext every poll cycle.
+  3. **COLSEC-3 [blocker]** — TFTP source-IP allowlist (`SetAllowedSourceIPs`) and rate-limit (`SetMinWRQInterval`) API shipped in 1.2.103 but never wired in `cmd/collector/main.go:813-868`. Any host on the management LAN can submit a fake config backup that becomes a `CONFIG_CHANGE` alert on the central server.
+  4. **COLOPS-1 [blocker]** — `setupLoggerWith` is defined in `cmd/collector/main.go:1627` and tested, but **never called from `main()`**. 227 `log.Printf` calls ship in production. `PROBE_LOG_FORMAT=json` and `PROBE_LOG_LEVEL` are dead env vars. The 1.2.101 slog migration is 2% complete.
+  5. **COLPERF-1 [high]** — `SpilloverQueue.Push()` does a per-event fsync with the mutex held across the disk I/O (`queue.go:188-242`). At 5k events/sec sustained, this is the bottleneck. Batch the fsyncs (1 fsync per 50ms or 100 events) for a 20-100× throughput win.
+  Recommended sprint sequencing (Sprint 1 = items 1-4 above) is in the report. No code changes — docs-only.
+
 ## 1.2.114 - 2026-06-08
 
 ### Changed
