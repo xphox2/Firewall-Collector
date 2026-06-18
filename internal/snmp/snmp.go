@@ -2,6 +2,7 @@ package snmp
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,22 +18,22 @@ var (
 	OIDIpAdEntIfIndex = ".1.3.6.1.2.1.4.20.1.2"
 	OIDIpAdEntNetMask = ".1.3.6.1.2.1.4.20.1.3"
 
-	BaseOIDInterface   = ".1.3.6.1.2.1.2.2.1"
-	OIDIfDescr         = ".1.3.6.1.2.1.2.2.1.2"
-	OIDIfType          = ".1.3.6.1.2.1.2.2.1.3"
-	OIDIfMtu           = ".1.3.6.1.2.1.2.2.1.4"
-	OIDIfSpeed         = ".1.3.6.1.2.1.2.2.1.5"
-	OIDIfPhysAddress   = ".1.3.6.1.2.1.2.2.1.6"
-	OIDIfAdminStatus   = ".1.3.6.1.2.1.2.2.1.7"
-	OIDIfOperStatus    = ".1.3.6.1.2.1.2.2.1.8"
-	OIDIfInOctets      = ".1.3.6.1.2.1.2.2.1.10"
-	OIDIfInUcastPkts   = ".1.3.6.1.2.1.2.2.1.11"
-	OIDIfInDiscards    = ".1.3.6.1.2.1.2.2.1.13"
-	OIDIfInErrors      = ".1.3.6.1.2.1.2.2.1.14"
-	OIDIfOutOctets     = ".1.3.6.1.2.1.2.2.1.16"
-	OIDIfOutUcastPkts  = ".1.3.6.1.2.1.2.2.1.17"
-	OIDIfOutDiscards   = ".1.3.6.1.2.1.2.2.1.19"
-	OIDIfOutErrors     = ".1.3.6.1.2.1.2.2.1.20"
+	BaseOIDInterface  = ".1.3.6.1.2.1.2.2.1"
+	OIDIfDescr        = ".1.3.6.1.2.1.2.2.1.2"
+	OIDIfType         = ".1.3.6.1.2.1.2.2.1.3"
+	OIDIfMtu          = ".1.3.6.1.2.1.2.2.1.4"
+	OIDIfSpeed        = ".1.3.6.1.2.1.2.2.1.5"
+	OIDIfPhysAddress  = ".1.3.6.1.2.1.2.2.1.6"
+	OIDIfAdminStatus  = ".1.3.6.1.2.1.2.2.1.7"
+	OIDIfOperStatus   = ".1.3.6.1.2.1.2.2.1.8"
+	OIDIfInOctets     = ".1.3.6.1.2.1.2.2.1.10"
+	OIDIfInUcastPkts  = ".1.3.6.1.2.1.2.2.1.11"
+	OIDIfInDiscards   = ".1.3.6.1.2.1.2.2.1.13"
+	OIDIfInErrors     = ".1.3.6.1.2.1.2.2.1.14"
+	OIDIfOutOctets    = ".1.3.6.1.2.1.2.2.1.16"
+	OIDIfOutUcastPkts = ".1.3.6.1.2.1.2.2.1.17"
+	OIDIfOutDiscards  = ".1.3.6.1.2.1.2.2.1.19"
+	OIDIfOutErrors    = ".1.3.6.1.2.1.2.2.1.20"
 
 	// ifXTable (RFC 2863)
 	BaseOIDIfXTable  = ".1.3.6.1.2.1.31.1.1.1"
@@ -77,6 +78,30 @@ func safeString(v interface{}) string {
 		return s
 	}
 	return ""
+}
+
+// safeFloat coerces an SNMP PDU value to a float64. Some vendors return
+// numeric sensor readings as a DisplayString (gosnmp delivers OctetString as
+// []byte) — FortiGate's fgHwSensorEntValue is "52.500000", not an integer.
+// gosnmp.ToBigInt returns 0 for a []byte and also for any non-integer numeric
+// string (strconv.ParseInt rejects the decimal point), which silently zeroed
+// every temperature/voltage reading. Parse text values as floats; numeric PDU
+// types (Integer/Gauge/Counter) fall through to the integer path.
+func safeFloat(v interface{}) float64 {
+	switch x := v.(type) {
+	case []byte:
+		f, _ := strconv.ParseFloat(strings.TrimSpace(string(x)), 64)
+		return f
+	case string:
+		f, _ := strconv.ParseFloat(strings.TrimSpace(x), 64)
+		return f
+	case float32:
+		return float64(x)
+	case float64:
+		return x
+	default:
+		return float64(gosnmp.ToBigInt(v).Int64())
+	}
 }
 
 type SNMPClient struct {

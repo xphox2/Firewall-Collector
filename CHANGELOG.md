@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.116 - 2026-06-17
+
+### Fixed
+- **FortiGate hardware sensor readings (temperature, voltage) were all sent to the server as `0.0`.** The device page's Hardware tab showed every temperature as `0.0` even though the firewall reports real values over SNMP. Root cause: `fgHwSensorEntValue` (`.1.3.6.1.4.1.12356.101.4.3.2.1.3`) is a **DisplayString** — gosnmp delivers it as a `[]byte` containing text like `"52.500000"` — but `ParseHardwareSensors` parsed it with `gosnmp.ToBigInt(pdu.Value).Int64()`. `ToBigInt` returns `0` for a `[]byte`, and even for a numeric string it uses `strconv.ParseInt`, which rejects the decimal point — so **every** non-integer reading (all temperatures and voltages) was silently zeroed before being POSTed to the server. Added a `safeFloat` helper (`internal/snmp/snmp.go`) that parses DisplayString/OctetString values as floats while still handling numeric PDU types, and switched the FortiGate sensor-value parse to use it (`internal/snmp/vendor_fortigate.go`). Integer-valued sensors (e.g. fan RPM) were unaffected and remain correct. Added a regression test (`internal/snmp/vendor_test.go`) asserting a `"52.500000"` DisplayString parses to `52.5`, not `0`.
+
 ## 1.2.115 - 2026-06-11
 
 ### Added

@@ -357,7 +357,6 @@ func (f *FortiGateProfile) ParseVPNStatus(pdus []gosnmp.SnmpPDU) []relay.VPNStat
 	return result
 }
 
-
 func (f *FortiGateProfile) DialupVPNBaseOID() string { return fgBaseOIDVPNDialup }
 
 func (f *FortiGateProfile) ParseDialupVPNStatus(pdus []gosnmp.SnmpPDU) []relay.VPNStatus {
@@ -527,7 +526,9 @@ func (f *FortiGateProfile) ParseHardwareSensors(pdus []gosnmp.SnmpPDU) []relay.H
 				continue
 			}
 			sensor := getOrCreateSensor(sensorMap, idx)
-			sensor.Value = float64(gosnmp.ToBigInt(pdu.Value).Int64())
+			// fgHwSensorEntValue is a DisplayString ("52.500000"); parse it as
+			// a float — gosnmp.ToBigInt would return 0 for the []byte/decimal.
+			sensor.Value = safeFloat(pdu.Value)
 		} else if strings.HasPrefix(name, fgOIDHWSensorAlarm+".") {
 			idx := getIndexFromOID(name, fgOIDHWSensorAlarm)
 			if idx < 0 {
