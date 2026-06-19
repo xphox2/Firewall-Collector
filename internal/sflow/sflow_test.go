@@ -562,6 +562,72 @@ func TestParseIPv6_TruncatedExtHeader(t *testing.T) {
 	}
 }
 
+// TestParse6in4InnerDecode verifies a 6in4 tunnel (Ethernet -> IPv4 protocol
+// 41 -> IPv6 -> TCP) is decoded to its inner conversation: real upper-layer
+// protocol, inner IPv6 addresses, and inner ports — not just "IPv6" (41).
+func TestParse6in4InnerDecode(t *testing.T) {
+	tcp := make([]byte, 20)
+	binary.BigEndian.PutUint16(tcp[0:], 7000)
+	binary.BigEndian.PutUint16(tcp[2:], 8443)
+	tcp[13] = 0x10 // ACK
+	ip6 := make([]byte, 40)
+	ip6[6] = 6 // inner next header = TCP
+	ip6[7] = 64
+	copy(ip6[8:24], net.ParseIP("2001:db8::1").To16())
+	copy(ip6[24:40], net.ParseIP("2001:db8::2").To16())
+	inner := append(ip6, tcp...)
+
+	eth := []byte{
+		0xde, 0xad, 0xbe, 0xef, 0x00, 0x01,
+		0xde, 0xad, 0xbe, 0xef, 0x00, 0x02,
+		0x08, 0x00, // ethertype: IPv4
+	}
+	ip := make([]byte, 20)
+	ip[0] = 0x45
+	ip[9] = 41 // 6in4
+	copy(ip[12:16], net.IPv4(203, 0, 113, 1).To4())
+	copy(ip[16:20], net.IPv4(203, 0, 113, 2).To4())
+	eth = append(eth, ip...)
+	eth = append(eth, inner...)
+
+	s := decodeOne(t, eth)
+	if s.Protocol != 6 {
+		t.Errorf("Protocol = %d, want 6 (inner TCP) — 6in4 not decoded", s.Protocol)
+	}
+	if s.SrcAddr != "2001:db8::1" || s.DstAddr != "2001:db8::2" {
+		t.Errorf("inner addresses not decoded: src=%q dst=%q", s.SrcAddr, s.DstAddr)
+	}
+	if s.SrcPort != 7000 || s.DstPort != 8443 {
+		t.Errorf("inner ports = %d->%d, want 7000->8443", s.SrcPort, s.DstPort)
+	}
+}
+
+// TestParse6in4Truncated verifies a 6in4 packet whose inner IPv6 header is
+// truncated falls back to the outer IPv4 tunnel endpoints / protocol 41
+// without panicking.
+func TestParse6in4Truncated(t *testing.T) {
+	eth := []byte{
+		0xde, 0xad, 0xbe, 0xef, 0x00, 0x01,
+		0xde, 0xad, 0xbe, 0xef, 0x00, 0x02,
+		0x08, 0x00,
+	}
+	ip := make([]byte, 20)
+	ip[0] = 0x45
+	ip[9] = 41
+	copy(ip[12:16], net.IPv4(203, 0, 113, 1).To4())
+	copy(ip[16:20], net.IPv4(203, 0, 113, 2).To4())
+	eth = append(eth, ip...)
+	eth = append(eth, make([]byte, 10)...) // inner IPv6 only 10 bytes
+
+	s := decodeOne(t, eth)
+	if s.Protocol != 41 {
+		t.Errorf("Protocol = %d, want 41 (fallback on truncated inner)", s.Protocol)
+	}
+	if s.SrcAddr != "203.0.113.1" || s.DstAddr != "203.0.113.2" {
+		t.Errorf("expected outer IPv4 fallback addrs, got src=%q dst=%q", s.SrcAddr, s.DstAddr)
+	}
+}
+
 // TestParseSFlowDatagram_ExpandedFlowSample covers the format=3 branch
 // in parseFlowSample (line 208-216) — expanded flow samples carry
 // source_id_type + source_id_index instead of a single source_id, and

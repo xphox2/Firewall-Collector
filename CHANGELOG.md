@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.118 - 2026-06-18
+
+### Changed
+- **6in4 tunnels are now decoded to their inner conversation instead of being reported as protocol 41 ("IPv6").** When an IPv4 packet's protocol field is 41 it carries an encapsulated IPv6 packet (6in4). `parseIPv4` (`internal/sflow/sflow.go`) now recurses into the inner IPv6 packet — reusing the extension-header-walking `parseIPv6` — so the flow record reflects the real conversation: the inner IPv6 source/destination, the actual upper-layer protocol (TCP/UDP/ICMPv6), and inner ports, rather than a generic "IPv6 / port 0/0" entry. If the inner IPv6 header is truncated out of the sampled bytes, decoding falls back to the outer IPv4 tunnel endpoints and protocol 41 (no panic). Tests added: `TestParse6in4InnerDecode` (asserts inner TCP protocol + IPv6 addrs + ports) and `TestParse6in4Truncated` (graceful fallback).
+
 ## 1.2.117 - 2026-06-18
 
 ### Fixed
