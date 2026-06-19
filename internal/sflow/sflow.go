@@ -386,17 +386,62 @@ func parseIPv4(data []byte, sample *relay.FlowSample) {
 	parseTransport(data[ihl:], sample)
 }
 
+// isIPv6ExtHeader reports whether an IPv6 "Next Header" value is an extension
+// header (which chains to a further header) rather than an upper-layer protocol.
+// ESP (50) is deliberately excluded: its payload is encrypted, so the chain
+// cannot be walked past it. No-Next-Header (59) is also terminal.
+func isIPv6ExtHeader(nh uint8) bool {
+	switch nh {
+	case 0, // Hop-by-Hop Options
+		43,  // Routing
+		44,  // Fragment
+		51,  // Authentication Header
+		60,  // Destination Options
+		135: // Mobility
+		return true
+	}
+	return false
+}
+
 func parseIPv6(data []byte, sample *relay.FlowSample) {
 	// IPv6 fixed header: 40 bytes
 	if len(data) < 40 {
 		return
 	}
 
-	sample.Protocol = data[6] // Next Header
 	sample.SrcAddr = net.IP(data[8:24]).String()
 	sample.DstAddr = net.IP(data[24:40]).String()
 
-	parseTransport(data[40:], sample)
+	// Walk the extension-header chain to the real upper-layer protocol. Without
+	// this, any IPv6 packet carrying an extension header (Hop-by-Hop Options is
+	// extremely common — MLD/multicast, Router Alert, jumbograms — and has Next
+	// Header = 0) would be recorded as protocol 0 (HOPOPT) with no L4 ports,
+	// dumping all such traffic into the bogus "HOPOPT"/port-0 bucket. Sampled
+	// headers are truncated, so every read is bounds-checked; the iteration cap
+	// guards against malformed or looping chains.
+	nextHeader := data[6]
+	offset := 40
+	for i := 0; i < 8 && isIPv6ExtHeader(nextHeader); i++ {
+		if offset+2 > len(data) {
+			break // can't read this ext header — keep nextHeader as best effort
+		}
+		var extLen int
+		switch nextHeader {
+		case 44: // Fragment header is always 8 bytes
+			extLen = 8
+		case 51: // Authentication Header: (length + 2) 4-byte units
+			extLen = (int(data[offset+1]) + 2) * 4
+		default: // Hop-by-Hop(0), Routing(43), Dest-Opts(60), Mobility(135)
+			extLen = (int(data[offset+1]) + 1) * 8
+		}
+		nextHeader = data[offset]
+		offset += extLen
+	}
+
+	sample.Protocol = nextHeader
+	if offset <= len(data) {
+		parseTransport(data[offset:], sample)
+	}
 }
 
 func parseTransport(data []byte, sample *relay.FlowSample) {

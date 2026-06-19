@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.117 - 2026-06-18
+
+### Fixed
+- **IPv6 sFlow traffic was being recorded as protocol 0 (HOPOPT) with no ports, flooding the server's flow stats with bogus "HOPOPT" traffic.** `parseIPv6` (`internal/sflow/sflow.go`) read the IPv6 fixed header's **Next Header** byte directly as the protocol and assumed the L4 header started immediately after the 40-byte fixed header. But IPv6 commonly carries **extension headers** — Hop-by-Hop Options (Next Header = 0, used by MLD/multicast, Router Alert, jumbograms), Routing, Fragment, Destination Options, AH — so any such packet was stored as protocol 0 (HOPOPT) and, because the real TCP/UDP header sits further in, with no ports. On the server's Flows page this dumped large volumes of IPv6 into the "Internal traffic (port 0)" bucket and made HOPOPT dominate the Protocols breakdown. `parseIPv6` now **walks the extension-header chain** (bounds-checked for truncated sFlow samples, capped to guard malformed/looping chains) to the real upper-layer protocol before parsing transport, so IPv6 flows get their true protocol (TCP/UDP/ICMPv6), addresses, and ports. ESP (50) and No-Next-Header (59) are treated as terminal (payload not walkable). Added regression tests (`internal/sflow/sflow_test.go`) for Hop-by-Hop→TCP (asserts protocol 6 + ports, not 0), Hop-by-Hop→ICMPv6, chained Hop-by-Hop+Dest-Options→UDP, and a truncated extension header (no panic, no fabricated ports).
+
 ## 1.2.116 - 2026-06-17
 
 ### Fixed

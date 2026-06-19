@@ -448,6 +448,120 @@ func TestParseSFlowDatagram_IPv6Flow(t *testing.T) {
 	}
 }
 
+// buildIPv6Eth builds an Ethernet+IPv6 frame whose IPv6 Next Header is
+// firstNH, followed by raw payload bytes. Used to construct extension-header
+// chains for the parseIPv6 walk tests.
+func buildIPv6Eth(firstNH uint8, payload []byte) []byte {
+	eth := []byte{
+		0xde, 0xad, 0xbe, 0xef, 0x00, 0x01,
+		0xde, 0xad, 0xbe, 0xef, 0x00, 0x02,
+		0x86, 0xDD, // ethertype: IPv6
+	}
+	ip6 := make([]byte, 40)
+	ip6[6] = firstNH // Next Header
+	ip6[7] = 64      // hop limit
+	copy(ip6[8:24], net.ParseIP("2001:db8::1").To16())
+	copy(ip6[24:40], net.ParseIP("2001:db8::2").To16())
+	eth = append(eth, ip6...)
+	eth = append(eth, payload...)
+	return eth
+}
+
+// decodeOne runs a single Ethernet payload through the full sFlow pipeline and
+// returns the one decoded sample (or fails).
+func decodeOne(t *testing.T, eth []byte) *relay.FlowSample {
+	t.Helper()
+	rec := buildRawPacketRecord(eth, uint32(16+len(eth)))
+	sample := buildFlowSample(1, 1, 1, rec)
+	dg := buildDatagram([4]byte{10, 0, 0, 1}, 1, sample)
+	r, get := newTestReceiver()
+	r.parseSFlowDatagram(dg)
+	got := get()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 flow sample, got %d", len(got))
+	}
+	return got[0]
+}
+
+// TestParseIPv6_HopByHopToTCP is the core regression for the HOPOPT bug: an
+// IPv6 packet that starts with a Hop-by-Hop Options extension header (Next
+// Header = 0) must be decoded to its real upper-layer protocol (TCP), with
+// ports — NOT recorded as protocol 0 (HOPOPT).
+func TestParseIPv6_HopByHopToTCP(t *testing.T) {
+	// Hop-by-Hop header: next_header=6 (TCP), hdr_ext_len=0 (=> 8 bytes total).
+	hbh := []byte{6, 0, 0, 0, 0, 0, 0, 0}
+	tcp := make([]byte, 20)
+	binary.BigEndian.PutUint16(tcp[0:], 4444)
+	binary.BigEndian.PutUint16(tcp[2:], 443)
+	tcp[12] = 0x50
+	tcp[13] = 0x02 // SYN
+	eth := buildIPv6Eth(0 /* Hop-by-Hop */, append(hbh, tcp...))
+
+	s := decodeOne(t, eth)
+	if s.Protocol != 6 {
+		t.Errorf("Protocol = %d, want 6 (TCP) — HOPOPT chain not walked", s.Protocol)
+	}
+	if s.SrcPort != 4444 || s.DstPort != 443 {
+		t.Errorf("ports = %d->%d, want 4444->443", s.SrcPort, s.DstPort)
+	}
+	if s.TCPFlags != 0x02 {
+		t.Errorf("TCPFlags = 0x%02x, want 0x02 (SYN)", s.TCPFlags)
+	}
+	if s.SrcAddr != "2001:db8::1" || s.DstAddr != "2001:db8::2" {
+		t.Errorf("addr mismatch: src=%q dst=%q", s.SrcAddr, s.DstAddr)
+	}
+}
+
+// TestParseIPv6_HopByHopToICMPv6 verifies a portless upper-layer protocol
+// (ICMPv6 = 58) is resolved through the extension chain and reported as 58
+// (not 0), with no ports.
+func TestParseIPv6_HopByHopToICMPv6(t *testing.T) {
+	hbh := []byte{58, 0, 0, 0, 0, 0, 0, 0} // next_header=58 (ICMPv6)
+	icmp6 := []byte{0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+	eth := buildIPv6Eth(0, append(hbh, icmp6...))
+
+	s := decodeOne(t, eth)
+	if s.Protocol != 58 {
+		t.Errorf("Protocol = %d, want 58 (ICMPv6)", s.Protocol)
+	}
+	if s.SrcPort != 0 || s.DstPort != 0 {
+		t.Errorf("ICMPv6 must have no ports, got %d->%d", s.SrcPort, s.DstPort)
+	}
+}
+
+// TestParseIPv6_ChainedExtHeadersToUDP walks two stacked extension headers
+// (Hop-by-Hop then Destination Options) before reaching UDP.
+func TestParseIPv6_ChainedExtHeadersToUDP(t *testing.T) {
+	hbh := []byte{60, 0, 0, 0, 0, 0, 0, 0} // -> Destination Options (60)
+	dst := []byte{17, 0, 0, 0, 0, 0, 0, 0} // -> UDP (17)
+	udp := make([]byte, 8)
+	binary.BigEndian.PutUint16(udp[0:], 5353)
+	binary.BigEndian.PutUint16(udp[2:], 53)
+	payload := append(append(hbh, dst...), udp...)
+	eth := buildIPv6Eth(0, payload)
+
+	s := decodeOne(t, eth)
+	if s.Protocol != 17 {
+		t.Errorf("Protocol = %d, want 17 (UDP) through 2 ext headers", s.Protocol)
+	}
+	if s.SrcPort != 5353 || s.DstPort != 53 {
+		t.Errorf("ports = %d->%d, want 5353->53", s.SrcPort, s.DstPort)
+	}
+}
+
+// TestParseIPv6_TruncatedExtHeader verifies a chain cut off mid-extension
+// doesn't panic and doesn't fabricate ports.
+func TestParseIPv6_TruncatedExtHeader(t *testing.T) {
+	// Hop-by-Hop claims to continue but only 1 byte of it is present.
+	eth := buildIPv6Eth(0, []byte{6}) // next_header byte only, no length byte
+	s := decodeOne(t, eth)
+	// Best effort: protocol stays the ext-header value (0) since it can't be
+	// read past; the key guarantee is no panic and no bogus ports.
+	if s.SrcPort != 0 || s.DstPort != 0 {
+		t.Errorf("truncated ext header produced ports: %d->%d", s.SrcPort, s.DstPort)
+	}
+}
+
 // TestParseSFlowDatagram_ExpandedFlowSample covers the format=3 branch
 // in parseFlowSample (line 208-216) — expanded flow samples carry
 // source_id_type + source_id_index instead of a single source_id, and
