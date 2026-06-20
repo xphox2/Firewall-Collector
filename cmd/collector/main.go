@@ -52,7 +52,7 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
-const version = "1.2.119"
+const version = "1.2.120"
 
 type Collector struct {
 	cfg            *config.ProbeConfig

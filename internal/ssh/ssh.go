@@ -279,7 +279,28 @@ func (c *FortiGateClient) GetConfig() (string, error) {
 	// the same unchanged device — producing phantom config-change alerts. `show`
 	// also matches the format `execute backup config` (the TFTP path) produces,
 	// keeping both of the collector's capture paths consistent.
-	return c.Execute("show")
+	out, err := c.Execute("show")
+	if err != nil {
+		return "", err
+	}
+	return trimToConfigHeader(out), nil
+}
+
+// trimToConfigHeader drops any capture cruft (an echoed command, a CLI prompt
+// glued onto the first line) that precedes the FortiOS `#config-version=`
+// header, so the stored config is restorable as-is. FortiGate's restore — GUI
+// upload and `execute restore config` — requires the file to BEGIN with that
+// header; a leading `FW-HOME # ` makes line 1 invalid and the restore is
+// rejected. cleanOutput already drops pure-prompt lines and trailing prompts,
+// but a prompt fused to the header line ("FW-HOME # #config-version=...")
+// survives, which is exactly the artifact seen in real SSH captures. If no
+// header is present the text is returned unchanged (server-side validation will
+// flag it).
+func trimToConfigHeader(out string) string {
+	if i := strings.Index(out, "#config-version="); i > 0 {
+		return out[i:]
+	}
+	return out
 }
 
 func (c *FortiGateClient) GetProcessTop() (string, error) {

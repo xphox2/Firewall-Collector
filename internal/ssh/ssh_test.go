@@ -90,6 +90,42 @@ func TestCleanOutput(t *testing.T) {
 	}
 }
 
+func TestTrimToConfigHeader(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "prompt_glued_to_header_stripped",
+			input:    "FW-HOME # #config-version=FGT60F-7.4.12-FW-build2902-260505:opmode=0\n#conf_file_ver=123\nconfig system global\nset hostname \"FW-HOME\"\nend",
+			expected: "#config-version=FGT60F-7.4.12-FW-build2902-260505:opmode=0\n#conf_file_ver=123\nconfig system global\nset hostname \"FW-HOME\"\nend",
+		},
+		{
+			name:     "already_clean_unchanged",
+			input:    "#config-version=FGT60F-7.4.12\nconfig system global\nend",
+			expected: "#config-version=FGT60F-7.4.12\nconfig system global\nend",
+		},
+		{
+			name:     "no_header_returned_as_is",
+			input:    "config system global\nset hostname \"x\"\nend",
+			expected: "config system global\nset hostname \"x\"\nend",
+		},
+		{
+			name:     "later_inline_occurrence_not_split",
+			input:    "#config-version=A\nconfig log setting\nset custom \"see #config-version= note\"\nend",
+			expected: "#config-version=A\nconfig log setting\nset custom \"see #config-version= note\"\nend",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := trimToConfigHeader(tt.input); got != tt.expected {
+				t.Errorf("trimToConfigHeader() =\n%q\nwant:\n%q", got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestIsCLIPrompt(t *testing.T) {
 	tests := []struct {
 		line     string

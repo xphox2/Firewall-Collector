@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.120 - 2026-06-19
+
+### Fixed
+- **SSH-captured configs are now restorable as-is — the stored config begins exactly at the `#config-version=` header.** `cleanOutput` drops pure-prompt lines and trailing prompts, but a CLI prompt *fused* onto the header line (`FW-HOME # #config-version=...`, the artifact seen in real SSH captures) survived into the stored config. FortiGate's restore — GUI upload and `execute restore config` — requires the file to **begin** with `#config-version=`, so that leading `FW-HOME # ` made the backup non-restorable (line 1 invalid) even though it passed the server's substring-based validation. `GetConfig()` now post-processes the `show` output with `trimToConfigHeader`, slicing any echoed-command/prompt cruft before the header. The TFTP path (`execute backup config`) was already clean; this brings the SSH path to the same restore-grade standard so **every** stored config can be uploaded back to the device. Added `TestTrimToConfigHeader` (prompt-glued header, already-clean, no-header, and an inline-occurrence guard).
+
 ## 1.2.119 - 2026-06-19
 
 ### Changed
