@@ -271,7 +271,15 @@ func (c *FortiGateClient) GetConfigChecksum() (string, error) {
 }
 
 func (c *FortiGateClient) GetConfig() (string, error) {
-	return c.Execute("show full-configuration")
+	// Capture the running config with a plain `show` (non-default settings only),
+	// NOT `show full-configuration`. The server's change-detection normalizer
+	// requires one consistent capture mode across all backups: `show
+	// full-configuration` emits every device default and omits the per-admin
+	// `config gui-dashboard` block, so it can never hash-match a `show` backup of
+	// the same unchanged device — producing phantom config-change alerts. `show`
+	// also matches the format `execute backup config` (the TFTP path) produces,
+	// keeping both of the collector's capture paths consistent.
+	return c.Execute("show")
 }
 
 func (c *FortiGateClient) GetProcessTop() (string, error) {

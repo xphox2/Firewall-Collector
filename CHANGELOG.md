@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.119 - 2026-06-19
+
+### Changed
+- **SSH config capture now uses a plain `show` instead of `show full-configuration`, so the server's change-detection stops raising phantom config-change alerts.** `FortiGateClient.GetConfig()` (`internal/ssh/ssh.go`) previously ran `show full-configuration`, which emits every device default (~40k lines on an FGT60F) and omits the per-admin `config gui-dashboard` block. That can never hash-match a `show`-style backup of the *same unchanged device* — and the collector's other capture path, TFTP `execute backup config`, already produces the `show`-style (non-default) format. The two modes drifting against each other produced false "config changed" alerts on the server. Switching SSH to `show` makes **both** collector capture paths emit the same non-default format the server normalizer (`internal/configdiff`, server v0.10.439) is built to compare. This **intentionally reverses** the v0.x change that had switched `show` → `show full-configuration` to "get all defaults": capturing defaults is what caused the mismatch, and the server side now strips the remaining volatile bits (gui-dashboard block, `last-updated` timestamps, echoed CLI prompt). No collector behavior beyond the command string changes; the existing echo/prompt-cleaning path is unaffected.
+
 ## 1.2.118 - 2026-06-18
 
 ### Changed

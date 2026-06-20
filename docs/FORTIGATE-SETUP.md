@@ -18,7 +18,7 @@ device side just needs:
 - **Syslog** target set to the collector's IP.
 - **sFlow** target set to the collector's IP (optional).
 - **SSH** reachable from the collector on port 22, with an account the
-  collector can `show full-configuration` and `diagnose sys csum`.
+  collector can run `show` (running config) and `diagnose sys csum`.
 - **TFTP** initiated **from the FortiGate** to the collector on
   UDP/69, in response to a syslog-triggered config-change event
   (the collector uses `execute backup config tftp` over SSH).

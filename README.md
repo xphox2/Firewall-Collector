@@ -55,7 +55,7 @@ AUDIT-NNN row exists.
 - **[Probe] ICMP ping collector** (latency + loss, 10-concurrent
   semaphore, requires `NET_RAW`).
 - **[Probe] SSH config + telemetry polling** (FortiGate). Password or
-  public-key auth. Pulls `diagnose sys csum`, `show full-configuration`,
+  public-key auth. Pulls `diagnose sys csum`, `show` (running config),
   `diagnose sys top`, `diagnose netlink interface list`, `execute
   sensor list`, `get system performance status`, `show vpn ipsec
   phase1/2-interface`, `get system ha status`.
