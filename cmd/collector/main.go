@@ -52,7 +52,7 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
-const version = "1.2.125"
+const version = "1.2.126"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -1207,6 +1207,25 @@ func (c *Collector) sendVPNStatuses(dev relay.DeviceInfo, phase1Output, phase2Ou
 	}
 }
 
+// sendMetric collects one optional metric set, stamps each record with the
+// device ID and poll time, and forwards it to the sink. Collection errors and
+// empty results are skipped silently — these metrics are optional per device
+// (a device that doesn't support one simply returns nothing); only a send
+// failure is logged. get/stamp/send are closures because Go generics cannot
+// call a method or set a struct field generically.
+func sendMetric[T any](get func() ([]T, error), stamp func(*T), send func([]T) error, devName, label string) {
+	items, err := get()
+	if err != nil || len(items) == 0 {
+		return
+	}
+	for i := range items {
+		stamp(&items[i])
+	}
+	if err := send(items); err != nil {
+		log.Printf("[SNMP] Failed to send %s for %s: %v", label, devName, err)
+	}
+}
+
 func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 	// Credential guard: skip devices with obviously invalid SNMP settings
 	if dev.SNMPVersion != "3" && dev.SNMPCommunity == "" {
@@ -1304,52 +1323,28 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 	}
 
 	// Collect VPN tunnel status (silently skip if device has no VPN)
-	vpnStatuses, vpnErr := client.GetVPNStatus(vendor)
-	if vpnErr == nil && len(vpnStatuses) > 0 {
-		for i := range vpnStatuses {
-			vpnStatuses[i].DeviceID = dev.ID
-			vpnStatuses[i].Timestamp = now
-		}
-		if err := c.sink.SendVPNStatuses(vpnStatuses); err != nil {
-			log.Printf("[SNMP] Failed to send VPN statuses for %s: %v", dev.Name, err)
-		}
-	}
+	sendMetric(
+		func() ([]relay.VPNStatus, error) { return client.GetVPNStatus(vendor) },
+		func(v *relay.VPNStatus) { v.DeviceID = dev.ID; v.Timestamp = now },
+		c.sink.SendVPNStatuses, dev.Name, "VPN statuses")
 
 	// Collect hardware sensors (silently skip if device doesn't support it)
-	sensors, sensorErr := client.GetHardwareSensors(vendor)
-	if sensorErr == nil && len(sensors) > 0 {
-		for i := range sensors {
-			sensors[i].DeviceID = dev.ID
-			sensors[i].Timestamp = now
-		}
-		if err := c.sink.SendHardwareSensors(sensors); err != nil {
-			log.Printf("[SNMP] Failed to send hardware sensors for %s: %v", dev.Name, err)
-		}
-	}
+	sendMetric(
+		func() ([]relay.HardwareSensor, error) { return client.GetHardwareSensors(vendor) },
+		func(s *relay.HardwareSensor) { s.DeviceID = dev.ID; s.Timestamp = now },
+		c.sink.SendHardwareSensors, dev.Name, "hardware sensors")
 
 	// Collect processor stats (CPU cores, NP/SPU ASICs)
-	procStats, procErr := client.GetProcessorStats(vendor)
-	if procErr == nil && len(procStats) > 0 {
-		for i := range procStats {
-			procStats[i].DeviceID = dev.ID
-			procStats[i].Timestamp = now
-		}
-		if err := c.sink.SendProcessorStats(procStats); err != nil {
-			log.Printf("[SNMP] Failed to send processor stats for %s: %v", dev.Name, err)
-		}
-	}
+	sendMetric(
+		func() ([]relay.ProcessorStats, error) { return client.GetProcessorStats(vendor) },
+		func(p *relay.ProcessorStats) { p.DeviceID = dev.ID; p.Timestamp = now },
+		c.sink.SendProcessorStats, dev.Name, "processor stats")
 
 	// Collect HA cluster status (silently skip if standalone or unsupported)
-	haStatuses, haErr := client.GetHAStatus(vendor)
-	if haErr == nil && len(haStatuses) > 0 {
-		for i := range haStatuses {
-			haStatuses[i].DeviceID = dev.ID
-			haStatuses[i].Timestamp = now
-		}
-		if err := c.sink.SendHAStatuses(haStatuses); err != nil {
-			log.Printf("[SNMP] Failed to send HA status for %s: %v", dev.Name, err)
-		}
-	}
+	sendMetric(
+		func() ([]relay.HAStatus, error) { return client.GetHAStatus(vendor) },
+		func(h *relay.HAStatus) { h.DeviceID = dev.ID; h.Timestamp = now },
+		c.sink.SendHAStatuses, dev.Name, "HA status")
 
 	// Collect security stats (AV/IPS/WebFilter counters)
 	secStats, secErr := client.GetSecurityStats(vendor)
@@ -1362,28 +1357,16 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 	}
 
 	// Collect SD-WAN health checks (silently skip if no SD-WAN configured)
-	sdwanHealth, sdwanErr := client.GetSDWANHealth(vendor)
-	if sdwanErr == nil && len(sdwanHealth) > 0 {
-		for i := range sdwanHealth {
-			sdwanHealth[i].DeviceID = dev.ID
-			sdwanHealth[i].Timestamp = now
-		}
-		if err := c.sink.SendSDWANHealth(sdwanHealth); err != nil {
-			log.Printf("[SNMP] Failed to send SD-WAN health for %s: %v", dev.Name, err)
-		}
-	}
+	sendMetric(
+		func() ([]relay.SDWANHealth, error) { return client.GetSDWANHealth(vendor) },
+		func(s *relay.SDWANHealth) { s.DeviceID = dev.ID; s.Timestamp = now },
+		c.sink.SendSDWANHealth, dev.Name, "SD-WAN health")
 
 	// Collect license/contract info (silently skip if unsupported)
-	licenses, licErr := client.GetLicenseInfo(vendor)
-	if licErr == nil && len(licenses) > 0 {
-		for i := range licenses {
-			licenses[i].DeviceID = dev.ID
-			licenses[i].Timestamp = now
-		}
-		if err := c.sink.SendLicenseInfo(licenses); err != nil {
-			log.Printf("[SNMP] Failed to send license info for %s: %v", dev.Name, err)
-		}
-	}
+	sendMetric(
+		func() ([]relay.LicenseInfo, error) { return client.GetLicenseInfo(vendor) },
+		func(l *relay.LicenseInfo) { l.DeviceID = dev.ID; l.Timestamp = now },
+		c.sink.SendLicenseInfo, dev.Name, "license info")
 }
 
 func (c *Collector) recordPollFailure(deviceID uint) {
