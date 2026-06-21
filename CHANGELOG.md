@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.125 - 2026-06-21
+
+### Changed
+- **Made the SNMP `pollDevice` path testable by introducing injectable seams (`cmd/collector/main.go`, `cmd/collector/polldevice_test.go`).** `pollDevice` previously constructed a live `*snmp.SNMPClient` and sent through the concrete `*relay.Client`, so it had no test coverage. Two narrow interfaces now describe exactly what it uses — `deviceSNMP` (the metric getters + `Close`) and `metricSink` (the ten `Send*` methods) — and the `Collector` carries a `newSNMP` dialer and a `sink`, wired to the live implementations in `main()` and overridable in tests. Production behavior is unchanged (`*snmp.SNMPClient` and `*relay.Client` satisfy the interfaces). Adds the first `pollDevice` characterization tests: full collect→stamp→send happy path (all ten metric types stamped with device ID + timestamp and forwarded, success recorded), the empty-community credential guard, and the connect-failure path. This is the harness that makes a later table-driven refactor of the per-metric blocks safe to verify.
+
 ## 1.2.124 - 2026-06-21
 
 ### Changed
