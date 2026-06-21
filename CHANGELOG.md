@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.123 - 2026-06-21
+
+### Fixed
+- **The SNMP trap receiver no longer logs the trap community string (`internal/snmp/trap.go`).** Every received trap was logged with `community %q`, writing the community — a shared secret used to authenticate the trap — into the logs (and onward to any log shipping). The log line now records only the source IP, varbind count, and SNMP version; community-based filtering is unchanged.
+
 ## 1.2.122 - 2026-06-21
 
 ### Changed

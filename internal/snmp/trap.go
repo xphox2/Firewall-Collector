@@ -44,8 +44,11 @@ func (t *TrapReceiver) Start(handler func(*relay.TrapEvent)) error {
 
 	t.server.OnNewTrap = func(packet *gosnmp.SnmpPacket, addr *net.UDPAddr) {
 		safego.Go("snmpTrap:"+addr.IP.String(), func() {
-			log.Printf("[SNMP Trap] Received trap from %s (%d varbinds, version %s, community %q)",
-				addr.IP, len(packet.Variables), packet.Version, packet.Community)
+			// The community is a shared secret used to authenticate the trap;
+			// it is deliberately omitted from this log line so it is not exposed
+			// to log readers or log shipping.
+			log.Printf("[SNMP Trap] Received trap from %s (%d varbinds, version %s)",
+				addr.IP, len(packet.Variables), packet.Version)
 
 			if !t.allowCommunity(packet.Community) {
 				return
