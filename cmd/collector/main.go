@@ -52,7 +52,43 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
-const version = "1.2.124"
+const version = "1.2.125"
+
+// deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
+// it as an interface lets tests inject a fake client in place of a live SNMP
+// connection. *snmp.SNMPClient satisfies it implicitly.
+type deviceSNMP interface {
+	GetSystemStatus(vendor ...string) (*relay.SystemStatus, error)
+	GetInterfaceStats() ([]relay.InterfaceStats, error)
+	GetInterfaceAddresses() ([]relay.InterfaceAddress, error)
+	GetVPNStatus(vendor ...string) ([]relay.VPNStatus, error)
+	GetHardwareSensors(vendor ...string) ([]relay.HardwareSensor, error)
+	GetProcessorStats(vendor ...string) ([]relay.ProcessorStats, error)
+	GetHAStatus(vendor ...string) ([]relay.HAStatus, error)
+	GetSecurityStats(vendor ...string) (*relay.SecurityStats, error)
+	GetSDWANHealth(vendor ...string) ([]relay.SDWANHealth, error)
+	GetLicenseInfo(vendor ...string) ([]relay.LicenseInfo, error)
+	Close() error
+}
+
+// metricSink is the subset of *relay.Client's send methods that pollDevice uses.
+// Lets tests capture what would be sent to the server. *relay.Client satisfies it.
+type metricSink interface {
+	SendSystemStatuses([]relay.SystemStatus) error
+	SendInterfaceStats([]relay.InterfaceStats) error
+	SendInterfaceAddresses([]relay.InterfaceAddress) error
+	SendVPNStatuses([]relay.VPNStatus) error
+	SendHardwareSensors([]relay.HardwareSensor) error
+	SendProcessorStats([]relay.ProcessorStats) error
+	SendHAStatuses([]relay.HAStatus) error
+	SendSecurityStats([]relay.SecurityStats) error
+	SendSDWANHealth([]relay.SDWANHealth) error
+	SendLicenseInfo([]relay.LicenseInfo) error
+}
+
+// snmpDialer constructs a deviceSNMP for a device. Defaults to a live SNMP
+// client (snmp.NewSNMPClient); tests override it with a fake.
+type snmpDialer func(host string, port int, community, version string, v3 *snmp.SNMPv3Config) (deviceSNMP, error)
 
 type Collector struct {
 	cfg            *config.ProbeConfig
@@ -100,6 +136,13 @@ type Collector struct {
 	metricsServer        *observability.Server
 	lastSuccessfulPoll   map[uint]time.Time
 	lastSuccessfulPollMu sync.RWMutex
+
+	// Injectable seams so pollDevice can be tested without a live SNMP
+	// connection or server. Wired to the real implementations in main();
+	// overridden in tests. newSNMP dials the device; sink receives the
+	// collected metrics (defaults to relayClient).
+	newSNMP snmpDialer
+	sink    metricSink
 }
 
 func main() {
@@ -221,6 +264,16 @@ func main() {
 		metricsServer:      metricsServer,
 		lastSuccessfulPoll: make(map[uint]time.Time),
 	}
+
+	// Wire the injectable seams to their live implementations.
+	c.newSNMP = func(host string, port int, community, version string, v3 *snmp.SNMPv3Config) (deviceSNMP, error) {
+		cl, err := snmp.NewSNMPClient(host, port, community, version, v3)
+		if err != nil {
+			return nil, err
+		}
+		return cl, nil
+	}
+	c.sink = c.relayClient
 
 	// Start TFTP server for config fetch if enabled
 	if probeCfg.TFTPConfigEnabled {
@@ -1189,7 +1242,7 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 		c.metrics.OnPollDuration(dev.ID, vendor, time.Since(pollStart))
 	}()
 
-	client, err := snmp.NewSNMPClient(dev.IPAddress, dev.SNMPPort, dev.SNMPCommunity, dev.SNMPVersion, v3)
+	client, err := c.newSNMP(dev.IPAddress, dev.SNMPPort, dev.SNMPCommunity, dev.SNMPVersion, v3)
 	if err != nil {
 		log.Printf("[SNMP] Connect failed for %s (%s:%d v%s community_len=%d): %v",
 			dev.Name, dev.IPAddress, dev.SNMPPort, dev.SNMPVersion, len(dev.SNMPCommunity), err)
@@ -1216,7 +1269,7 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 	status.Timestamp = time.Now()
 	log.Printf("[SNMP] %s (%s) [device_id=%d]: CPU=%.1f%% Mem=%.1f%% Disk=%.1f%%/%dMB Sessions=%d",
 		dev.Name, dev.IPAddress, dev.ID, status.CPUUsage, status.MemoryUsage, status.DiskUsage, status.DiskTotal, status.SessionCount)
-	if err := c.relayClient.SendSystemStatuses([]relay.SystemStatus{*status}); err != nil {
+	if err := c.sink.SendSystemStatuses([]relay.SystemStatus{*status}); err != nil {
 		log.Printf("[SNMP] Failed to send system status for %s (device_id=%d): %v", dev.Name, dev.ID, err)
 	}
 
@@ -1232,7 +1285,7 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 		ifaces[i].DeviceID = dev.ID
 		ifaces[i].Timestamp = now
 	}
-	if err := c.relayClient.SendInterfaceStats(ifaces); err != nil {
+	if err := c.sink.SendInterfaceStats(ifaces); err != nil {
 		log.Printf("[SNMP] Failed to send interface stats for %s: %v", dev.Name, err)
 	}
 
@@ -1243,7 +1296,7 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 			ifAddrs[i].DeviceID = dev.ID
 			ifAddrs[i].Timestamp = now
 		}
-		if err := c.relayClient.SendInterfaceAddresses(ifAddrs); err != nil {
+		if err := c.sink.SendInterfaceAddresses(ifAddrs); err != nil {
 			log.Printf("[SNMP] Failed to send interface addresses for %s: %v", dev.Name, err)
 		}
 		// Cache interface IPs for sFlow device resolution
@@ -1257,7 +1310,7 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 			vpnStatuses[i].DeviceID = dev.ID
 			vpnStatuses[i].Timestamp = now
 		}
-		if err := c.relayClient.SendVPNStatuses(vpnStatuses); err != nil {
+		if err := c.sink.SendVPNStatuses(vpnStatuses); err != nil {
 			log.Printf("[SNMP] Failed to send VPN statuses for %s: %v", dev.Name, err)
 		}
 	}
@@ -1269,7 +1322,7 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 			sensors[i].DeviceID = dev.ID
 			sensors[i].Timestamp = now
 		}
-		if err := c.relayClient.SendHardwareSensors(sensors); err != nil {
+		if err := c.sink.SendHardwareSensors(sensors); err != nil {
 			log.Printf("[SNMP] Failed to send hardware sensors for %s: %v", dev.Name, err)
 		}
 	}
@@ -1281,7 +1334,7 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 			procStats[i].DeviceID = dev.ID
 			procStats[i].Timestamp = now
 		}
-		if err := c.relayClient.SendProcessorStats(procStats); err != nil {
+		if err := c.sink.SendProcessorStats(procStats); err != nil {
 			log.Printf("[SNMP] Failed to send processor stats for %s: %v", dev.Name, err)
 		}
 	}
@@ -1293,7 +1346,7 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 			haStatuses[i].DeviceID = dev.ID
 			haStatuses[i].Timestamp = now
 		}
-		if err := c.relayClient.SendHAStatuses(haStatuses); err != nil {
+		if err := c.sink.SendHAStatuses(haStatuses); err != nil {
 			log.Printf("[SNMP] Failed to send HA status for %s: %v", dev.Name, err)
 		}
 	}
@@ -1303,7 +1356,7 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 	if secErr == nil && secStats != nil {
 		secStats.DeviceID = dev.ID
 		secStats.Timestamp = now
-		if err := c.relayClient.SendSecurityStats([]relay.SecurityStats{*secStats}); err != nil {
+		if err := c.sink.SendSecurityStats([]relay.SecurityStats{*secStats}); err != nil {
 			log.Printf("[SNMP] Failed to send security stats for %s: %v", dev.Name, err)
 		}
 	}
@@ -1315,7 +1368,7 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 			sdwanHealth[i].DeviceID = dev.ID
 			sdwanHealth[i].Timestamp = now
 		}
-		if err := c.relayClient.SendSDWANHealth(sdwanHealth); err != nil {
+		if err := c.sink.SendSDWANHealth(sdwanHealth); err != nil {
 			log.Printf("[SNMP] Failed to send SD-WAN health for %s: %v", dev.Name, err)
 		}
 	}
@@ -1327,7 +1380,7 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 			licenses[i].DeviceID = dev.ID
 			licenses[i].Timestamp = now
 		}
-		if err := c.relayClient.SendLicenseInfo(licenses); err != nil {
+		if err := c.sink.SendLicenseInfo(licenses); err != nil {
 			log.Printf("[SNMP] Failed to send license info for %s: %v", dev.Name, err)
 		}
 	}
