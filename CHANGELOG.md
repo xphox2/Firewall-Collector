@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.121 - 2026-06-20
+
+### Fixed
+- **`SpilloverQueue.Close()` now holds the queue lock for the entire flush and database close, fixing a data race with concurrent `Push`/`Drain` (`internal/relay/queue/queue.go`).** `Close` grabbed the in-memory items under the lock, *released* it, then flushed them to disk via `appendToDisk` — a lock-required helper that mutates `diskSize`/`dropped` and writes BoltDB and is only ever called by `Push`/`Drain` while holding the lock. A shutdown overlapping an in-flight enqueue/drain could therefore race those fields and the BoltDB transaction, contradicting the type's "safe for concurrent use" contract. `Close` now holds `mu` across the flush and `db.Close()`, so the flush is mutually exclusive with `Push`/`Drain` and no operation can be mid-transaction when the database closes.
+
 ## 1.2.120 - 2026-06-19
 
 ### Fixed

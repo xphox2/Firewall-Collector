@@ -359,10 +359,17 @@ func (q *SpilloverQueue) Dropped() uint64 {
 // survive — but Flush makes the next process's view of the queue
 // complete).
 func (q *SpilloverQueue) Close() error {
+	// Hold q.mu for the whole close. appendToDisk mutates diskSize/dropped and
+	// writes BoltDB and is a lock-required helper (Push/Drain only ever call it
+	// while holding q.mu); flushing it after releasing the lock raced any
+	// concurrent Push/Drain on those fields and on the BoltDB transaction.
+	// Keeping the lock also guarantees no Push/Drain is mid-transaction when the
+	// database is closed.
 	q.mu.Lock()
+	defer q.mu.Unlock()
+
 	mem := q.inMem
 	q.inMem = nil
-	q.mu.Unlock()
 
 	for _, item := range mem {
 		if err := q.appendToDisk(item); err != nil {
