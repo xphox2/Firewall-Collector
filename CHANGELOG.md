@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.126 - 2026-06-21
+
+### Changed
+- **Consolidated `pollDevice`'s six optional-metric blocks (VPN, hardware sensors, processor stats, HA, SD-WAN, license) behind a generic `sendMetric` helper (`cmd/collector/main.go`).** Each was a near-identical `GetX → if no error and non-empty → stamp every record with device ID + timestamp → SendX (log on send failure)` block. They now call one type-parameterized `sendMetric` that captures that shape; the per-type get/stamp/send are passed as closures (Go generics can't set a struct field or call a method generically). The special blocks stay inline by design — system-status and interface-stats early-return on a collection error, interface-addresses also caches IPs, and security-stats is a single pointer. Behavior and log messages are unchanged, verified by the `pollDevice` characterization tests added in 1.2.125 (all six metric types still collected, stamped, and forwarded).
+
 ## 1.2.125 - 2026-06-21
 
 ### Changed
