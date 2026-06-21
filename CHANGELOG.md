@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.127 - 2026-06-21
+
+### Changed
+- **Extracted the duplicated retry backoff formulas in the relay into named helpers (`internal/relay/relay.go`).** The exponential per-attempt delay `time.Duration(1<<uint(attempt)) * time.Second` was inlined four times (in `sendBatch` and `sendOneRevisionWithRetry`); the registration delay `2^attempt × 10s + up to 5s jitter` was inlined twice (in `tryReregister` and the registration loop). They are now `expBackoff(attempt)` and `reregisterBackoff(attempt)`. This is a behavior-preserving consolidation only — the delays are identical to before and each retry loop's structure (attempt counts, sleep placement, re-registration handling, terminal-status short-circuits) is unchanged; the differing send loops were deliberately **not** merged. A unit test pins the exact delay values (1s/2s/4s) and the registration jitter range. Naming the policies also makes a future decision to standardize them a one-line change.
+
 ## 1.2.126 - 2026-06-21
 
 ### Changed
