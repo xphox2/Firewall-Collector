@@ -52,7 +52,7 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
-const version = "1.2.127"
+const version = "1.2.128"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -103,6 +103,12 @@ type Collector struct {
 	tftpServerIP   string // admin-set on the server, IP firewalls reach the collector at
 	tftpServerIPMu sync.RWMutex
 	devices        []relay.DeviceInfo
+
+	// observedHostKeys holds the latest SSH host-key fingerprint observed per
+	// device (device ID -> "SHA256:..."), reported to the server on heartbeat for
+	// host-key change detection. The collector keeps no other host-key state.
+	observedHostKeys   map[uint]string
+	observedHostKeysMu sync.RWMutex
 
 	// Config-backup debouncer for syslog-triggered backups. Key = "<deviceID>:<cfgtid>".
 	// One CLI commit emits N log lines sharing a cfgtid; we collapse them to one
@@ -274,6 +280,8 @@ func main() {
 		return cl, nil
 	}
 	c.sink = c.relayClient
+	// Report observed SSH host-key fingerprints on each heartbeat.
+	c.relayClient.SetObservedHostKeysProvider(c.snapshotObservedHostKeys)
 
 	// Start TFTP server for config fetch if enabled
 	if probeCfg.TFTPConfigEnabled {
@@ -746,6 +754,7 @@ func (c *Collector) sshPollDevice(dev relay.DeviceInfo) {
 		return
 	}
 	defer sshClient.Close()
+	c.recordObservedHostKey(dev.ID, sshClient.ObservedHostKey())
 
 	checksum, err := sshClient.GetConfigChecksum()
 	if err != nil {
@@ -998,6 +1007,7 @@ func (c *Collector) sendConfigRevisionViaTFTP(dev relay.DeviceInfo, checksum str
 		return fmt.Errorf("SSH connect failed: %w", err)
 	}
 	defer sshClient.Close()
+	c.recordObservedHostKey(dev.ID, sshClient.ObservedHostKey())
 
 	log.Printf("[TFTP] SSH to %s: instructing firewall to upload config '%s' to collector at %s",
 		dev.Name, filename, tftpTarget)
@@ -1377,6 +1387,36 @@ func (c *Collector) recordPollFailure(deviceID uint) {
 	if count == 3 {
 		log.Printf("[SNMP] Device %d: 3 consecutive failures — entering backoff mode", deviceID)
 	}
+}
+
+// recordObservedHostKey stores the latest SSH host-key fingerprint seen for a
+// device. Reported to the server on the next heartbeat for change detection.
+func (c *Collector) recordObservedHostKey(deviceID uint, fingerprint string) {
+	if fingerprint == "" {
+		return
+	}
+	c.observedHostKeysMu.Lock()
+	defer c.observedHostKeysMu.Unlock()
+	if c.observedHostKeys == nil {
+		c.observedHostKeys = make(map[uint]string)
+	}
+	c.observedHostKeys[deviceID] = fingerprint
+}
+
+// snapshotObservedHostKeys returns a copy of the observed-fingerprint map for
+// the heartbeat. Re-sending the same fingerprints is harmless — the server
+// treats a known key as a no-op — so the map is not cleared.
+func (c *Collector) snapshotObservedHostKeys() map[uint]string {
+	c.observedHostKeysMu.RLock()
+	defer c.observedHostKeysMu.RUnlock()
+	if len(c.observedHostKeys) == 0 {
+		return nil
+	}
+	out := make(map[uint]string, len(c.observedHostKeys))
+	for k, v := range c.observedHostKeys {
+		out[k] = v
+	}
+	return out
 }
 
 func (c *Collector) recordPollSuccess(deviceID uint) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"regexp"
 	"strings"
@@ -26,7 +27,16 @@ type FortiGateClient struct {
 	keyFile       string
 	keyPassphrase string
 	client        *ssh.Client
+	// observedHostKey is the SHA256 fingerprint of the SSH host key the device
+	// presented on the last Connect, captured for server-side change detection.
+	observedHostKey string
 }
+
+// ObservedHostKey returns the SHA256 fingerprint (e.g. "SHA256:...") of the SSH
+// host key the device presented on the most recent Connect, or "" if not yet
+// connected. The collector reports this to the server, which pins/compares it;
+// the connection itself is never blocked on a key mismatch.
+func (c *FortiGateClient) ObservedHostKey() string { return c.observedHostKey }
 
 func NewFortiGateClient(host string, port int, username, password string) *FortiGateClient {
 	return NewFortiGateClientWithKey(host, port, username, password, "", "")
@@ -53,10 +63,17 @@ func (c *FortiGateClient) Connect() error {
 	}
 
 	config := &ssh.ClientConfig{
-		User:            c.username,
-		Auth:            auth,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         30 * time.Second,
+		User: c.username,
+		Auth: auth,
+		// Capture the host-key fingerprint but never block: the server does the
+		// pinning/comparison and alerts on a change (alert-only by design — see
+		// SSH host-key change detection). Returning nil unconditionally preserves
+		// the previous InsecureIgnoreHostKey behavior for the connection itself.
+		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
+			c.observedHostKey = ssh.FingerprintSHA256(key)
+			return nil
+		},
+		Timeout: 30 * time.Second,
 	}
 
 	addr := fmt.Sprintf("%s:%d", c.host, c.port)

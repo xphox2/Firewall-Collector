@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.128 - 2026-06-21
+
+### Added
+- **The collector now observes and reports each FortiGate's SSH host key for server-side change detection (`internal/ssh/ssh.go`, `internal/relay/relay.go`, `cmd/collector/main.go`).** `FortiGateClient.Connect` previously used `ssh.InsecureIgnoreHostKey()`; it now installs a `HostKeyCallback` that records the presented host key's `SHA256` fingerprint (`ssh.FingerprintSHA256`) and **returns nil unconditionally** — the connection is never blocked (alert-only by design; the server does the pinning/comparison/alerting). After each successful SSH connect (config backup and SSH polling) the collector records the fingerprint per device; the heartbeat now carries an `observed_host_keys` map (device ID → fingerprint) via a provider registered on the relay client. The collector keeps no host-key state on disk — it just reports what it sees, and the server (which pins a set of known-good keys and is HA-failover-aware) decides whether a key is new. Adds a unit test for the record/snapshot behavior.
+
 ## 1.2.127 - 2026-06-21
 
 ### Changed
