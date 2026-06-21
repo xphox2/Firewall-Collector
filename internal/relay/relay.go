@@ -683,7 +683,7 @@ func (c *Client) tryReregister() bool {
 	c.reregisterAttempts++
 	c.mu.Unlock()
 
-	backoff := time.Duration(1<<uint(attempts))*10*time.Second + time.Duration(mrand.Intn(5000))*time.Millisecond
+	backoff := reregisterBackoff(attempts)
 	log.Printf("[Relay] Probe lost approval, attempting re-registration (attempt %d/%d) in %v...",
 		attempts+1, maxReregisterAttempts, backoff)
 	time.Sleep(backoff)
@@ -771,7 +771,7 @@ func (c *Client) sendHeartbeatWithStatus(status string) error {
 			return fmt.Errorf("max re-registration attempts (%d) reached, giving up", maxReregisterAttempts)
 		}
 
-		backoff := time.Duration(1<<uint(attempts))*10*time.Second + time.Duration(mrand.Intn(5000))*time.Millisecond
+		backoff := reregisterBackoff(attempts)
 		log.Printf("Probe unauthorized (attempt %d/%d), retrying registration in %v...",
 			attempts+1, maxReregisterAttempts, backoff)
 		time.Sleep(backoff)
@@ -853,6 +853,19 @@ func (c *Client) SendFlowSample(sample *FlowSample) {
 // --- Direct send (SNMP poll results sent immediately) ---
 
 // doDirectSend is a helper for direct Send methods with retry and approval-revocation handling.
+// expBackoff is the per-attempt exponential retry delay shared by the data-send
+// paths (sendBatch, sendOneRevisionWithRetry): 1s, 2s, 4s for attempts 0, 1, 2.
+func expBackoff(attempt int) time.Duration {
+	return time.Duration(1<<uint(attempt)) * time.Second
+}
+
+// reregisterBackoff is the registration retry delay: an exponential 2^attempt ×
+// 10s base plus up to 5s of random jitter, so a fleet of probes recovering from
+// a shared server outage doesn't reconnect in lock-step (thundering herd).
+func reregisterBackoff(attempt int) time.Duration {
+	return time.Duration(1<<uint(attempt))*10*time.Second + time.Duration(mrand.Intn(5000))*time.Millisecond
+}
+
 func (c *Client) doDirectSend(endpoint string, name string, payload interface{}) error {
 	if !c.approved.Load() {
 		if !c.tryReregister() {
@@ -1220,7 +1233,7 @@ func (c *Client) sendBatch(url, name string, data interface{}) bool {
 		resp, err := c.doAuthenticatedRequestH("POST", url, jsonData, map[string]string{"X-Probe-Batch-ID": batchID})
 		if err != nil {
 			log.Printf("[Relay] Failed to send %s batch (attempt %d/3): %v", name, attempt+1, err)
-			time.Sleep(time.Duration(1<<uint(attempt)) * time.Second)
+			time.Sleep(expBackoff(attempt))
 			continue
 		}
 
@@ -1255,7 +1268,7 @@ func (c *Client) sendBatch(url, name string, data interface{}) bool {
 		}
 
 		log.Printf("[Relay] Failed to send %s batch: status %d (attempt %d/3): %s", name, resp.StatusCode, attempt+1, string(bodyBytes))
-		time.Sleep(time.Duration(1<<uint(attempt)) * time.Second)
+		time.Sleep(expBackoff(attempt))
 	}
 	return false
 }
@@ -1490,7 +1503,7 @@ func (c *Client) sendOneRevisionWithRetry(url string, rev *ConfigRevision) bool 
 		if err != nil {
 			log.Printf("[Relay] SendConfigRevision transport error for device %d (attempt %d/3): %v", rev.DeviceID, attempt+1, err)
 			if attempt < 2 {
-				time.Sleep(time.Duration(1<<uint(attempt)) * time.Second)
+				time.Sleep(expBackoff(attempt))
 			}
 			continue
 		}
@@ -1519,7 +1532,7 @@ func (c *Client) sendOneRevisionWithRetry(url string, rev *ConfigRevision) bool 
 		// 5xx or other transient server error.
 		log.Printf("[Relay] SendConfigRevision status %d for device %d (attempt %d/3): %s", resp.StatusCode, rev.DeviceID, attempt+1, string(bodyBytes))
 		if attempt < 2 {
-			time.Sleep(time.Duration(1<<uint(attempt)) * time.Second)
+			time.Sleep(expBackoff(attempt))
 		}
 	}
 	return false
