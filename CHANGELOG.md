@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.124 - 2026-06-21
+
+### Changed
+- **Raised the `go` directive in `go.mod` from 1.25.0 to 1.25.11 to match the server repo and the version CI already builds with (`.github/workflows/docker.yml` pins Go 1.25.11).** Aligns the toolchain baseline across both repos; no code change.
+
 ## 1.2.123 - 2026-06-21
 
 ### Fixed

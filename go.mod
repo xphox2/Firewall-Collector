@@ -1,6 +1,6 @@
 module firewall-collector
 
-go 1.25.0
+go 1.25.11
 
 require (
 	github.com/gosnmp/gosnmp v1.43.2
