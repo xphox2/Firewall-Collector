@@ -387,6 +387,17 @@ type Client struct {
 	// collector crash mid-retry would drop the pending revision and the
 	// central server would lose the only copy of the config backup.
 	revisionQueue *queue.SpilloverQueue
+
+	// observedHostKeysFn, if set, returns a snapshot of the SSH host-key
+	// fingerprints the collector has observed (device ID -> "SHA256:..."). The
+	// heartbeat includes it so the server can detect host-key changes.
+	observedHostKeysFn func() map[uint]string
+}
+
+// SetObservedHostKeysProvider registers a source of observed SSH host-key
+// fingerprints (device ID -> fingerprint) to include on each heartbeat.
+func (c *Client) SetObservedHostKeysProvider(fn func() map[uint]string) {
+	c.observedHostKeysFn = fn
 }
 
 func NewClient(cfg Config) *Client {
@@ -748,6 +759,11 @@ func (c *Client) sendHeartbeatWithStatus(status string) error {
 		"probe_id":  probeID,
 		"status":    status,
 		"timestamp": time.Now().Unix(),
+	}
+	if c.observedHostKeysFn != nil {
+		if keys := c.observedHostKeysFn(); len(keys) > 0 {
+			data["observed_host_keys"] = keys
+		}
 	}
 
 	jsonData, err := json.Marshal(data)
