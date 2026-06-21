@@ -203,7 +203,7 @@ func TestSendTrap_ConcurrentWrite_NoRace(t *testing.T) {
 	}
 }
 
-// ── splitIntoChunks ───────────────────────────────────────────────────────────
+// ── chunkSlice ────────────────────────────────────────────────────────────────
 
 func makeTrapSlice(n int) []*TrapEvent {
 	s := make([]*TrapEvent, n)
@@ -213,41 +213,41 @@ func makeTrapSlice(n int) []*TrapEvent {
 	return s
 }
 
-func TestSplitIntoChunks_ExactMultiple(t *testing.T) {
+func TestChunkSlice_ExactMultiple(t *testing.T) {
 	items := makeTrapSlice(6)
-	chunks := splitIntoChunks(items, 3)
+	chunks := chunkSlice(items, 3)
 	if len(chunks) != 2 {
 		t.Fatalf("expected 2 chunks, got %d", len(chunks))
 	}
 }
 
-func TestSplitIntoChunks_WithRemainder(t *testing.T) {
+func TestChunkSlice_WithRemainder(t *testing.T) {
 	items := makeTrapSlice(7)
-	chunks := splitIntoChunks(items, 3)
+	chunks := chunkSlice(items, 3)
 	if len(chunks) != 3 {
 		t.Fatalf("expected 3 chunks, got %d", len(chunks))
 	}
 }
 
-func TestSplitIntoChunks_SingleItem(t *testing.T) {
+func TestChunkSlice_SingleItem(t *testing.T) {
 	items := makeTrapSlice(1)
-	chunks := splitIntoChunks(items, 10)
+	chunks := chunkSlice(items, 10)
 	if len(chunks) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(chunks))
 	}
 }
 
-func TestSplitIntoChunks_ChunkLargerThanInput(t *testing.T) {
+func TestChunkSlice_ChunkLargerThanInput(t *testing.T) {
 	items := makeTrapSlice(3)
-	chunks := splitIntoChunks(items, 100)
+	chunks := chunkSlice(items, 100)
 	if len(chunks) != 1 {
 		t.Fatalf("expected 1 chunk for input smaller than chunk size, got %d", len(chunks))
 	}
 }
 
-func TestSplitIntoChunks_ZeroChunkSize_ClampsToOne(t *testing.T) {
+func TestChunkSlice_ZeroChunkSize_ClampsToOne(t *testing.T) {
 	items := makeTrapSlice(3)
-	chunks := splitIntoChunks(items, 0)
+	chunks := chunkSlice(items, 0)
 	if len(chunks) != 3 {
 		t.Fatalf("chunkSize=0 should clamp to 1, expected 3 chunks, got %d", len(chunks))
 	}
@@ -293,7 +293,7 @@ func TestRequeueTraps_AppendsToQueue(t *testing.T) {
 	c.SendTrap(&TrapEvent{Message: "newer"})
 
 	failed := []*TrapEvent{{Message: "failed"}}
-	c.requeueTraps(failed)
+	requeueItems(c.trapQueue, failed, "traps", "trap events")
 
 	items, err := c.trapQueue.Drain(100)
 	if err != nil {
@@ -333,7 +333,7 @@ func TestRequeueTraps_CapacityHandledBySpillover(t *testing.T) {
 
 	// Requeue 3 more — they will spill to disk rather than fail.
 	failed := []*TrapEvent{{Message: "x"}, {Message: "y"}, {Message: "z"}}
-	c.requeueTraps(failed)
+	requeueItems(c.trapQueue, failed, "traps", "trap events")
 
 	disk, _ := c.trapQueue.DiskCount()
 	if disk != 3 {
