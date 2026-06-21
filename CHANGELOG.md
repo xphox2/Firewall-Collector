@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.122 - 2026-06-21
+
+### Changed
+- **Collapsed the per-payload queue-drain plumbing in the relay into shared generic helpers (`internal/relay/relay.go`).** The four event queues (traps, pings, syslog, flows) each had a copy-pasted drain loop, a near-identical `unmarshalX`/`requeueX` function, and a reflection-based `splitIntoChunks`/`sendBatchesSequential` pair dispatched by a string `switch`. These are replaced by type-parameterized helpers — `unmarshalQueued[T]`, `chunkSlice[T]`, `requeueItems[T]`, `sendBatchesSequential[T]`, and a `drainAndSend[T]` driven by a small per-queue `queueDrainSpec[T]` — removing roughly 150 lines, the `reflect` dependency in this path, and the unreachable `requeueGeneric` fallback. Behavior is preserved exactly: identical batch sizing, the same inter-chunk pause (and the flow queue's historical lack of one), the same requeue-failed-chunk-and-stop semantics, and the same log messages. Existing relay tests updated to the new helper names and pass unchanged.
+
 ## 1.2.121 - 2026-06-20
 
 ### Fixed

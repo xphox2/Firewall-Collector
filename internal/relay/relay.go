@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -1021,76 +1020,31 @@ func (c *Client) syncData() {
 		drainChunk = 10000
 	}
 
-	// traps
-	for {
-		raw, err := c.trapQueue.Drain(drainChunk)
-		if err != nil {
-			log.Printf("[Relay] drain traps: %v", err)
-			break
-		}
-		if len(raw) == 0 {
-			break
-		}
-		traps := unmarshalTraps(raw)
-		c.sendBatchesSequential(baseURL+"/traps", "traps", traps)
-		if len(raw) < drainChunk {
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-
-	// pings
-	for {
-		raw, err := c.pingQueue.Drain(drainChunk)
-		if err != nil {
-			log.Printf("[Relay] drain pings: %v", err)
-			break
-		}
-		if len(raw) == 0 {
-			break
-		}
-		pings := unmarshalPings(raw)
-		c.sendBatchesSequential(baseURL+"/pings", "pings", pings)
-		if len(raw) < drainChunk {
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-
-	// syslogs
-	for {
-		raw, err := c.syslogQueue.Drain(drainChunk)
-		if err != nil {
-			log.Printf("[Relay] drain syslogs: %v", err)
-			break
-		}
-		if len(raw) == 0 {
-			break
-		}
-		syslogs := unmarshalSyslogs(raw)
-		c.sendBatchesSequential(baseURL+"/syslog", "syslog", syslogs)
-		if len(raw) < drainChunk {
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-
-	// flows
-	for {
-		raw, err := c.flowQueue.Drain(drainChunk)
-		if err != nil {
-			log.Printf("[Relay] drain flows: %v", err)
-			break
-		}
-		if len(raw) == 0 {
-			break
-		}
-		flows := unmarshalFlows(raw)
-		c.sendBatchesSequential(baseURL+"/flows", "flows", flows)
-		if len(raw) < drainChunk {
-			break
-		}
-	}
+	// Drain each event queue and forward it. Every queue runs the same
+	// drain → unmarshal → send → requeue-on-failure pipeline (drainAndSend);
+	// only the payload type, endpoint, and log labels differ. The flow queue
+	// historically runs without the inter-chunk pause the others use, preserved
+	// here via interChunkDelay: 0.
+	drainAndSend(c, baseURL, drainChunk, queueDrainSpec[TrapEvent]{
+		queue: c.trapQueue, endpoint: "/traps", sendName: "traps",
+		drainLabel: "traps", unmarshalLabel: "trap",
+		noun: "traps", nounLong: "trap events", interChunkDelay: 500 * time.Millisecond,
+	})
+	drainAndSend(c, baseURL, drainChunk, queueDrainSpec[PingResult]{
+		queue: c.pingQueue, endpoint: "/pings", sendName: "pings",
+		drainLabel: "pings", unmarshalLabel: "ping",
+		noun: "pings", nounLong: "ping results", interChunkDelay: 500 * time.Millisecond,
+	})
+	drainAndSend(c, baseURL, drainChunk, queueDrainSpec[SyslogMessage]{
+		queue: c.syslogQueue, endpoint: "/syslog", sendName: "syslog",
+		drainLabel: "syslogs", unmarshalLabel: "syslog",
+		noun: "syslog messages", nounLong: "syslog messages", interChunkDelay: 500 * time.Millisecond,
+	})
+	drainAndSend(c, baseURL, drainChunk, queueDrainSpec[FlowSample]{
+		queue: c.flowQueue, endpoint: "/flows", sendName: "flows",
+		drainLabel: "flows", unmarshalLabel: "flow",
+		noun: "flow samples", nounLong: "flow samples", interChunkDelay: 0,
+	})
 
 	// AUDIT-054: drain the config-revision retry queue. Same bounded
 	// chunking as the 4 event queues above. Each batch is then handed
@@ -1116,16 +1070,16 @@ func (c *Client) syncData() {
 	}
 }
 
-// unmarshalTraps converts a slice of JSON bytes (as produced by the
-// SpilloverQueue on Drain) into a typed slice for batch sending.
-// Malformed items are logged and skipped (one bad event should not
-// stall the whole sync).
-func unmarshalTraps(raw [][]byte) []*TrapEvent {
-	out := make([]*TrapEvent, 0, len(raw))
+// unmarshalQueued converts a slice of JSON bytes (as produced by the
+// SpilloverQueue on Drain) into a typed pointer slice for batch sending.
+// Malformed items are logged and skipped — one bad event must not stall the
+// whole sync.
+func unmarshalQueued[T any](raw [][]byte, label string) []*T {
+	out := make([]*T, 0, len(raw))
 	for _, b := range raw {
-		var t TrapEvent
+		var t T
 		if err := json.Unmarshal(b, &t); err != nil {
-			log.Printf("[Relay] Failed to unmarshal trap: %v", err)
+			log.Printf("[Relay] Failed to unmarshal %s: %v", label, err)
 			continue
 		}
 		out = append(out, &t)
@@ -1133,71 +1087,35 @@ func unmarshalTraps(raw [][]byte) []*TrapEvent {
 	return out
 }
 
-func unmarshalPings(raw [][]byte) []*PingResult {
-	out := make([]*PingResult, 0, len(raw))
-	for _, b := range raw {
-		var p PingResult
-		if err := json.Unmarshal(b, &p); err != nil {
-			log.Printf("[Relay] Failed to unmarshal ping: %v", err)
-			continue
-		}
-		out = append(out, &p)
+// chunkSlice splits items into sub-slices of at most size elements. A size <= 0
+// clamps to 1.
+func chunkSlice[T any](items []T, size int) [][]T {
+	if size <= 0 {
+		size = 1
 	}
-	return out
-}
-
-func unmarshalSyslogs(raw [][]byte) []*SyslogMessage {
-	out := make([]*SyslogMessage, 0, len(raw))
-	for _, b := range raw {
-		var s SyslogMessage
-		if err := json.Unmarshal(b, &s); err != nil {
-			log.Printf("[Relay] Failed to unmarshal syslog: %v", err)
-			continue
+	chunks := make([][]T, 0, (len(items)+size-1)/size)
+	for i := 0; i < len(items); i += size {
+		end := i + size
+		if end > len(items) {
+			end = len(items)
 		}
-		out = append(out, &s)
-	}
-	return out
-}
-
-func unmarshalFlows(raw [][]byte) []*FlowSample {
-	out := make([]*FlowSample, 0, len(raw))
-	for _, b := range raw {
-		var f FlowSample
-		if err := json.Unmarshal(b, &f); err != nil {
-			log.Printf("[Relay] Failed to unmarshal flow: %v", err)
-			continue
-		}
-		out = append(out, &f)
-	}
-	return out
-}
-
-func splitIntoChunks(items interface{}, chunkSize int) []interface{} {
-	if chunkSize <= 0 {
-		chunkSize = 1
-	}
-	value := reflect.ValueOf(items)
-	length := value.Len()
-
-	chunks := make([]interface{}, 0, (length+chunkSize-1)/chunkSize)
-	for i := 0; i < length; i += chunkSize {
-		end := i + chunkSize
-		if end > length {
-			end = length
-		}
-		chunk := value.Slice(i, end).Interface()
-		chunks = append(chunks, chunk)
+		chunks = append(chunks, items[i:end])
 	}
 	return chunks
 }
 
-func (c *Client) sendBatchesSequential(url, name string, items interface{}) {
+// sendBatchesSequential sends items in MaxBatchSize chunks, pausing briefly
+// between chunks. On the first failed chunk it hands that chunk's items to
+// requeue and stops; any later chunks of this drain are left for the next sync
+// (unchanged from the previous per-type implementation). Generic over the
+// payload type so every event queue shares one path.
+func sendBatchesSequential[T any](c *Client, url, name string, items []*T, requeue func([]*T)) {
 	actualBatchSize := c.Config.MaxBatchSize
 	if actualBatchSize <= 0 {
 		actualBatchSize = maxBatchSize
 	}
 
-	chunks := splitIntoChunks(items, actualBatchSize)
+	chunks := chunkSlice(items, actualBatchSize)
 	totalChunks := len(chunks)
 
 	for i, chunk := range chunks {
@@ -1205,140 +1123,77 @@ func (c *Client) sendBatchesSequential(url, name string, items interface{}) {
 			time.Sleep(200 * time.Millisecond)
 		}
 		if !c.sendBatch(url, name, chunk) {
-			switch name {
-			case "traps":
-				if items2, ok := chunk.([]*TrapEvent); ok {
-					c.requeueTraps(items2)
-				}
-			case "pings":
-				if items2, ok := chunk.([]*PingResult); ok {
-					c.requeuePings(items2)
-				}
-			case "syslog":
-				if items2, ok := chunk.([]*SyslogMessage); ok {
-					c.requeueSyslogs(items2)
-				}
-			case "flows":
-				if items2, ok := chunk.([]*FlowSample); ok {
-					c.requeueFlows(items2)
-				}
-			default:
-				log.Printf("[Relay] ERROR: Unknown batch name %q - attempting generic requeue", name)
-				c.requeueGeneric(name, chunk)
-			}
+			requeue(chunk)
 			log.Printf("[Relay] Failed to send %s batch chunk %d/%d", name, i+1, totalChunks)
 			return
 		}
-		log.Printf("[Relay] Sent %s batch chunk %d/%d (%d items)", name, i+1, totalChunks, reflect.ValueOf(chunk).Len())
+		log.Printf("[Relay] Sent %s batch chunk %d/%d (%d items)", name, i+1, totalChunks, len(chunk))
 	}
 }
 
-func (c *Client) requeueGeneric(name string, chunk interface{}) {
-	items, ok := chunk.([]*TrapEvent)
-	if !ok {
-		log.Printf("[Relay] ERROR: Generic requeue for %q got unexpected type %T", name, chunk)
-		return
-	}
-	c.requeueTraps(items)
-}
-
-func (c *Client) requeueTraps(items []*TrapEvent) {
-	if c.trapQueue == nil {
-		log.Printf("[Relay] WARNING: Could not requeue %d traps - queue disabled", len(items))
+// requeueItems pushes failed items back onto their queue (the newest tier) so
+// the next sync retries them. noun labels the count in the disabled/full
+// warnings; nounLong labels the success line (e.g. "traps" vs "trap events").
+func requeueItems[T any](q *queue.SpilloverQueue, items []*T, noun, nounLong string) {
+	if q == nil {
+		log.Printf("[Relay] WARNING: Could not requeue %d %s - queue disabled", len(items), noun)
 		return
 	}
 	requeued := 0
-	for _, t := range items {
-		data, err := json.Marshal(t)
+	for _, it := range items {
+		data, err := json.Marshal(it)
 		if err != nil {
-			log.Printf("[Relay] Failed to marshal trap for requeue: %v", err)
+			log.Printf("[Relay] Failed to marshal %s for requeue: %v", noun, err)
 			continue
 		}
-		if err := c.trapQueue.Push(data); err != nil {
-			log.Printf("[Relay] Re-queue trap: %v", err)
+		if err := q.Push(data); err != nil {
+			log.Printf("[Relay] Re-queue %s: %v", noun, err)
 			continue
 		}
 		requeued++
 	}
 	if requeued > 0 {
-		log.Printf("[Relay] Re-queued %d trap events", requeued)
+		log.Printf("[Relay] Re-queued %d %s", requeued, nounLong)
 	} else {
-		log.Printf("[Relay] WARNING: Could not requeue %d traps - queue full", len(items))
+		log.Printf("[Relay] WARNING: Could not requeue %d %s - queue full", len(items), noun)
 	}
 }
 
-func (c *Client) requeuePings(items []*PingResult) {
-	if c.pingQueue == nil {
-		log.Printf("[Relay] WARNING: Could not requeue %d pings - queue disabled", len(items))
-		return
-	}
-	requeued := 0
-	for _, p := range items {
-		data, err := json.Marshal(p)
-		if err != nil {
-			log.Printf("[Relay] Failed to marshal ping for requeue: %v", err)
-			continue
-		}
-		if err := c.pingQueue.Push(data); err != nil {
-			log.Printf("[Relay] Re-queue ping: %v", err)
-			continue
-		}
-		requeued++
-	}
-	if requeued > 0 {
-		log.Printf("[Relay] Re-queued %d ping results", requeued)
-	} else {
-		log.Printf("[Relay] WARNING: Could not requeue %d pings - queue full", len(items))
-	}
+// queueDrainSpec describes how one event queue is drained and forwarded.
+type queueDrainSpec[T any] struct {
+	queue           *queue.SpilloverQueue
+	endpoint        string // appended to baseURL, e.g. "/traps"
+	sendName        string // batch name in send logs: "traps","pings","syslog","flows"
+	drainLabel      string // label in "drain %s" errors
+	unmarshalLabel  string // label in unmarshal errors
+	noun            string // requeue disabled/full count label
+	nounLong        string // requeue success count label
+	interChunkDelay time.Duration
 }
 
-func (c *Client) requeueSyslogs(items []*SyslogMessage) {
-	if c.syslogQueue == nil {
-		log.Printf("[Relay] WARNING: Could not requeue %d syslog messages - queue disabled", len(items))
-		return
-	}
-	requeued := 0
-	for _, s := range items {
-		data, err := json.Marshal(s)
+// drainAndSend repeatedly drains a queue in bounded chunks (AUDIT-058) and
+// forwards each chunk, requeuing on failure. Shared by every event queue so the
+// per-queue loops no longer copy-paste the pipeline.
+func drainAndSend[T any](c *Client, baseURL string, drainChunk int, spec queueDrainSpec[T]) {
+	for {
+		raw, err := spec.queue.Drain(drainChunk)
 		if err != nil {
-			log.Printf("[Relay] Failed to marshal syslog for requeue: %v", err)
-			continue
+			log.Printf("[Relay] drain %s: %v", spec.drainLabel, err)
+			break
 		}
-		if err := c.syslogQueue.Push(data); err != nil {
-			log.Printf("[Relay] Re-queue syslog: %v", err)
-			continue
+		if len(raw) == 0 {
+			break
 		}
-		requeued++
-	}
-	if requeued > 0 {
-		log.Printf("[Relay] Re-queued %d syslog messages", requeued)
-	} else {
-		log.Printf("[Relay] WARNING: Could not requeue %d syslog messages - queue full", len(items))
-	}
-}
-
-func (c *Client) requeueFlows(items []*FlowSample) {
-	if c.flowQueue == nil {
-		log.Printf("[Relay] WARNING: Could not requeue %d flow samples - queue disabled", len(items))
-		return
-	}
-	requeued := 0
-	for _, f := range items {
-		data, err := json.Marshal(f)
-		if err != nil {
-			log.Printf("[Relay] Failed to marshal flow for requeue: %v", err)
-			continue
+		items := unmarshalQueued[T](raw, spec.unmarshalLabel)
+		sendBatchesSequential(c, baseURL+spec.endpoint, spec.sendName, items, func(chunk []*T) {
+			requeueItems(spec.queue, chunk, spec.noun, spec.nounLong)
+		})
+		if len(raw) < drainChunk {
+			break
 		}
-		if err := c.flowQueue.Push(data); err != nil {
-			log.Printf("[Relay] Re-queue flow: %v", err)
-			continue
+		if spec.interChunkDelay > 0 {
+			time.Sleep(spec.interChunkDelay)
 		}
-		requeued++
-	}
-	if requeued > 0 {
-		log.Printf("[Relay] Re-queued %d flow samples", requeued)
-	} else {
-		log.Printf("[Relay] WARNING: Could not requeue %d flow samples - queue full", len(items))
 	}
 }
 
