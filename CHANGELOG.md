@@ -1,6 +1,9 @@
 # Changelog
 
-## 1.2.128 - 2026-06-21
+## 1.2.129 - 2026-06-21
+
+### Fixed
+- **Interface IP addresses are now parsed correctly on FortiOS builds that append an extra sub-identifier to the `ipAddrTable` index (`internal/snmp/snmp.go`).** Some FortiGates return `ipAdEntIfIndex`/`ipAdEntNetMask` OIDs indexed with a 5th octet — e.g. `.1.3.6.1.2.1.4.20.1.2.192.168.25.254.1` instead of `…192.168.25.254` — and `GetInterfaceAddresses` was storing the whole suffix (`192.168.25.254.1`) as the IP. That string fails `net.ParseIP`, so the server's subnet/overlay connection detectors silently skipped every address from such a device (it never appeared on the connection map even though it shared a LAN with another monitored firewall). The parser now extracts just the first four octets via `ipv4FromTableIndex` and validates them, so quirky and standard agents both yield a clean dotted-quad. Confirmed against a live FortiGate that returns the 5-octet index; adds a unit test covering the quirk plus clean/short/invalid inputs.
 
 ### Added
 - **The collector now observes and reports each FortiGate's SSH host key for server-side change detection (`internal/ssh/ssh.go`, `internal/relay/relay.go`, `cmd/collector/main.go`).** `FortiGateClient.Connect` previously used `ssh.InsecureIgnoreHostKey()`; it now installs a `HostKeyCallback` that records the presented host key's `SHA256` fingerprint (`ssh.FingerprintSHA256`) and **returns nil unconditionally** — the connection is never blocked (alert-only by design; the server does the pinning/comparison/alerting). After each successful SSH connect (config backup and SSH polling) the collector records the fingerprint per device; the heartbeat now carries an `observed_host_keys` map (device ID → fingerprint) via a provider registered on the relay client. The collector keeps no host-key state on disk — it just reports what it sees, and the server (which pins a set of known-good keys and is HA-failover-aware) decides whether a key is new. Adds a unit test for the record/snapshot behavior.

@@ -2,6 +2,7 @@ package snmp
 
 import (
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -10,6 +11,24 @@ import (
 
 	"github.com/gosnmp/gosnmp"
 )
+
+// ipv4FromTableIndex extracts the 4-octet IPv4 address from an ipAddrTable OID
+// index. Per RFC 1213 the ipAdEntAddr index is the bare 4-octet address, but
+// some agents (certain FortiOS builds) append an extra sub-identifier — e.g.
+// "192.168.25.254.1" instead of "192.168.25.254". Keeping the whole suffix
+// yields an unparseable address (net.ParseIP rejects 5 octets), so take the
+// first four octets and validate. Returns "" if not a valid IPv4 address.
+func ipv4FromTableIndex(suffix string) string {
+	parts := strings.Split(suffix, ".")
+	if len(parts) < 4 {
+		return ""
+	}
+	ip := strings.Join(parts[:4], ".")
+	if net.ParseIP(ip).To4() == nil {
+		return ""
+	}
+	return ip
+}
 
 // Standard MIB OIDs (vendor-neutral)
 var (
@@ -580,7 +599,7 @@ func (s *SNMPClient) GetInterfaceAddresses() ([]relay.InterfaceAddress, error) {
 		name := pdu.Name
 
 		if strings.HasPrefix(name, OIDIpAdEntIfIndex+".") {
-			ip := strings.TrimPrefix(name, OIDIpAdEntIfIndex+".")
+			ip := ipv4FromTableIndex(strings.TrimPrefix(name, OIDIpAdEntIfIndex+"."))
 			if ip == "" || strings.HasPrefix(ip, "127.") || ip == "0.0.0.0" {
 				continue
 			}
@@ -593,7 +612,7 @@ func (s *SNMPClient) GetInterfaceAddresses() ([]relay.InterfaceAddress, error) {
 				addr.IfIndex = int(gosnmp.ToBigInt(pdu.Value).Int64())
 			}
 		} else if strings.HasPrefix(name, OIDIpAdEntNetMask+".") {
-			ip := strings.TrimPrefix(name, OIDIpAdEntNetMask+".")
+			ip := ipv4FromTableIndex(strings.TrimPrefix(name, OIDIpAdEntNetMask+"."))
 			if ip == "" || strings.HasPrefix(ip, "127.") || ip == "0.0.0.0" {
 				continue
 			}
