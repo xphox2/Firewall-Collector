@@ -1,8 +1,11 @@
 package sflow
 
 import (
+	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -100,15 +103,26 @@ func buildRawPacketRecord(pktHdr []byte, recordLen uint32) []byte {
 
 // buildFlowSample wraps one or more records in a flow sample (format=1).
 // Each record's bytes are written verbatim after the sample header.
+// The drops counter is always 0; tests that need a non-zero drops
+// value use buildFlowSampleWithDrops.
 func buildFlowSample(seqNum, sourceID, samplingRate uint32, records ...[]byte) []byte {
+	return buildFlowSampleWithDrops(seqNum, sourceID, samplingRate, 0, records...)
+}
+
+// buildFlowSampleWithDrops is the full version of buildFlowSample that
+// lets the test set the sFlow v5 §3.1.1 drops counter to any value.
+// A non-zero drops count is what the server will alert on to detect
+// agent-side congestion (the audit found this field was previously
+// read and discarded).
+func buildFlowSampleWithDrops(seqNum, sourceID, samplingRate, drops uint32, records ...[]byte) []byte {
 	s := make([]byte, 0, 32)
 	s = u32be(s, seqNum)
 	s = u32be(s, sourceID)
 	s = u32be(s, samplingRate)
-	s = u32be(s, 0) // sample_pool
-	s = u32be(s, 0) // drops
-	s = u32be(s, 0) // input
-	s = u32be(s, 0) // output
+	s = u32be(s, 0)        // sample_pool
+	s = u32be(s, drops)    // drops (sFlow v5 §3.1.1)
+	s = u32be(s, 0)        // input
+	s = u32be(s, 0)        // output
 	s = u32be(s, uint32(len(records)))
 	for _, r := range records {
 		s = append(s, r...)
@@ -254,6 +268,67 @@ func TestParseSFlowDatagram_RealisticFlowSample(t *testing.T) {
 	}
 	if s.Bytes == 0 || s.Timestamp.IsZero() {
 		t.Errorf("expected non-zero Bytes and Timestamp, got Bytes=%d Timestamp=%v", s.Bytes, s.Timestamp)
+	}
+}
+
+// TestParseSFlowDatagram_DropsFieldCaptured verifies the sFlow v5 §3.1.1
+// drops counter is read from the wire and propagated onto the emitted
+// FlowSample. Pre-audit this field was parsed and discarded, hiding
+// agent-side congestion from the operator. The test exercises a
+// non-zero drops value (42) and asserts the round-trip; a zero drops
+// value is implicitly covered by every other test that uses the
+// default buildFlowSample helper.
+func TestParseSFlowDatagram_DropsFieldCaptured(t *testing.T) {
+	srcIP := [4]byte{10, 0, 0, 1}
+	dstIP := [4]byte{10, 0, 0, 2}
+	ethTCP := buildIPv4EthernetTCPHeader(srcIP, dstIP, 12345, 443, 0x02)
+	rec := buildRawPacketRecord(ethTCP, uint32(16+len(ethTCP)))
+	// 42 packets dropped at the agent between this sample and the previous one.
+	sample := buildFlowSampleWithDrops(42, 100, 512, 42, rec)
+	dg := buildDatagram([4]byte{192, 168, 1, 10}, 7, sample)
+
+	r, get := newTestReceiver()
+	r.parseSFlowDatagram(dg)
+
+	got := get()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 flow sample, got %d", len(got))
+	}
+	if got[0].Drops != 42 {
+		t.Errorf("Drops = %d, want 42 (the audit found this field was previously read and discarded)", got[0].Drops)
+	}
+}
+
+// TestParseSFlowDatagram_DropsFieldZeroOmitsFromJSON pins the wire-format
+// behavior: drops=0 must not appear in the JSON serialization (the
+// `omitempty` tag on relay.FlowSample.Drops). The audit requires this
+// so a pre-adopting server (which doesn't know about the Drops field)
+// sees no wire field at all when drops=0 and continues to function
+// unchanged.
+func TestParseSFlowDatagram_DropsFieldZeroOmitsFromJSON(t *testing.T) {
+	srcIP := [4]byte{10, 0, 0, 1}
+	dstIP := [4]byte{10, 0, 0, 2}
+	ethTCP := buildIPv4EthernetTCPHeader(srcIP, dstIP, 12345, 443, 0x02)
+	rec := buildRawPacketRecord(ethTCP, uint32(16+len(ethTCP)))
+	sample := buildFlowSample(1, 1, 512, rec) // drops=0 via the default helper
+	dg := buildDatagram([4]byte{192, 168, 1, 10}, 1, sample)
+
+	r, get := newTestReceiver()
+	r.parseSFlowDatagram(dg)
+
+	got := get()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 flow sample, got %d", len(got))
+	}
+	if got[0].Drops != 0 {
+		t.Fatalf("setup: Drops = %d, want 0 for default-helper test", got[0].Drops)
+	}
+	jsonBytes, err := jsonMarshal(got[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if containsField(jsonBytes, "drops") {
+		t.Errorf("JSON output contains 'drops' when Drops=0; want omitempty to hide it (server compatibility): %s", jsonBytes)
 	}
 }
 
@@ -1113,4 +1188,26 @@ func TestStop_NoOpWhenNotRunning(t *testing.T) {
 	if err := r.Stop(); err != nil {
 		t.Fatalf("second Stop should also be no-op, got %v", err)
 	}
+}
+
+// jsonMarshal is a thin wrapper around encoding/json so the drops-omitempty
+// test reads cleanly without polluting the package's other tests with the
+// encoding/json import.
+func jsonMarshal(v interface{}) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(v); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// containsField reports whether the JSON-encoded payload has a top-level
+// key matching fieldName. Used by TestParseSFlowDatagram_DropsFieldZeroOmitsFromJSON
+// to pin the `omitempty` behavior of relay.FlowSample.Drops.
+func containsField(jsonBytes []byte, fieldName string) bool {
+	// Cheap-but-correct: walk the JSON looking for `"<field>":` at a
+	// top-level position. This is fine for the small flat structs the
+	// sFlow package emits.
+	needle := `"` + fieldName + `":`
+	return strings.Contains(string(jsonBytes), needle)
 }

@@ -222,7 +222,13 @@ func (r *SFlowReceiver) parseFlowSample(data []byte, offset *int, format uint32,
 	if _, ok = readUint32(data, offset); !ok { // sample_pool
 		return
 	}
-	if _, ok = readUint32(data, offset); !ok { // drops
+	// drops (sFlow v5 §3.1.1): the number of packets the agent had
+	// to drop between this sample and the previous one because it
+	// could not keep up. Captured into the emitted FlowSample so
+	// the server can alert on agent-side congestion. This was
+	// previously read and discarded (see cto-loop audit 2026-06-22).
+	drops, ok := readUint32(data, offset)
+	if !ok {
 		return
 	}
 
@@ -270,6 +276,7 @@ func (r *SFlowReceiver) parseFlowSample(data []byte, offset *int, format uint32,
 		SamplingRate:   samplingRate,
 		InputIfIndex:   inputIfIndex,
 		OutputIfIndex:  outputIfIndex,
+		Drops:          uint64(drops),
 	}
 
 	// Parse flow records looking for raw packet header
