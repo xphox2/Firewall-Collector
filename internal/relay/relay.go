@@ -900,7 +900,7 @@ func (c *Client) doDirectSend(endpoint string, name string, payload interface{})
 		resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
 		if err != nil {
 			if attempt < 2 {
-				time.Sleep(2 * time.Second)
+				time.Sleep(expBackoff(attempt))
 				continue
 			}
 			return fmt.Errorf("failed to send %s: %w", name, err)
@@ -922,7 +922,7 @@ func (c *Client) doDirectSend(endpoint string, name string, payload interface{})
 		}
 
 		if attempt < 2 {
-			time.Sleep(2 * time.Second)
+			time.Sleep(expBackoff(attempt))
 			continue
 		}
 		return fmt.Errorf("send %s returned status %d", name, resp.StatusCode)

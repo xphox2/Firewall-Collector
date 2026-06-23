@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.130 - 2026-06-22
+
+### Fixed
+- **Relay: `doDirectSend` now uses the extracted `expBackoff` helper instead of hardcoded `time.Sleep(2*time.Second)` (`internal/relay/relay.go`).** The 1.2.127 release extracted `expBackoff` and `reregisterBackoff` for `sendBatch` / `sendOneRevisionWithRetry` / `tryReregister` but missed this third call site — every `Send*` method that goes through `doDirectSend` (10 metric types: system status, interface stats, VPN, hardware sensors, processor stats, HA, security stats, SD-WAN, license, interface addresses) was sleeping a constant 2s on every retry. With `expBackoff`, the per-attempt delays are now 1s, 2s, 4s — matching the other two retry loops. Worst-case wall-clock for 3 failed attempts drops from ~4s to ~3s. The differing send loops themselves are still deliberately not merged (per the 1.2.127 design decision); this fix only ensures all three use the same delay helper. Tests: new `TestDoDirectSend_BackoffUsesExpBackoff` (wall-clock assertion that gaps between attempts match `expBackoff(0)` and `expBackoff(1)`) and `TestDoDirectSend_SuccessOnFirstTry_SkipsBackoff` (success-path sanity). Closes the regression-shaped finding from the 2026-06-22 CTO-loop audit (`docs/cto-loop-2026-06-22-taocp.md` [HIGH] #1).
+
 ## 1.2.129 - 2026-06-21
 
 ### Fixed
