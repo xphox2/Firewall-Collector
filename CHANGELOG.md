@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.131 - 2026-06-22
+
+### Added
+- **sFlow: the `drops` field is now captured per sample and shipped on the wire (`internal/sflow/sflow.go`, `internal/relay/relay.go`).** sFlow v5 §3.1.1 puts a running counter of packets the agent had to drop between this sample and the previous one (because it couldn't keep up with the sampled rate). Pre-audit the field was read and discarded, hiding agent-side congestion from operators. The collector now reads it into a new `Drops uint64` field on `relay.FlowSample` (with `omitempty` so a pre-adopting server sees no wire field at all and continues to function unchanged). The companion server-side surfacing (new `flow_agent_drops` table + alert policy + NOC strip widget) ships in the sibling repo's matching release. Tests: new `TestParseSFlowDatagram_DropsFieldCaptured` (asserts a non-zero `drops` round-trips onto the sample) and `TestParseSFlowDatagram_DropsFieldZeroOmitsFromJSON` (pins the omitempty behavior — a `Drops=0` sample must not contain the JSON `"drops"` key). Also adds `buildFlowSampleWithDrops` test helper; existing 16 call sites of `buildFlowSample` are unchanged (it now delegates with `drops=0`). Closes the cross-repo Drops finding from the 2026-06-22 CTO-loop audit (`docs/cto-loop-2026-06-22-consolidated.md` C-3).
+
 ## 1.2.130 - 2026-06-22
 
 ### Fixed

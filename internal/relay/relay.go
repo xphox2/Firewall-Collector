@@ -183,6 +183,14 @@ type FlowSample struct {
 	InputIfIndex   uint32    `json:"input_if_index"`
 	OutputIfIndex  uint32    `json:"output_if_index"`
 	TCPFlags       uint8     `json:"tcp_flags"`
+	// Drops is the sFlow v5 sample-pool drops counter for this sample
+	// (RFC 3176 §3.1.1). It counts the number of packets the agent
+	// had to drop between this sample and the previous one because it
+	// could not keep up with the sampled packet rate. Non-zero values
+	// indicate agent-side congestion. The field is omitempty so a
+	// pre-adopting server (which doesn't know about Drops) sees no
+	// wire field at all and continues to function unchanged.
+	Drops uint64 `json:"drops,omitempty"`
 }
 
 type HardwareSensor struct {
