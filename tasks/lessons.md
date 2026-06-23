@@ -91,17 +91,26 @@ grep -n 'Authorization' E:/Golang/OpenCode/Firewall-Collector/internal/relay/rel
 grep -n 'Authorization' E:/Golang/OpenCode/Firewall-Mon/internal/relay/relay.go
 ```
 
-## 2026-06-11 — The server's CHANGELOG has `[Unreleased]` at the top, not a versioned entry
+## 2026-06-22 — Both repos now use the same per-version CHANGELOG convention (the earlier `[Unreleased]` rule was stale)
 
-The Firewall-Monitoring repo's static guard
-`TestChangelog_KeepAChangelogHeader_AUDIT110` enforces that
-`[Unreleased]` is the **first** version section — a versioned
-entry like `## [0.10.412]` must go UNDER it, not above it. This
-contradicts the collector (which puts versioned entries at the top
-because it doesn't have an `[Unreleased]` section) and the user's
-own CLAUDE.md which says "MUST be placed at the VERY TOP" — the
-canonical truth is the static guard. When bumping a server version
-with a docs-only change, add a new bullet under `[Unreleased]`
-and bump `const ServerVersion` in `cmd/api/main.go`. The static
-guard test will fail if you put a versioned section above
-`[Unreleased]`.
+The earlier 2026-06-11 lesson was **wrong as of 2026-06-11 itself**. The maintainer
+removed the original Keep-A-Changelog `[Unreleased]` convention on 2026-06-11
+(server `CHANGELOG.md:277`) because the accumulator had drifted into a catch-all
+blob and diverged from the collector's format. `TestChangelog_KeepAChangelogHeader_AUDIT110`
+(`server/internal/shell/changelog_audit110_test.go:24-25`) was updated at the same
+time to enforce the **opposite** of what the old lesson said: the FIRST `## [...]`
+section must be a concrete version, NOT `## [Unreleased]`.
+
+**Current rule** (both repos):
+- Each release gets its own `## [X.Y.Z] - DATE` (server) or `## X.Y.Z - DATE`
+  (collector) section at the very top of `CHANGELOG.md`.
+- No `[Unreleased]` accumulator section anywhere.
+- New versions go BELOW the latest one (newest first, so the new section is
+  inserted above all older ones).
+- The server's AUDIT-110 test fails on (a) leading `[Unreleased]`, (b) any
+  non-version `## [...]` section as the first entry.
+
+**How I learned this:** the 2026-06-22 CTO-loop audit found the consolidated
+report's CHANGELOG row still claimed `[Unreleased]` was first. Reading
+`server/CHANGELOG.md:277` and the test file directly confirmed the rule had
+flipped. Old lesson was deleted; new rule recorded above.
