@@ -609,10 +609,38 @@ func (c *Client) doAuthenticatedRequestH(method, url string, body []byte, header
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.Config.RegistrationKey)
+	// W3C trace context + request ID so the server can correlate this probe→
+	// server request into one trace instead of always starting a fresh root span
+	// (2026-06-23 audit, M10). Set before the caller's headers so an explicit
+	// override still wins.
+	if tp, rid := newTraceContext(); tp != "" {
+		req.Header.Set("traceparent", tp)
+		req.Header.Set("X-Request-ID", rid)
+	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
 	return c.httpClient.Do(req)
+}
+
+// newTraceContext generates a spec-valid W3C `traceparent` header value and a
+// matching request ID. The collector has no OpenTelemetry SDK, so this emits
+// version 00 with random 16-byte trace / 8-byte span IDs and the sampled flag
+// (01); the server's W3C-aware middleware adopts it as the parent span. The
+// trace ID doubles as the X-Request-ID for plain log correlation. Returns
+// ("", "") on the rare crypto/rand failure, in which case the caller omits the
+// headers (the request still succeeds, just untraced).
+func newTraceContext() (traceparent, requestID string) {
+	traceID := make([]byte, 16)
+	spanID := make([]byte, 8)
+	if _, err := rand.Read(traceID); err != nil {
+		return "", ""
+	}
+	if _, err := rand.Read(spanID); err != nil {
+		return "", ""
+	}
+	tid := hex.EncodeToString(traceID)
+	return fmt.Sprintf("00-%s-%s-01", tid, hex.EncodeToString(spanID)), tid
 }
 
 // newBatchID returns a random idempotency key for one probe data batch
