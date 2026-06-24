@@ -45,7 +45,7 @@ as a long-lived process. On startup it:
 | `cmd/tftp-test` | Standalone TFTP client test. Operator-invoked. |
 | `internal/config` | Loads and validates env vars. Refuses to start without `PROBE_REGISTRATION_KEY`. |
 | `internal/relay` | The HTTP client to the server: `Register`, `Heartbeat`, `FetchDevicesAndConfig`, `SendSystemStatus`, `SendInterfaceStats`, `SendTrapEvents`, `SendFlowSamples`, `SendSyslogMessages`, `SendPingResults`, `SendConfigRevision`, `SendHardwareSensors`, `SendLicenseInfo`, `SendVPNStatus`, `SendHAStatus`, `SendSDWANHealth`, `SendSecurityStats`, `SendProcessSnapshot`, `SendInterfaceErrorSnapshots`, `SendSensorDetails`, `SendLicenseDetails`. Owns the mTLS client config. Implements the `schema_version` handshake (1.2.108+). |
-| `internal/relay/queue` | `SpilloverQueue` — in-memory slice + BoltDB on disk. FIFO eviction. Restart-survivable. Used by all five event streams. |
+| `internal/relay/queue` | `SpilloverQueue` — in-memory slice + BoltDB on disk. FIFO eviction. Restart-survivable. Used by all six streams/queues (the five event streams plus the metric queue added in 1.2.133). |
 | `internal/snmp` | `SNMPClient` (v1/v2c/v3), `TrapReceiver`, the `VendorProfile` registry with 8 in-tree profiles. |
 | `internal/syslog` | RFC 5424 parser + FortiGate hostname/SD device-ID extraction. |
 | `internal/sflow` | sFlow v5 datagram parser. |
@@ -71,8 +71,10 @@ as a long-lived process. On startup it:
 4. All `Send*` methods enqueue their marshaled JSON onto the
    `SpilloverQueue` for that stream.
 5. `relay.DataSendLoop` drains the queues in bounded chunks and POSTs
-   them. The 5 streams are independent (own mutex, own queue), so a
-   flood in one doesn't stall the others.
+   them. The 6 streams/queues are independent (own mutex, own queue), so a
+   flood in one doesn't stall the others. Each relay request carries a
+   W3C `traceparent` + `X-Request-ID` header (1.2.137) for cross-repo
+   trace correlation on the server.
 6. On a 401/403/404 the relay triggers a re-registration. The 4xx
    codes (400/401/403/404) drop or re-register, the 5xx codes retry
    with 1s/2s backoff (3 attempts). `X-Probe-Batch-ID` makes the POSTs

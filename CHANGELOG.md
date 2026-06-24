@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.138 - 2026-06-24
+
+### Changed
+- **Documentation accuracy pass + audit-report consolidation.** Brought docs up to current reality and reduced single-purpose-file sprawl: README/FEATURES/COMPATIBILITY version markers refreshed (badge → 1.2.137, `alpine:3.19`→`3.21`, "13 collectors"→14), the TFTP allowlist row corrected to "effective since v1.2.132" (the controls existed earlier but were dead code until then), new FEATURES rows for the metric spillover queue / `metric_send_failed_total` / W3C traceparent injection, `ARCHITECTURE.md` updated to six spillover streams + the relay trace headers, `CONTRIBUTING.md` line ref fixed, `DEPLOY.md` example tag refreshed, and the leftover "CTO-level review" internal nickname removed from the (now-archived) 2026-06-22 taocp report. The three superseded `docs/audit-2026-06-22-*.md` reports were moved to `docs/audit-archive/` and `tasks/PLAN.md`/`tasks/REVIEW-REPORT.md` to `tasks/archive/`; `docs/audit-2026-06-23-consolidated.md` stays live with a status banner marking H2/H9/M6/M10/M12/M13 resolved and H-trap/M7/the LOW tail still open. Docs only; no code change.
+
 ## 1.2.137 - 2026-06-24
 
 ### Added

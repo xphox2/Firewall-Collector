@@ -39,8 +39,8 @@
 
 | Feature | Status | Role | Since |
 |---|---|---|---|
-| Per-source-IP allow-list (TFTP WRQ) | Stable | [Probe] | 1.2.106 (AUDIT-050) |
-| Per-source-IP rate limit (TFTP WRQ, opt-in) | Stable | [Probe] | 1.2.106 (AUDIT-050) |
+| Per-source-IP allow-list (TFTP WRQ) | Stable | [Probe] | effective since v1.2.132 (AUDIT-050; controls existed since 1.2.106 but were not wired until v1.2.132) |
+| Per-source-IP rate limit (TFTP WRQ, opt-in) | Stable | [Probe] | effective since v1.2.132 (AUDIT-050; controls existed since 1.2.106 but were not wired until v1.2.132) |
 | 2 MB hard cap on TFTP transfer | Stable | [Probe] | 1.2.103 |
 | TFTP server panic-recovery (handler goroutine) | Stable | [Probe] | 1.2.103 |
 | `safego.Go` panic-recovery on all long-lived goroutines | Stable | [Probe] | 1.2.88 (AUDIT-052) |
@@ -54,6 +54,8 @@
 | Re-registration on 401/403/404 (rate-limited, 10-min cooldown after 5 fails) | Stable | [Probe] | 1.0.0 |
 | Heartbeat (default 60 s, "offline" on graceful shutdown) | Stable | [Probe] | 1.0.0 |
 | Per-stream `SpilloverQueue` — in-memory + BoltDB disk persistence | Stable | [Probe] | 1.2.101 / 1.2.104 (AUDIT-058) |
+| Metric spillover queue (primary metrics now disk-durable; survives server outage instead of silent loss) | Stable | [Probe] | 1.2.133 (H9) |
+| W3C `traceparent` + `X-Request-ID` injection on relay requests | Stable | [Probe] | 1.2.137 (M10) |
 | Bounded batches (`PROBE_MAX_BATCH_SIZE=1000`) | Stable | [Probe] | 1.0.0 |
 | Retry with 1 s / 2 s backoff (3 attempts) | Stable | [Probe] | 1.0.0 |
 | `X-Probe-Batch-ID` idempotency key | Stable | [Probe] + [Server] | 1.2.97 (AUDIT-042) |
@@ -67,7 +69,8 @@
 |---|---|---|---|
 | `GET /healthz` (always 200 if process is up) | Stable | [Probe] | 1.2.98 (AUDIT-057) |
 | `GET /readyz` (200 iff approved + heartbeat-fresh + every listener bound, else 503 with `X-Ready-Reason`) | Stable | [Probe] | 1.2.98 (AUDIT-057) |
-| Prometheus `/metrics` (13 collectors with `firewall_collector_` prefix) | Stable | [Probe] | 1.2.98 (AUDIT-057) |
+| Prometheus `/metrics` (14 collectors with `firewall_collector_` prefix) | Stable | [Probe] | 1.2.98 (AUDIT-057) |
+| `firewall_collector_metric_send_failed_total` counter (per-stream relay-send failures) | Stable | [Probe] | 1.2.133 (M12) |
 | Structured logging (slog, `text` or `json`) | Stable | [Probe] | 1.2.101 (AUDIT-056) |
 
 ## Resiliency
@@ -92,7 +95,7 @@
 
 | Feature | Status | Role | Since |
 |---|---|---|---|
-| Multi-stage rootless Docker image (`alpine:3.19`, `nobody:65534`, `cap_drop: ALL`, `cap_add: NET_RAW`) | Stable | [Probe] | 1.2.93 (AUDIT-047) |
+| Multi-stage rootless Docker image (`alpine:3.21`, `nobody:65534`, `cap_drop: ALL`, `cap_add: NET_RAW`) | Stable | [Probe] | 1.2.93 (AUDIT-047) |
 | `host` network mode for the listener ports (with extensive inline security comment) | Stable | [Probe] | 1.0.0 |
 | Multi-arch container image (`linux/amd64`; arm64 is on the roadmap) | Beta | [Probe] | 1.2.93 |
 | Reproducible builds (`-trimpath -buildvcs=false`) | Stable | [Probe] | 1.2.93 |
@@ -119,8 +122,8 @@ To add a vendor: see [CUSTOM-VENDOR.md](CUSTOM-VENDOR.md).
 
 ## Roadmap (deferred from current `1.2.x` series)
 
-These are tracked in `tasks/REVIEW-REPORT.md` (the public-release audit)
-and surfaced here so customers don't plan around vaporware.
+These are tracked in `docs/audit-2026-06-23-consolidated.md` (the
+current audit) and surfaced here so customers don't plan around vaporware.
 
 | Feature | Tracking | Status |
 |---|---|---|

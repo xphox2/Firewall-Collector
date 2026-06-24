@@ -85,7 +85,7 @@ uses LF; CRLF will appear as a "modified" file in CI.
 
 1. Branch from `master`: `git checkout -b audit-NNN-short-name`.
 2. Make your changes. Add tests. Bump `const version` in
-   `cmd/collector/main.go:28` per the patch-versioning rule
+   `cmd/collector/main.go:55` per the patch-versioning rule
    (1.2.74 → 1.2.75 → 1.2.76). Add a `## 1.2.x` section to
    `CHANGELOG.md` at the top, matching the existing style.
 3. Commit. Do **not** include a `Co-Authored-By:` trailer.
