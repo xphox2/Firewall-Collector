@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.140 - 2026-06-24
+
+### Security
+- **The SNMP trap receiver no longer logs the trap community secret on a community mismatch (2026-06-23 audit, H-trap).** `allowCommunity` (`internal/snmp/trap.go`) logged `community mismatch (expected %q, got %q)` — writing the configured trap community (a shared authentication secret) AND the attacker-supplied value to logs on every mismatched trap, exactly the noisy/attacked path most likely to be shipped to a log aggregator. Disclosure of the community enables trap forgery. The drop log now records only the source IP (`community mismatch from <ip>`) — the useful non-secret context; `allowCommunity` takes the source IP and the caller passes `addr.IP.String()`. The regression test `TestTrapReceiver_CommunityMismatch_LogsDrop` is inverted to assert the secret is ABSENT (and the source IP present) rather than pinning the leak.
+
 ## 1.2.139 - 2026-06-24
 
 ### Added

@@ -50,7 +50,7 @@ func (t *TrapReceiver) Start(handler func(*relay.TrapEvent)) error {
 			log.Printf("[SNMP Trap] Received trap from %s (%d varbinds, version %s)",
 				addr.IP, len(packet.Variables), packet.Version)
 
-			if !t.allowCommunity(packet.Community) {
+			if !t.allowCommunity(packet.Community, addr.IP.String()) {
 				return
 			}
 			trap := t.parseTrap(packet, addr)
@@ -88,12 +88,16 @@ func (t *TrapReceiver) Stop() {
 	log.Println("[SNMP Trap] Listener stopped")
 }
 
-func (t *TrapReceiver) allowCommunity(community string) bool {
+func (t *TrapReceiver) allowCommunity(community, srcIP string) bool {
 	if t.community == "" {
 		return true // filtering disabled — no community configured (accept any)
 	}
 	if community != t.community {
-		log.Printf("[SNMP Trap] Dropped: community mismatch (expected %q, got %q)", t.community, community)
+		// The configured community is a shared secret used to authenticate the
+		// trap, and the supplied value is attacker-controlled — neither is logged
+		// (2026-06-23 audit, H-trap). Log only the source IP, which is the useful
+		// non-secret context for diagnosing a misconfigured/spoofing sender.
+		log.Printf("[SNMP Trap] Dropped: community mismatch from %s", srcIP)
 		return false
 	}
 	return true
