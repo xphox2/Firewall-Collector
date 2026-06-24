@@ -26,13 +26,13 @@ func TestTrapReceiver_CommunityMismatch_Drops(t *testing.T) {
 	const want = "public"
 	tr := NewTrapReceiver("127.0.0.1", 0, want)
 
-	if got := tr.allowCommunity("private"); got {
+	if got := tr.allowCommunity("private", "192.0.2.1"); got {
 		t.Errorf("allowCommunity(%q) = true, want false (expected %q)", "private", want)
 	}
-	if got := tr.allowCommunity(""); got {
+	if got := tr.allowCommunity("", "192.0.2.1"); got {
 		t.Errorf("allowCommunity(\"\") = true, want false — empty packet community must be rejected, not silently accepted")
 	}
-	if got := tr.allowCommunity(want); !got {
+	if got := tr.allowCommunity(want, "192.0.2.1"); !got {
 		t.Errorf("allowCommunity(%q) = false, want true", want)
 	}
 }
@@ -41,15 +41,24 @@ func TestTrapReceiver_CommunityMismatch_LogsDrop(t *testing.T) {
 	tr := NewTrapReceiver("127.0.0.1", 0, "public")
 
 	out := withCapturedLog(t, func() {
-		if tr.allowCommunity("private") {
+		if tr.allowCommunity("private", "192.0.2.1") {
 			t.Fatal("expected drop")
 		}
 	})
 	if !strings.Contains(out, "community mismatch") {
 		t.Errorf("expected a 'community mismatch' log line, got: %q", out)
 	}
-	if !strings.Contains(out, "public") || !strings.Contains(out, "private") {
-		t.Errorf("expected the log to mention both expected and got community, got: %q", out)
+	// 2026-06-23 audit H-trap: the configured community ("public") is a shared
+	// secret and the supplied value ("private") is attacker-controlled — NEITHER
+	// may appear in the log. Only the source IP is logged.
+	if strings.Contains(out, "public") {
+		t.Errorf("SECURITY: the configured trap community leaked into the log: %q", out)
+	}
+	if strings.Contains(out, "private") {
+		t.Errorf("the attacker-supplied community was logged: %q", out)
+	}
+	if !strings.Contains(out, "192.0.2.1") {
+		t.Errorf("expected the source IP in the drop log, got: %q", out)
 	}
 }
 
@@ -60,7 +69,7 @@ func TestTrapReceiver_EmptyCommunity_AcceptsAny(t *testing.T) {
 	// on the server, so there is rarely a single shared trap community.
 	tr := NewTrapReceiver("127.0.0.1", 0, "")
 	for _, c := range []string{"", "public", "private", "anything"} {
-		if !tr.allowCommunity(c) {
+		if !tr.allowCommunity(c, "192.0.2.1") {
 			t.Errorf("allowCommunity(%q) = false, want true (filtering disabled when community unset)", c)
 		}
 	}
