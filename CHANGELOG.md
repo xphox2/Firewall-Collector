@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.139 - 2026-06-24
+
+### Added
+- **`THIRD-PARTY-NOTICES.md`** for license-compliance completeness (cross-repo consistency with the server, which already ships one). The distributed `firewall-collector` binary statically links 4 direct Go modules (gosnmp BSD-2-Clause, prometheus/client_golang Apache-2.0, bbolt MIT, x/crypto BSD-3-Clause); the file lists them with versions+licenses and reproduces the license texts. Also fixed the `docs/STRUCTURE.md` cross-repo link that still pointed at the server's now-archived `UPGRADE-2026-06.md` (→ `OPERATIONS.md`) and added a licenses row. Docs only.
+
 ## 1.2.138 - 2026-06-24
 
 ### Changed
