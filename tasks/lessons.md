@@ -64,7 +64,7 @@ Firewall-Collector and Firewall-Mon repos. Read at session start.
 | FortiGate SNMP setup | `xphox2/Firewall-Monitoring/docs/FORTIGATE-SNMP-SETUP.md` |
 | Custom vendor profile | `xphox2/Firewall-Monitoring/docs/CUSTOM-VENDOR.md` |
 | TLS / probe credential rotation | `xphox2/Firewall-Monitoring/docs/CERT-ROTATION.md` |
-| Paired-repo CTO audit | `xphox2/Firewall-Monitoring/tasks/CTO-LOOP-2026-06-11.md` |
+| Paired-repo CTO audit | `xphox2/Firewall-Monitoring/tasks/audit-2026-06-11.md` |
 
 ## 2026-06-11 — Disambiguate `internal/relay/relay.go` in any audit
 
@@ -78,10 +78,10 @@ enough to be different code:
   server's bundled `cmd/probe`. Does **not** set `Authorization: Bearer`
   (9 sites: 265, 307, 475, 653, 676, 699, 773, 793, 813).
 
-The 2026-06-10 CTO loop at `tasks/CTO-LOOP-2026-06-10.md` cited
+The 2026-06-10 internal audit at `tasks/audit-2026-06-10.md` cited
 "internal/relay/relay.go" without disambiguating and attributed the
 H-3 bug to the wrong repo. The 06-11 paired-repo audit (in
-`xphox2/Firewall-Monitoring/tasks/CTO-LOOP-2026-06-11.md`) corrected
+`xphox2/Firewall-Monitoring/tasks/audit-2026-06-11.md`) corrected
 this and added XR-1 (delete the bundled probe) as the actual fix.
 
 **Rule:** when grepping for `Authorization` in the relay packages, run
@@ -110,7 +110,7 @@ section must be a concrete version, NOT `## [Unreleased]`.
 - The server's AUDIT-110 test fails on (a) leading `[Unreleased]`, (b) any
   non-version `## [...]` section as the first entry.
 
-**How I learned this:** the 2026-06-22 CTO-loop audit found the consolidated
+**How I learned this:** the 2026-06-22 audit found the consolidated
 report's CHANGELOG row still claimed `[Unreleased]` was first. Reading
 `server/CHANGELOG.md:277` and the test file directly confirmed the rule had
 flipped. Old lesson was deleted; new rule recorded above.
