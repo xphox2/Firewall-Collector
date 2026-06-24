@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.142 - 2026-06-24
+
+### Fixed
+- **Relay snapshot/detail senders now drain the HTTP response body so the keep-alive connection is reused (2026-06-23 audit, L7).** `SendProcessSnapshot`, `SendInterfaceErrorSnapshot(s)`, `SendSensorDetails`, and `SendLicenseDetails` closed the response body without reading it to EOF, so net/http opened a fresh TCP/TLS connection on every per-cycle send. They now route through the existing `drainAndClose` helper (the metric senders already did, v1.2.133 = L6). Regression test asserts 3 sequential sends reuse a single connection.
+- **Relay HTTPS client pins `MinVersion` to TLS 1.2 (2026-06-23 audit, L10).** `buildTLSConfig` left `MinVersion` unset; the Go 1.25 client default is already 1.2, so this is defensive against a GODEBUG/toolchain change lowering it, and matches the server.
+
+### Changed
+- **Deduplicated the `getEnv` helper (2026-06-23 audit, L16).** `cmd/collector/main.go` carried its own copy identical to `internal/config`'s; the config one is now exported as `config.GetEnv` and the local copy removed.
+
 ## 1.2.141 - 2026-06-24
 
 ### Fixed
