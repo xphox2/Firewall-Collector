@@ -52,7 +52,7 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
-const version = "1.2.133"
+const version = "1.2.134"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -945,7 +945,7 @@ const tftpMinWRQInterval = 30 * time.Second
 // added, but cmd/collector never called them — so the WRQ handler accepted
 // forged config uploads from ANY host that could reach UDP/69, letting an
 // attacker submit an authoritative config-revision for any device_id and poison
-// config-change detection (CTO-loop 2026-06-23, H2). Called at startup and on
+// config-change detection (2026-06-23 audit, H2). Called at startup and on
 // every device-list refresh so the allowlist tracks the assigned fleet. An empty
 // device list yields a non-nil empty allowlist (deny-all) — the secure default
 // while no devices are assigned.
