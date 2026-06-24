@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.141 - 2026-06-24
+
+### Fixed
+- **The sFlow/event spillover queue no longer fsyncs under its mutex on every overflow item (2026-06-23 audit, M7).** `internal/relay/queue` opened BoltDB in the default (sync-on-commit) mode, so once the in-memory tier filled, every `Push` overflow ran `appendToDisk -> db.Update -> fsync` while holding `q.mu`. The single sFlow `readLoop` pushes inline, so above steady-state (~hundreds of samples/sec) each sample blocked on a disk fsync and the UDP receive path stalled -> dropped flows. The DB is now opened with `NoSync` so `Push` is a fast in-memory + page-cache write, and durability is provided by a throttled fsync (at most once per `SyncInterval`, default 2s) plus an unconditional fsync on `Close`. A process restart loses nothing (committed pages survive in the OS page cache; bbolt dual-meta recovers cleanly); only a kernel crash/power loss can lose up to ~2s of the most-recent buffered samples (acceptable for a sampled-telemetry buffer). Locking and the FIFO/mem-XOR-disk invariants are unchanged (no new goroutine). Tests: `queue_m7_test.go` (SyncInterval default/override; durability across a graceful Close+reopen with items both spilled and in-memory); the existing AUDIT-058 spill/replay/FIFO/cap suite still passes.
+
 ## 1.2.140 - 2026-06-24
 
 ### Security

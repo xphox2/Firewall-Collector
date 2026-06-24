@@ -33,6 +33,17 @@ type Config struct {
 	// MaxBytes is the on-disk byte cap (sum of stored key+value bytes).
 	// 0 disables byte-cap enforcement.
 	MaxBytes int64
+	// SyncInterval bounds how often the spillover file is fsync'd. The BoltDB is
+	// opened with NoSync so the hot Push path never blocks on a per-write fsync
+	// (the 2026-06-23 audit M7 stall, which dropped sFlow under load); durability
+	// instead comes from an fsync at most once per SyncInterval plus an
+	// unconditional fsync on Close. A process restart loses nothing — committed
+	// pages live in the OS page cache and survive process exit, and bbolt's
+	// dual-meta pages recover cleanly — so the AUDIT-058 restart/outage guarantee
+	// holds; only a kernel crash / power loss can lose up to SyncInterval of the
+	// most-recent items, an acceptable trade for a sampled-telemetry buffer.
+	// 0 → 2s default.
+	SyncInterval time.Duration
 }
 
 // SpilloverQueue is a two-tier FIFO queue backed by an in-memory slice and
@@ -44,14 +55,16 @@ type Config struct {
 // then memory), so the combined store is a strict FIFO regardless of which
 // tier an item lives in.
 type SpilloverQueue struct {
-	mu       sync.Mutex
-	cfg      Config
-	db       *bolt.DB
-	bucket   []byte
-	inMem    [][]byte
-	diskSize int64
-	dropped  uint64
-	seq      uint64
+	mu           sync.Mutex
+	cfg          Config
+	db           *bolt.DB
+	bucket       []byte
+	inMem        [][]byte
+	diskSize     int64
+	dropped      uint64
+	seq          uint64
+	syncInterval time.Duration
+	lastSync     time.Time // last successful db.Sync(); guarded by mu
 }
 
 // Open creates a new SpilloverQueue and replays any items previously
@@ -73,7 +86,10 @@ func Open(cfg Config) (*SpilloverQueue, error) {
 		return nil, fmt.Errorf("queue: mkdir %s: %w", filepath.Dir(cfg.Path), err)
 	}
 
-	db, err := bolt.Open(cfg.Path, 0o600, &bolt.Options{Timeout: 5 * time.Second})
+	// NoSync: the hot Push path must not block on a per-write fsync (audit M7).
+	// Durability is provided by the throttled fsync in appendToDisk (≤ once per
+	// syncInterval) plus an unconditional fsync in Close. See Config.SyncInterval.
+	db, err := bolt.Open(cfg.Path, 0o600, &bolt.Options{Timeout: 5 * time.Second, NoSync: true})
 	if err != nil {
 		return nil, fmt.Errorf("queue: open bbolt %s: %w", cfg.Path, err)
 	}
@@ -86,10 +102,15 @@ func Open(cfg Config) (*SpilloverQueue, error) {
 		return nil, fmt.Errorf("queue: create bucket %s: %w", cfg.Bucket, err)
 	}
 
+	syncInterval := cfg.SyncInterval
+	if syncInterval <= 0 {
+		syncInterval = 2 * time.Second
+	}
 	q := &SpilloverQueue{
-		cfg:    cfg,
-		db:     db,
-		bucket: []byte(cfg.Bucket),
+		cfg:          cfg,
+		db:           db,
+		bucket:       []byte(cfg.Bucket),
+		syncInterval: syncInterval,
 	}
 
 	if err := q.replay(); err != nil {
@@ -207,7 +228,7 @@ func (q *SpilloverQueue) Push(item []byte) error {
 func (q *SpilloverQueue) appendToDisk(item []byte) error {
 	addSize := int64(8 + len(item))
 
-	return q.db.Update(func(tx *bolt.Tx) error {
+	if err := q.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(q.bucket)
 
 		if q.cfg.MaxBytes > 0 {
@@ -238,7 +259,28 @@ func (q *SpilloverQueue) appendToDisk(item []byte) error {
 		}
 		q.diskSize += addSize
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+
+	// With NoSync the commit above did not fsync. Flush at most once per
+	// syncInterval so the hot Push path pays an fsync ~once per interval instead
+	// of on every overflow (audit M7). Best-effort: a failed sync leaves the data
+	// in the OS page cache (still process-restart durable) and the next interval
+	// retries. Caller holds q.mu.
+	q.maybeSyncLocked(time.Now())
+	return nil
+}
+
+// maybeSyncLocked fsyncs the spillover file if at least syncInterval has elapsed
+// since the last sync. The caller must hold q.mu.
+func (q *SpilloverQueue) maybeSyncLocked(now time.Time) {
+	if now.Sub(q.lastSync) < q.syncInterval {
+		return
+	}
+	if err := q.db.Sync(); err == nil {
+		q.lastSync = now
+	}
 }
 
 // Drain returns up to n items, oldest first, and removes them from the
@@ -378,5 +420,11 @@ func (q *SpilloverQueue) Close() error {
 		}
 	}
 
+	// Graceful shutdown is fully durable: force a final fsync (the DB is opened
+	// NoSync, so db.Close alone would not flush the throttled-but-unsynced tail).
+	if err := q.db.Sync(); err != nil {
+		_ = q.db.Close()
+		return err
+	}
 	return q.db.Close()
 }
