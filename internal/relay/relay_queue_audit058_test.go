@@ -30,6 +30,7 @@ func TestEnsureQueues_AUDIT058(t *testing.T) {
 		"syslog":   c.syslogQueue,
 		"flow":     c.flowQueue,
 		"revision": c.revisionQueue,
+		"metric":   c.metricQueue, // H9: primary-metric spillover queue
 	}
 	for name, q := range queues {
 		if q == nil {

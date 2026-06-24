@@ -396,6 +396,18 @@ type Client struct {
 	// central server would lose the only copy of the config backup.
 	revisionQueue *queue.SpilloverQueue
 
+	// metricQueue (CTO-loop 2026-06-23 H9) buffers the primary SNMP-metric
+	// sends (the 10 doDirectSend endpoints: system status, interface stats,
+	// VPN, hardware sensors, processor stats, HA, security stats, SD-WAN,
+	// license, interface addresses) when the server is unreachable. Before this
+	// they had NO queue — doDirectSend's callers only logged on failure, so a
+	// server outage discarded every health sample for its full duration while
+	// the lower-value event streams (traps/syslog/pings/flows) WERE preserved,
+	// inverting data-value priority. Each item is a metricEnvelope (endpoint +
+	// already-marshaled payload) so one queue serves all 10 differently-routed
+	// metric types; drained in syncData via drainMetricQueue.
+	metricQueue *queue.SpilloverQueue
+
 	// observedHostKeysFn, if set, returns a snapshot of the SSH host-key
 	// fingerprints the collector has observed (device ID -> "SHA256:..."). The
 	// heartbeat includes it so the server can detect host-key changes.
@@ -494,16 +506,17 @@ func (c *Client) ensureQueues() {
 		c.syslogQueue = open("syslog")
 		c.flowQueue = open("flows")
 		c.revisionQueue = open("revisions")
+		c.metricQueue = open("metrics")
 
 		if openErr != nil {
 			// Partial open: close whatever succeeded and run fully disabled,
 			// rather than with an inconsistent subset of queues.
-			for _, q := range []*queue.SpilloverQueue{c.trapQueue, c.pingQueue, c.syslogQueue, c.flowQueue, c.revisionQueue} {
+			for _, q := range []*queue.SpilloverQueue{c.trapQueue, c.pingQueue, c.syslogQueue, c.flowQueue, c.revisionQueue, c.metricQueue} {
 				if q != nil {
 					_ = q.Close()
 				}
 			}
-			c.trapQueue, c.pingQueue, c.syslogQueue, c.flowQueue, c.revisionQueue = nil, nil, nil, nil, nil
+			c.trapQueue, c.pingQueue, c.syslogQueue, c.flowQueue, c.revisionQueue, c.metricQueue = nil, nil, nil, nil, nil, nil
 			return
 		}
 
@@ -890,52 +903,164 @@ func reregisterBackoff(attempt int) time.Duration {
 	return time.Duration(1<<uint(attempt))*10*time.Second + time.Duration(mrand.Intn(5000))*time.Millisecond
 }
 
-func (c *Client) doDirectSend(endpoint string, name string, payload interface{}) error {
-	if !c.approved.Load() {
-		if !c.tryReregister() {
-			return fmt.Errorf("probe not approved")
-		}
-	}
+// metricEnvelope is one buffered primary-metric send: the endpoint to POST to
+// and the already-marshaled JSON body. One metricQueue holds envelopes for all
+// 10 metric endpoints so a single queue serves every differently-routed type.
+type metricEnvelope struct {
+	Endpoint string          `json:"e"`
+	Name     string          `json:"n"`
+	Payload  json.RawMessage `json:"p"`
+}
 
+// doDirectSend sends a primary SNMP-metric batch immediately. On a transient
+// failure (server unreachable, 5xx, or 429 backpressure) it buffers the payload
+// to the metric spillover queue (H9) instead of dropping it, so a server outage
+// no longer discards health telemetry — syncData drains the queue on recovery.
+// One live attempt is made (plus one retry after a successful re-registration);
+// the durable queue, not inline backoff, is what survives a prolonged outage, so
+// we no longer burn ~7s of per-metric per-device backoff here (audit: "drop
+// doDirectSend retries to 1").
+func (c *Client) doDirectSend(endpoint string, name string, payload interface{}) error {
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("failed to marshal %s: %w", name, err)
 	}
 
+	if !c.approved.Load() {
+		if !c.tryReregister() {
+			c.enqueueMetric(endpoint, name, jsonData)
+			return fmt.Errorf("probe not approved (buffered %s)", name)
+		}
+	}
+
 	url := fmt.Sprintf("%s/api/probes/%d/%s", c.Config.ServerURL, c.GetProbeID(), endpoint)
 
-	for attempt := 0; attempt < 3; attempt++ {
-		resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
+	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
+	if err != nil {
+		// Transport failure (server down): buffer for the recovery drain.
+		c.enqueueMetric(endpoint, name, jsonData)
+		return fmt.Errorf("failed to send %s (buffered): %w", name, err)
+	}
+	drainAndClose(resp)
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+
+	// Auth/not-found: re-register once, then retry the send once.
+	if resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 404 {
+		log.Printf("[Relay] Probe rejected (%d on %s), attempting re-registration...", resp.StatusCode, name)
+		c.approved.Store(false)
+		if c.tryReregister() {
+			resp2, err2 := c.doAuthenticatedRequest("POST", url, jsonData)
+			if err2 == nil {
+				drainAndClose(resp2)
+				if resp2.StatusCode >= 200 && resp2.StatusCode < 300 {
+					return nil
+				}
+			}
+		}
+		c.enqueueMetric(endpoint, name, jsonData)
+		return fmt.Errorf("probe re-register/send failed (%d on %s, buffered)", resp.StatusCode, name)
+	}
+
+	// Other non-2xx: buffer if transient (5xx/429), drop if a permanent
+	// rejection (a malformed batch would otherwise loop in the queue forever).
+	if isRetryableStatus(resp.StatusCode) {
+		c.enqueueMetric(endpoint, name, jsonData)
+		return fmt.Errorf("send %s returned status %d (buffered)", name, resp.StatusCode)
+	}
+	return fmt.Errorf("send %s returned permanent status %d (dropped)", name, resp.StatusCode)
+}
+
+// drainAndClose drains and closes an HTTP response body so the underlying
+// keep-alive connection can be reused (closing without draining forces the
+// transport to drop the connection — the per-cycle pool-defeat the audit flagged
+// in doDirectSend).
+func drainAndClose(resp *http.Response) {
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+}
+
+// enqueueMetric buffers a failed metric send for the recovery drain. A nil queue
+// (spillover disabled — PROBE_QUEUE_DISK_PATH unset) means the data is dropped,
+// already warned about once at ensureQueues.
+func (c *Client) enqueueMetric(endpoint, name string, payload []byte) {
+	c.ensureQueues()
+	if c.metricQueue == nil {
+		return
+	}
+	env := metricEnvelope{Endpoint: endpoint, Name: name, Payload: append(json.RawMessage(nil), payload...)}
+	b, err := json.Marshal(env)
+	if err != nil {
+		log.Printf("[Relay] Failed to envelope %s metric for queue: %v", name, err)
+		return
+	}
+	if err := c.metricQueue.Push(b); err != nil {
+		log.Printf("[Relay] Failed to enqueue %s metric: %v", name, err)
+	}
+}
+
+// postMetricRaw POSTs an already-marshaled metric body once and reports
+// (ok, permanent). It does not enqueue or re-register — the drain loop decides
+// whether to requeue. permanent is true for non-retryable 4xx so a poison
+// payload is dropped rather than requeued forever.
+func (c *Client) postMetricRaw(endpoint, name string, body []byte) (ok bool, permanent bool) {
+	url := fmt.Sprintf("%s/api/probes/%d/%s", c.Config.ServerURL, c.GetProbeID(), endpoint)
+	resp, err := c.doAuthenticatedRequest("POST", url, body)
+	if err != nil {
+		return false, false
+	}
+	drainAndClose(resp)
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return true, false
+	}
+	return false, !isRetryableStatus(resp.StatusCode)
+}
+
+// drainMetricQueue forwards buffered metric sends on recovery. On the first
+// transient failure it requeues the unsent remainder and stops (the server is
+// still down — retry next sync). Permanently-rejected and malformed items are
+// dropped so they cannot wedge the queue.
+func (c *Client) drainMetricQueue(drainChunk int) {
+	if c.metricQueue == nil {
+		return
+	}
+	for {
+		raw, err := c.metricQueue.Drain(drainChunk)
 		if err != nil {
-			if attempt < 2 {
-				time.Sleep(expBackoff(attempt))
+			log.Printf("[Relay] drain metrics: %v", err)
+			return
+		}
+		if len(raw) == 0 {
+			return
+		}
+		for idx, item := range raw {
+			var env metricEnvelope
+			if err := json.Unmarshal(item, &env); err != nil {
+				log.Printf("[Relay] drain metrics: dropping malformed envelope: %v", err)
 				continue
 			}
-			return fmt.Errorf("failed to send %s: %w", name, err)
-		}
-		resp.Body.Close()
-
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			return nil
-		}
-
-		// Attempt re-registration on auth/not-found errors
-		if resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 404 {
-			log.Printf("[Relay] Probe rejected (%d on %s), attempting re-registration...", resp.StatusCode, name)
-			c.approved.Store(false)
-			if c.tryReregister() {
-				continue // retry the send after successful re-registration
+			ok, permanent := c.postMetricRaw(env.Endpoint, env.Name, env.Payload)
+			if ok || permanent {
+				if permanent {
+					log.Printf("[Relay] drain metrics: %s permanently rejected — dropping", env.Name)
+				}
+				continue
 			}
-			return fmt.Errorf("probe no longer approved (%d on %s)", resp.StatusCode, name)
+			// Transient failure: server still unreachable. Requeue this item and
+			// every unsent item after it, then stop until the next sync.
+			for _, rem := range raw[idx:] {
+				if err := c.metricQueue.Push(rem); err != nil {
+					log.Printf("[Relay] drain metrics: requeue failed: %v", err)
+				}
+			}
+			return
 		}
-
-		if attempt < 2 {
-			time.Sleep(expBackoff(attempt))
-			continue
+		if len(raw) < drainChunk {
+			return
 		}
-		return fmt.Errorf("send %s returned status %d", name, resp.StatusCode)
 	}
-	return nil
 }
 
 func (c *Client) SendSystemStatuses(statuses []SystemStatus) error {
@@ -1105,6 +1230,11 @@ func (c *Client) syncData() {
 			break
 		}
 	}
+
+	// H9: drain buffered primary metrics last — like revisions, these are
+	// envelope-tagged with their own endpoint, so they use a dedicated drain
+	// rather than the typed event-queue pipeline.
+	c.drainMetricQueue(drainChunk)
 }
 
 // unmarshalQueued converts a slice of JSON bytes (as produced by the
@@ -1236,7 +1366,14 @@ func drainAndSend[T any](c *Client, baseURL string, drainChunk int, spec queueDr
 
 func isRetryableStatus(statusCode int) bool {
 	switch statusCode {
-	case 400, 401, 403, 404, 405, 409, 410, 422, 429:
+	// 429 (Too Many Requests) is TRANSIENT — the server rate-limits probe
+	// ingestion endpoints with it, so treating it as non-retryable (the
+	// pre-v1.2.132 behavior) silently DROPPED whole SNMP-metric batches the
+	// moment the server pushed back. It is retryable; the surrounding retry
+	// loops already pace with expBackoff (1s/2s/4s), which is the correct
+	// response to backpressure. The 4xx codes below are genuine permanent
+	// rejections (bad request, auth, not-found, conflict, gone, unprocessable).
+	case 400, 401, 403, 404, 405, 409, 410, 422:
 		return false
 	default:
 		return true
@@ -1321,6 +1458,7 @@ func (c *Client) Stop() {
 			"syslog":    c.syslogQueue,
 			"flows":     c.flowQueue,
 			"revisions": c.revisionQueue,
+			"metrics":   c.metricQueue,
 		} {
 			if q == nil {
 				continue

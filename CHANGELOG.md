@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.2.133 - 2026-06-23
+
+### Fixed
+- **Primary SNMP-metric telemetry is now buffered through a spillover queue during a server outage instead of being dropped (2026-06-23 audit, H9).** The 10 `doDirectSend` endpoints (system status, interface stats, VPN, hardware sensors, processor stats, HA, security stats, SD-WAN, license, interface addresses) had NO queue — callers only logged on failure, so a server outage discarded every health sample for its full duration while the *lower*-value event streams (traps/syslog/pings/flows) were preserved, inverting data-value priority. Added a `metricQueue` (`internal/relay/relay.go`) holding endpoint-tagged `metricEnvelope`s (so one queue serves all 10 differently-routed types), opened alongside the existing spillover queues and drained on recovery in `syncData` via `drainMetricQueue` (forward → requeue-the-remainder-on-failure → drop permanent/ malformed). `doDirectSend` now makes ONE live attempt and buffers on a transient failure (server down / 5xx / 429) rather than burning ~7s of inline `expBackoff` per metric per device (audit: "drop retries to 1"); durability comes from the durable, restart-surviving queue. Permanent 4xx rejections are dropped (never requeued, so a malformed batch can't wedge the queue). Also drains-and-closes the HTTP response body so the keep-alive connection is reused (closing without draining forced a per-cycle connection drop). Requires `PROBE_QUEUE_DISK_PATH` set (same as the other spillover queues); unset still degrades to drop-on-outage with the existing warning. Tests: `internal/relay/metric_spillover_test.go` (buffer-on-outage → drain-on-recovery, permanent-rejection-not-buffered, requeue-while-still-down); updated `directsend_backoff_test.go` and `relay_queue_audit058_test.go` for the new single-attempt + 6th-queue contract.
+
+## 1.2.132 - 2026-06-23
+
+### Fixed
+- **TFTP config-upload is now restricted to monitored devices' IPs with a per-source rate limit (2026-06-23 audit, H2).** `internal/tftp` has carried the AUDIT-050 `SetAllowedSourceIPs` / `SetMinWRQInterval` controls since they were added, but `cmd/collector/main.go`'s `startTFTPServer` never called them — so the WRQ handler accepted forged config uploads from ANY host that could reach UDP/69, letting an attacker submit an authoritative `relay.ConfigRevision` for any `device_id` and poison the server's config-change detection. Added `applyTFTPAllowlist` (and a pure `deviceSourceIPs` helper), invoked at TFTP startup and on every device-list refresh, which pins the allowlist to the current fleet's management IPs and sets a 30s min WRQ interval. An empty device list yields a non-nil empty allowlist (deny-all) — the secure default until devices are assigned. Tests: `cmd/collector/tftp_allowlist_test.go`.
+- **The collector no longer silently drops SNMP-metric batches when the server returns HTTP 429 (2026-06-23 audit, cross-repo).** `isRetryableStatus` (`internal/relay/relay.go`) listed 429 among the permanent non-retryable rejections, so the moment the server rate-limited probe ingestion the batch was discarded. 429 is server backpressure — transient — and is now retryable; the surrounding retry loops already pace with `expBackoff` (1s/2s/4s), the correct response. Genuine permanent 4xx (auth/validation/not-found/conflict/gone) stay non-retryable. Test: `internal/relay/retryable_429_test.go`.
+
+### Changed
+- Aligned the build `version` const in `cmd/collector/main.go` with the CHANGELOG (was stale at 1.2.129).
+
 ## 1.2.131 - 2026-06-22
 
 ### Added
