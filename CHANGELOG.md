@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.137 - 2026-06-24
+
+### Added
+- **The collector now injects a W3C `traceparent` + `X-Request-ID` on every relay request (2026-06-23 audit, M10).** The server propagates W3C trace context, but the collector sent none — so the server always started a fresh root span and probe→server requests could never be correlated into one trace. `doAuthenticatedRequestH` (the common request builder, so all relay calls are covered) now sets a spec-valid `traceparent` (version 00, sampled) with random 16-byte trace / 8-byte span IDs via `newTraceContext`, and reuses the trace ID as `X-Request-ID` for plain log correlation. The collector has no OpenTelemetry SDK, so the IDs are generated directly (`crypto/rand`); a crypto/rand failure simply omits the headers (the request still succeeds, untraced). An explicit per-call header still overrides it. Tests in `traceparent_m10_test.go` (W3C format + on-the-wire header injection).
+
 ## 1.2.136 - 2026-06-23
 
 ### Fixed
