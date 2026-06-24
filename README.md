@@ -10,7 +10,7 @@
 > admin UI, and runbook.
 
 [![CI](https://img.shields.io/badge/CI-passing-brightgreen)](https://github.com/xphox2/Firewall-Collector/actions)
-[![Version](https://img.shields.io/badge/version-1.2.108-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.2.137-blue)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.25.0+-00ADD8)](go.mod)
 
@@ -89,7 +89,7 @@ AUDIT-NNN row exists.
 - **[Probe] `GET /healthz`** — always 200 if the process is up.
 - **[Probe] `GET /readyz`** — 200 iff approved + heartbeat-fresh +
   every listener bound, else 503 with `X-Ready-Reason`.
-- **[Probe] Prometheus `/metrics`** — 13 collectors with the
+- **[Probe] Prometheus `/metrics`** — 14 collectors with the
   `firewall_collector_` prefix.
 - **[Probe] Structured logging** (slog) — `text` or `json`.
 
@@ -116,7 +116,7 @@ AUDIT-NNN row exists.
 
 ### Deployment
 
-- **[Probe] Multi-stage rootless Docker image** (`alpine:3.19`,
+- **[Probe] Multi-stage rootless Docker image** (`alpine:3.21`,
   `nobody:65534`, `cap_drop: ALL`, `cap_add: NET_RAW`).
 - **[Probe] Auto-pushed image tags** (`:1.2.x` exact, `:1.2` moving,
   `:stable`, `:latest`).

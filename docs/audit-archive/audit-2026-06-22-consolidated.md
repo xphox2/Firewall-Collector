@@ -15,8 +15,8 @@ Firewall-Collector →  E:\Golang\OpenCode\Firewall-Collector  (production probe
 |---|---|---|---|---|
 | Server | design-patterns | **B** | 16 (1 critical, 4 high, 5 medium, 6 low) | `docs/audit-2026-06-22-design-patterns.md` |
 | Server | taocp | **B-** | 23 (3 critical, 3 high, 5 medium, 12 low/info) | `docs/audit-2026-06-22-taocp.md` |
-| Collector | design-patterns | **B+** | 15 (3 high, 4 medium, 8 low/wins) | `docs/audit-2026-06-22-design-patterns.md` |
-| Collector | taocp | **B+** | 13 (2 high, 5 medium, 6 low/info) | `docs/audit-2026-06-22-taocp.md` |
+| Collector | design-patterns | **B+** | 15 (3 high, 4 medium, 8 low/wins) | `docs/audit-archive/audit-2026-06-22-design-patterns.md` |
+| Collector | taocp | **B+** | 13 (2 high, 5 medium, 6 low/info) | `docs/audit-archive/audit-2026-06-22-taocp.md` |
 
 ---
 
@@ -30,14 +30,14 @@ The two repos share a wire contract. Any mismatch here is a production bug on **
 | Wire field `omitempty` discipline (new fields optional, server tolerates absence) | `relay.go` parser ✓ | DTOs use `omitempty` on optional fields ✓ | **PASS** |
 | sFlow `sampling_rate × bytes` multiplication | `sflow.go:324` stores unscaled `Bytes = uint64(frameLength)` — read path also unscaled | `sflow.go:301-309` multiplies correctly | **FAIL — server-side** |
 | sFlow `drops` field surfaced | parser reads comment-only, never stores; no DB table; no NOC widget | parser reads and discards | **FAIL — both ends** |
-| 100k samples/sec hot-path shape (SO_REUSEPORT, worker pool, pgx.CopyFrom, SetReadBuffer 8MB, per-agent token bucket, sync.Pool) | single goroutine, GORM `Create`, default kernel buffer, no token bucket | n/a (collector only ships parsed samples) | **FAIL — server-only, owned by Phase 2 of SFLOW-NOC-REDESIGN-PLAN** |
+| 100k samples/sec hot-path shape (SO_REUSEPORT, worker pool, pgx.CopyFrom, SetReadBuffer 8MB, per-agent token bucket, sync.Pool) | single goroutine, GORM `Create`, default kernel buffer, no token bucket | n/a (collector only ships parsed samples) | **FAIL — server-only, owned by Phase 2 of SFLOW-NOC-REDESIGN-PLAN (server repo)** |
 | Retry-backoff helpers reuse | n/a (server side; uses PG advisory locks for singleton work) | `doDirectSend` ignores the 1.2.127 `expBackoff` helper — hardcodes `time.Sleep(2*time.Second)` | **PARTIAL FAIL — collector-only** |
 | `Authorization: Bearer` on probe→server | `handlers_probes.go:788` requires it via `subtle.ConstantTimeCompare` | every send adds `Authorization: Bearer ...` | **PASS** |
 | CSPRNG for tokens/keys/nonces | `crypto/rand.Int(reader, big.NewInt(n))` (rejection sampling) — Lesson 3.1/3.5 PASS | `crypto/rand.Read` for batch IDs, `mrand.Intn(5000)` for jitter (Go 1.20+ auto-seeds; OK today, intent unclear) | **PASS** |
 | Constant-time compare for auth secrets | `subtle.ConstantTimeCompare` + `hmac.Equal` | `subtle.ConstantTimeCompare` for SNMP community | **PASS** |
 | CHANGELOG format | Keep-A-Changelog header reference + per-version `## [X.Y.Z] - DATE` sections at top, newest first (`TestChangelog_KeepAChangelogHeader_AUDIT110` was updated 2026-06-11 to enforce a concrete version at the top — NOT a `[Unreleased]` accumulator) | simple `## X.Y.Z - DATE`, newest first (no `[Unreleased]`) | **PASS (per-repo conventions match)** |
 
-**Headline:** the **two critical cross-repo bugs** are (1) `sampling_rate × bytes` not multiplied on the server (every dashboard number is wrong by 1:N), and (2) `drops` field invisible on both ends (agent-side congestion undetectable). Both are owned by Phase 0 of `tasks/SFLOW-NOC-REDESIGN-PLAN.md` and currently unfixed.
+**Headline:** the **two critical cross-repo bugs** are (1) `sampling_rate × bytes` not multiplied on the server (every dashboard number is wrong by 1:N), and (2) `drops` field invisible on both ends (agent-side congestion undetectable). Both are owned by Phase 0 of `tasks/SFLOW-NOC-REDESIGN-PLAN.md` (server repo) and currently unfixed.
 
 ---
 
@@ -107,7 +107,7 @@ These are the patterns each repo applies correctly. Worth protecting in future P
 
 ### Server needs execution, not design
 
-The `tasks/SFLOW-NOC-REDESIGN-PLAN.md` is an excellent plan; the codebase has not caught up. The Phase 0 work (sampling_rate, drops, CopyFrom) and Phase 2 work (SO_REUSEPORT, worker pool, 8MB buffer, token bucket, sync.Pool) are the design target and the receiver is the bottleneck. Two structural cleanups also need to ship: (a) split `Handler` into per-feature handlers, (b) split `internal/database` into per-bounded-context packages.
+The `tasks/SFLOW-NOC-REDESIGN-PLAN.md` (server repo) is an excellent plan; the codebase has not caught up. The Phase 0 work (sampling_rate, drops, CopyFrom) and Phase 2 work (SO_REUSEPORT, worker pool, 8MB buffer, token bucket, sync.Pool) are the design target and the receiver is the bottleneck. Two structural cleanups also need to ship: (a) split `Handler` into per-feature handlers, (b) split `internal/database` into per-bounded-context packages.
 
 ### Collector needs structural consolidation, not new features
 
@@ -187,7 +187,7 @@ The recent 1.2.124–1.2.129 series shows measured, test-backed improvement. The
 
 ## What we'd recommend as the next 30-day cycle
 
-1. **Ship Phase 0 of the sFlow redesign** (sampling_rate × bytes, drops field, CopyFrom). This is the P0 critical work — every dashboard number is wrong until it lands. The plan is in `tasks/SFLOW-NOC-REDESIGN-PLAN.md`; the gap is execution.
+1. **Ship Phase 0 of the sFlow redesign** (sampling_rate × bytes, drops field, CopyFrom). This is the P0 critical work — every dashboard number is wrong until it lands. The plan is in `tasks/SFLOW-NOC-REDESIGN-PLAN.md` (server repo); the gap is execution.
 2. **Land the `doDirectSend` retry-backoff helper fix** in collector — 2-line change + 5-line test, literal "use existing helpers" lesson.
 3. **Land the OID-prefix-match → `map[string]handler`** refactor in collector — M effort, fixes a structural O(n×m) at fleet scale.
 4. **Convert stringly-typed `AlertType` / `Severity` / `CommandType` to typed constants** — M effort, makes 6+ files compile-time-safer before the next alert type is added.
@@ -195,4 +195,4 @@ The recent 1.2.124–1.2.129 series shows measured, test-backed improvement. The
 
 ---
 
-**Audit close.** No code changes made. Both repos are in good shape algorithmically and structurally — the headline wins are real and the headline concerns are scoped and owned by existing plans (`tasks/SFLOW-NOC-REDESIGN-PLAN.md` for the sFlow side; separate refactor tickets for the God-Object splits). The single regression-shaped finding is the missed `doDirectSend` retry helper; everything else is either planned, deferred, or a one-line fix.
+**Audit close.** No code changes made. Both repos are in good shape algorithmically and structurally — the headline wins are real and the headline concerns are scoped and owned by existing plans (`tasks/SFLOW-NOC-REDESIGN-PLAN.md` (server repo) for the sFlow side; separate refactor tickets for the God-Object splits). The single regression-shaped finding is the missed `doDirectSend` retry helper; everything else is either planned, deferred, or a one-line fix.

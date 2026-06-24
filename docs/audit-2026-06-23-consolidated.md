@@ -1,5 +1,21 @@
 # Internal Audit — 2026-06-23 (Collector subset + cross-repo)
 
+> **STATUS (updated 2026-06-24, collector at v1.2.137).** This is the live
+> tracker for still-open items.
+>
+> **Resolved & shipped:** H2 (TFTP source-IP allowlist actually wired, v1.2.132),
+> H9 (metric spillover queue, v1.2.133), M6 (O(n²) syslog framing, v1.2.136),
+> M10 (W3C traceparent injection, v1.2.137), M12 (metric_send_failed_total
+> counter, v1.2.133), M13 (alpine base image bumped, v1.2.136).
+>
+> **Still open (code-verified, 2026-06-24):**
+> - **H-trap** — `internal/snmp/trap.go:96` still logs the SNMP community in
+>   cleartext (`expected %q, got %q`).
+> - **M7** — `internal/relay/queue/queue.go` still fsyncs under the queue mutex
+>   (no `db.NoSync`); every `db.Update` runs inside `q.mu.Lock()`.
+> - **LOW/INFO tail** — L1 / L2 / L6 / L7 / L8 / L10 / L16 (e.g. duplicated
+>   `getEnv` at `cmd/collector/main.go:48` and `internal/config/config.go:103`).
+
 **Scope:** Collector-relevant and cross-repo subset of the 2026-06-23 dual-repo internal audit. Full server-side report: `Firewall-Mon/docs/audit-2026-06-23-consolidated.md`. Feature inventory + industry roadmap: `Firewall-Mon/docs/FEATURE-ROADMAP.md`.
 
 - **Collector** — `Firewall-Collector` (Go module `firewall-collector`, ~v1.2.131): stateless remote edge probe.

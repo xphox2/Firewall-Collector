@@ -21,13 +21,13 @@
 
 | Server version | Accepts collectors | Notes |
 |---|---|---|
-| **0.10.386+** (current master) | all 1.2.x | Server-side `schema_version` validation introduced in 0.10.382. |
+| **0.10.487+** (current master) | all 1.2.x | Server-side `schema_version` validation introduced in 0.10.382. |
 | 0.10.382 | 1.2.108+ | `schema_version` field is required starting here; absent field → 1 (back-compat). |
 | 0.10.380 and earlier | all 1.2.x | Pre-handshake. The probe's `schema_version` field is ignored. |
 
 | Collector version | Talks to server | Notes |
 |---|---|---|
-| **1.2.108+** (current) | 0.10.382+ (recommended), 0.10.380+ (works, field ignored) | Advertises `schema_version` on register. |
+| **1.2.137+** (current) | 0.10.382+ (recommended), 0.10.380+ (works, field ignored) | Advertises `schema_version` on register. |
 | 1.2.78 – 1.2.107 | any 0.10.x | Pre-handshake. Field omitted → server assumes v1. |
 | < 1.2.78 | unsupported | Missing disk-spillover (1.2.101) and several other hardening fixes. |
 

@@ -1,6 +1,6 @@
 # Firewall-Collector — Algorithms & Data Structures Audit (2026-06-22)
 
-**Scope.** CTO-level review of `E:\Golang\OpenCode\Firewall-Collector` against the
+**Scope.** In-depth 2026-06-22 audit of `E:\Golang\OpenCode\Firewall-Collector` against the
 taocp skill (Knuth Vol 1–4B). Focus: the recently-merged
 `refactor/collector-retry-backoff-helpers` PR (1.2.127), the
 `fix/ipaddrtable-extra-octet` PR (1.2.129), and the `feat/ssh-host-key-observe`
