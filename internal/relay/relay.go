@@ -546,7 +546,10 @@ func (c *Client) ensureQueues() {
 // and key paths were parsed from env vars and stored on Config, but NewClient
 // silently dropped them — so the documented mTLS mode was fiction.
 func buildTLSConfig(cfg Config) (*tls.Config, error) {
-	tlsConfig := &tls.Config{}
+	// Pin TLS 1.2 as the floor to match the server (L10). The Go 1.25 client
+	// default is already 1.2, so this is defensive against a GODEBUG/toolchain
+	// change that could lower it.
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
 
 	if cfg.CACertFile != "" {
 		caCert, err := os.ReadFile(cfg.CACertFile)
@@ -1757,7 +1760,7 @@ func (c *Client) SendProcessSnapshot(snap *ProcessSnapshot) error {
 	if err != nil {
 		return fmt.Errorf("failed to send process snapshot: %w", err)
 	}
-	defer resp.Body.Close()
+	drainAndClose(resp) // drain so the keep-alive connection can be reused (L6/L7)
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
@@ -1777,7 +1780,7 @@ func (c *Client) SendInterfaceErrorSnapshot(snap *InterfaceErrorSnapshot) error 
 	if err != nil {
 		return fmt.Errorf("failed to send interface error snapshot: %w", err)
 	}
-	defer resp.Body.Close()
+	drainAndClose(resp) // drain so the keep-alive connection can be reused (L7)
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
@@ -1800,7 +1803,7 @@ func (c *Client) SendInterfaceErrorSnapshots(snaps []InterfaceErrorSnapshot) err
 	if err != nil {
 		return fmt.Errorf("failed to send interface error snapshots: %w", err)
 	}
-	defer resp.Body.Close()
+	drainAndClose(resp) // drain so the keep-alive connection can be reused (L7)
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
@@ -1823,7 +1826,7 @@ func (c *Client) SendSensorDetails(sensors []SensorDetail) error {
 	if err != nil {
 		return fmt.Errorf("failed to send sensor details: %w", err)
 	}
-	defer resp.Body.Close()
+	drainAndClose(resp) // drain so the keep-alive connection can be reused (L7)
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
@@ -1846,7 +1849,7 @@ func (c *Client) SendLicenseDetails(licenses []LicenseDetail) error {
 	if err != nil {
 		return fmt.Errorf("failed to send license details: %w", err)
 	}
-	defer resp.Body.Close()
+	drainAndClose(resp) // drain so the keep-alive connection can be reused (L7)
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}

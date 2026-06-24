@@ -55,7 +55,7 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		Probe: ProbeConfig{
 			RegistrationKey:    os.Getenv("PROBE_REGISTRATION_KEY"),
-			ServerURL:          getEnv("PROBE_SERVER_URL", "https://stats.technicallabs.org"),
+			ServerURL:          GetEnv("PROBE_SERVER_URL", "https://stats.technicallabs.org"),
 			TLSCertFile:        os.Getenv("PROBE_TLS_CERT"),
 			TLSKeyFile:         os.Getenv("PROBE_TLS_KEY"),
 			CACertFile:         os.Getenv("PROBE_CA_CERT"),
@@ -69,14 +69,14 @@ func Load() (*Config, error) {
 			PingTimeout:           parseDurationSeconds("PROBE_PING_TIMEOUT", 5),
 			PingCount:             parseInt("PROBE_PING_COUNT", 4),
 
-			ListenAddr:    getEnv("PROBE_LISTEN_ADDR", "0.0.0.0"),
+			ListenAddr:    GetEnv("PROBE_LISTEN_ADDR", "0.0.0.0"),
 			SNMPTrapPort:  parseInt("PROBE_SNMP_TRAP_PORT", 162),
 			SyslogPort:    parseInt("PROBE_SYSLOG_PORT", 514),
 			SFlowPort:     parseInt("PROBE_SFLOW_PORT", 6343),
 			TrapCommunity: os.Getenv("PROBE_SNMP_TRAP_COMMUNITY"),
 
 			TFTPConfigEnabled: parseBool("PROBE_TFTP_CONFIG_ENABLED", true),
-			TFTPListenAddr:    getEnv("PROBE_LISTEN_ADDR", "0.0.0.0") + ":" + getEnv("PROBE_TFTP_PORT", "69"),
+			TFTPListenAddr:    GetEnv("PROBE_LISTEN_ADDR", "0.0.0.0") + ":" + GetEnv("PROBE_TFTP_PORT", "69"),
 
 			MaxQueueSize: parseInt("PROBE_MAX_QUEUE_SIZE", 10000),
 			MaxBatchSize: parseInt("PROBE_MAX_BATCH_SIZE", 1000),
@@ -100,7 +100,10 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-func getEnv(key, defaultValue string) string {
+// GetEnv returns the value of the named environment variable, or defaultValue
+// when it is unset or empty. Exported so callers outside this package (e.g.
+// cmd/collector) share one implementation instead of duplicating it (L16).
+func GetEnv(key, defaultValue string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}

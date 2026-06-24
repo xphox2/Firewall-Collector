@@ -9,14 +9,21 @@
 > counter, v1.2.133), M13 (alpine base image bumped, v1.2.136), H-trap (trap
 > community no longer logged — only the source IP is, v1.2.140), M7 (spillover
 > queue opened NoSync + throttled fsync — no more per-sample fsync under the
-> mutex, v1.2.141).
+> mutex, v1.2.141), L3 (build version const tracks the release), L6 (doDirectSend
+> drains the body — v1.2.133), L7 (snapshot/detail senders drain the body),
+> L10 (relay TLS MinVersion pinned to 1.2), L16 (getEnv deduplicated via
+> config.GetEnv) — the last three in v1.2.142.
 >
-> **Still open (code-verified, 2026-06-24):**
-> - **LOW/INFO tail** — L1 / L2 / L6 / L7 / L8 / L10 / L16 (e.g. duplicated
->   `getEnv` at `cmd/collector/main.go:48` and `internal/config/config.go:103`).
+> **Still open (deliberately deferred — design/refactor, not quick fixes):**
+> - **L1** — SSH `HostKeyCallback` returns nil + password auth (first-connection
+>   MITM); alert-only by design (AUDIT-071). Needs a TOFU-cache design decision.
+> - **L2** — SNMP getters use a `vendor ...string` variadic; flattening to a plain
+>   param ripples across 8 getters + the mirrored server poller interface.
+> - **L8** — ping opens a raw ICMP socket per device per cycle; a shared socket +
+>   demux goroutine is a real refactor.
 >
-> All HIGH and MEDIUM collector findings are now resolved; only the LOW/INFO
-> hygiene tail remains.
+> All HIGH and MEDIUM collector findings are resolved; the LOW tail is down to
+> three design/refactor items.
 
 **Scope:** Collector-relevant and cross-repo subset of the 2026-06-23 dual-repo internal audit. Full server-side report: `Firewall-Mon/docs/audit-2026-06-23-consolidated.md`. Feature inventory + industry roadmap: `Firewall-Mon/docs/FEATURE-ROADMAP.md`.
 

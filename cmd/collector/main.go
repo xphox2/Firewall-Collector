@@ -42,17 +42,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-// getEnv returns the value of the named environment variable, or
-// fallback if unset/empty. Duplicated from internal/config to avoid
-// modifying that package (out of scope for AUDIT-057).
-func getEnv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-const version = "1.2.141"
+const version = "1.2.142"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -203,7 +193,7 @@ func main() {
 	// default — set PROBE_METRICS_ADDR to "0.0.0.0:9090" to expose
 	// on all interfaces (e.g. for a Prometheus scraper outside the
 	// host).
-	metricsAddr := getEnv("PROBE_METRICS_ADDR", "127.0.0.1:9090")
+	metricsAddr := config.GetEnv("PROBE_METRICS_ADDR", "127.0.0.1:9090")
 
 	metrics := observability.New(observability.Config{
 		Version:           version,
