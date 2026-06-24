@@ -226,7 +226,7 @@ func (r *SFlowReceiver) parseFlowSample(data []byte, offset *int, format uint32,
 	// to drop between this sample and the previous one because it
 	// could not keep up. Captured into the emitted FlowSample so
 	// the server can alert on agent-side congestion. This was
-	// previously read and discarded (see cto-loop audit 2026-06-22).
+	// previously read and discarded (see audit 2026-06-22).
 	drops, ok := readUint32(data, offset)
 	if !ok {
 		return

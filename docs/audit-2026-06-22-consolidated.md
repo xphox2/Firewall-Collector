@@ -1,4 +1,4 @@
-# CTO Loop — Consolidated Report (2026-06-22)
+# Internal Audit — Consolidated Report (2026-06-22)
 
 **Scope:** Both repos in the Firewall-Mon / Firewall-Collector pair.
 **Skills:** `design-patterns` (Gang of Four) + `taocp` (Knuth Vol 1–4B).
@@ -13,10 +13,10 @@ Firewall-Collector →  E:\Golang\OpenCode\Firewall-Collector  (production probe
 
 | Repo | Skill | Grade | Findings | Report |
 |---|---|---|---|---|
-| Server | design-patterns | **B** | 16 (1 critical, 4 high, 5 medium, 6 low) | `docs/cto-loop-2026-06-22-design-patterns.md` |
-| Server | taocp | **B-** | 23 (3 critical, 3 high, 5 medium, 12 low/info) | `docs/cto-loop-2026-06-22-taocp.md` |
-| Collector | design-patterns | **B+** | 15 (3 high, 4 medium, 8 low/wins) | `docs/cto-loop-2026-06-22-design-patterns.md` |
-| Collector | taocp | **B+** | 13 (2 high, 5 medium, 6 low/info) | `docs/cto-loop-2026-06-22-taocp.md` |
+| Server | design-patterns | **B** | 16 (1 critical, 4 high, 5 medium, 6 low) | `docs/audit-2026-06-22-design-patterns.md` |
+| Server | taocp | **B-** | 23 (3 critical, 3 high, 5 medium, 12 low/info) | `docs/audit-2026-06-22-taocp.md` |
+| Collector | design-patterns | **B+** | 15 (3 high, 4 medium, 8 low/wins) | `docs/audit-2026-06-22-design-patterns.md` |
+| Collector | taocp | **B+** | 13 (2 high, 5 medium, 6 low/info) | `docs/audit-2026-06-22-taocp.md` |
 
 ---
 

@@ -396,7 +396,7 @@ type Client struct {
 	// central server would lose the only copy of the config backup.
 	revisionQueue *queue.SpilloverQueue
 
-	// metricQueue (CTO-loop 2026-06-23 H9) buffers the primary SNMP-metric
+	// metricQueue (2026-06-23 audit H9) buffers the primary SNMP-metric
 	// sends (the 10 doDirectSend endpoints: system status, interface stats,
 	// VPN, hardware sensors, processor stats, HA, security stats, SD-WAN,
 	// license, interface addresses) when the server is unreachable. Before this

@@ -6,7 +6,7 @@ import (
 	"firewall-collector/internal/relay"
 )
 
-// TestDeviceSourceIPs is the regression for the 2026-06-23 CTO-loop H2 finding:
+// TestDeviceSourceIPs is the regression for the 2026-06-23 audit H2 finding:
 // the TFTP write server's source-IP allowlist was never populated from the
 // device list, so it accepted forged config uploads from any host. The allowlist
 // is now derived from the monitored devices' management IPs via this helper.

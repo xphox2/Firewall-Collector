@@ -3,7 +3,7 @@ package relay
 import "testing"
 
 // TestIsRetryableStatus_429IsRetryable is the regression for the 2026-06-23
-// CTO-loop 429-asymmetry finding: the server rate-limits probe ingestion with
+// audit 429-asymmetry finding: the server rate-limits probe ingestion with
 // HTTP 429, but the collector listed 429 as non-retryable and therefore silently
 // DROPPED whole SNMP-metric batches the moment the server pushed back. 429 is
 // transient and must be retried (the retry loops pace with expBackoff); genuine
