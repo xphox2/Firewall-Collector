@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.136 - 2026-06-23
+
+### Fixed
+- **TCP syslog framing is no longer O(n²) in lines-per-read (2026-06-23 audit, M6).** `handleConnection` (`internal/syslog/syslog.go`) reset its message buffer and rewrote the entire remaining tail on *every* newline, so a single `Read()` delivering many lines re-copied the tail once per line. It now forward-scans the accumulated buffer with an advancing offset and compacts the unconsumed tail once at the end. Behavior is unchanged (same lines parsed, same oversize-partial-line drop at `MaxMessageSize`); regression test `syslog_framing_m6_test.go` covers many lines in one read + a partial line carried to the next read, and the existing overflow test still passes.
+
+### Added
+- **`firewall_collector_metric_send_failed_total{kind}` counter (2026-06-23 audit, M12).** Primary SNMP-metric send failures (server unreachable / 5xx / 429, which H9 now buffers to the spillover queue) were invisible to Prometheus — only queue *drops* were counted. The relay now calls an optional hook on each buffered failure (`SetMetricSendFailedHook`, wired to `metrics.IncMetricSendFailed` in `cmd/collector`), labeled by metric kind. Test `metric_send_failed_hook_m12_test.go` (hook fires on failure, not on success).
+
+### Changed
+- **Runtime base image bumped `alpine:3.19` → `alpine:3.21` (2026-06-23 audit, M13).** 3.19 reached end-of-life ~Nov 2025. The collector runtime only installs `ca-certificates` + `bash`, so there are no bundled packages to re-pin.
+
 ## 1.2.135 - 2026-06-23
 
 ### Changed
