@@ -31,7 +31,8 @@ runtime (the collector talks HTTP to the server).
 | Database migrations | n/a | [docs/partition-migration.md](https://github.com/xphox2/Firewall-Monitoring/blob/master/docs/partition-migration.md) |
 | Production-hardened nginx config | n/a | [docs/nginx.conf](https://github.com/xphox2/Firewall-Monitoring/blob/master/docs/nginx.conf) |
 | Adding a new SNMP vendor | [CUSTOM-VENDOR.md](CUSTOM-VENDOR.md) | [docs/custom-vendor.md](https://github.com/xphox2/Firewall-Monitoring/blob/master/docs/custom-vendor.md) |
-| Production upgrade runbook | n/a | [docs/UPGRADE-2026-06.md](https://github.com/xphox2/Firewall-Monitoring/blob/master/docs/UPGRADE-2026-06.md) |
+| Production upgrade runbook | n/a | [docs/OPERATIONS.md](https://github.com/xphox2/Firewall-Monitoring/blob/master/docs/OPERATIONS.md) (§ Upgrade) |
+| Third-party licenses | [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md) | [THIRD-PARTY-NOTICES.md](https://github.com/xphox2/Firewall-Monitoring/blob/master/THIRD-PARTY-NOTICES.md) |
 
 **Rule of thumb:** if a topic only matters to operators of the **server**
 (retention, backups, JWT rotation, the admin UI), it lives in
