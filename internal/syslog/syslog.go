@@ -109,20 +109,19 @@ func (s *SyslogReceiver) handleConnection(conn net.Conn) {
 
 		messageBuf.Write(buf[:n])
 
+		// Forward-scan the accumulated buffer with an advancing offset, then
+		// compact the unconsumed tail ONCE at the end. The previous code did
+		// messageBuf.Reset() + rewrite-the-remaining-tail on every newline, which
+		// is O(n²) when a single Read() delivers many lines (2026-06-23 audit, M6).
+		data := messageBuf.Bytes()
+		start := 0
 		for {
-			data := messageBuf.Bytes()
-			idx := bytes.IndexByte(data, '\n')
-			if idx == -1 {
-				if messageBuf.Len() >= MaxMessageSize {
-					messageBuf.Reset()
-				}
+			rel := bytes.IndexByte(data[start:], '\n')
+			if rel == -1 {
 				break
 			}
-
-			line := data[:idx]
-			messageBuf.Reset()
-			messageBuf.Write(data[idx+1:])
-
+			line := data[start : start+rel]
+			start += rel + 1
 			if len(line) == 0 {
 				continue
 			}
@@ -141,6 +140,19 @@ func (s *SyslogReceiver) handleConnection(conn net.Conn) {
 				}
 				s.handler(msg)
 			}
+		}
+
+		// Keep only the bytes after the last newline for the next Read. A
+		// delimiter-less partial line that overflows MaxMessageSize is dropped
+		// (same cap as before) so a peer can't grow the buffer without bound.
+		if start > 0 {
+			remaining := data[start:]
+			messageBuf.Reset()
+			if len(remaining) < MaxMessageSize {
+				messageBuf.Write(remaining)
+			}
+		} else if messageBuf.Len() >= MaxMessageSize {
+			messageBuf.Reset()
 		}
 	}
 }

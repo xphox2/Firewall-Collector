@@ -104,6 +104,8 @@ type Metrics struct {
 	queueDepth   *prometheus.GaugeVec
 	queueDropped *prometheus.CounterVec
 
+	metricSendFailed *prometheus.CounterVec
+
 	pollDuration *prometheus.HistogramVec
 	pollFailures *prometheus.CounterVec
 
@@ -227,6 +229,11 @@ func New(cfg Config) *Metrics {
 		Help: "Number of config revision backups sent, labeled by trigger (poll|syslog|manual) and quality (full|masked|unknown).",
 	}, []string{"trigger", "quality"})
 
+	m.metricSendFailed = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "firewall_collector_metric_send_failed_total",
+		Help: "Number of primary SNMP-metric sends that failed (server unreachable / 5xx / 429) and were buffered to the spillover queue, labeled by metric kind. Sustained non-zero means the central server is unreachable.",
+	}, []string{"kind"})
+
 	m.reregisterAttempts = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "firewall_collector_reregister_attempts_total",
 		Help: "Number of times the probe attempted to re-register with the central server (e.g. after losing approval).",
@@ -245,6 +252,7 @@ func New(cfg Config) *Metrics {
 		m.lastPollPublished,
 		m.listenerBound,
 		m.configRevisionsSent,
+		m.metricSendFailed,
 		m.reregisterAttempts,
 	)
 	return m
@@ -298,6 +306,13 @@ func (m *Metrics) SetQueueDepth(queue string, depth int) {
 // for the given queue. Call from the SendXxx queue-full branches.
 func (m *Metrics) IncQueueDropped(queue string) {
 	m.queueDropped.WithLabelValues(queue).Inc()
+}
+
+// IncMetricSendFailed increments firewall_collector_metric_send_failed_total for
+// the given metric kind. Wired into the relay's doDirectSend failure path (the
+// sends that get buffered to the spillover queue) — see SetMetricSendFailedHook.
+func (m *Metrics) IncMetricSendFailed(kind string) {
+	m.metricSendFailed.WithLabelValues(kind).Inc()
 }
 
 // MarkPollSucceeded records the wall-clock instant of a successful

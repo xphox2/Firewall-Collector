@@ -412,12 +412,24 @@ type Client struct {
 	// fingerprints the collector has observed (device ID -> "SHA256:..."). The
 	// heartbeat includes it so the server can detect host-key changes.
 	observedHostKeysFn func() map[uint]string
+
+	// onMetricSendFailed, if set, is called (with the metric kind) whenever a
+	// primary metric send fails and is buffered to the spillover queue. Wired to
+	// the observability counter firewall_collector_metric_send_failed_total (M12).
+	onMetricSendFailed func(kind string)
 }
 
 // SetObservedHostKeysProvider registers a source of observed SSH host-key
 // fingerprints (device ID -> fingerprint) to include on each heartbeat.
 func (c *Client) SetObservedHostKeysProvider(fn func() map[uint]string) {
 	c.observedHostKeysFn = fn
+}
+
+// SetMetricSendFailedHook registers a callback invoked (with the metric kind)
+// each time a primary metric send fails and is buffered — typically
+// metrics.IncMetricSendFailed.
+func (c *Client) SetMetricSendFailedHook(fn func(kind string)) {
+	c.onMetricSendFailed = fn
 }
 
 func NewClient(cfg Config) *Client {
@@ -986,6 +998,10 @@ func drainAndClose(resp *http.Response) {
 // (spillover disabled — PROBE_QUEUE_DISK_PATH unset) means the data is dropped,
 // already warned about once at ensureQueues.
 func (c *Client) enqueueMetric(endpoint, name string, payload []byte) {
+	// Count the send failure regardless of whether spillover is enabled (M12).
+	if c.onMetricSendFailed != nil {
+		c.onMetricSendFailed(name)
+	}
 	c.ensureQueues()
 	if c.metricQueue == nil {
 		return
