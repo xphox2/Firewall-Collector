@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.135 - 2026-06-23
+
+### Changed
+- **Swept the last internal-nickname reference from `tasks/` content** (`tasks/lessons.md`), completing the rename so no working nickname remains anywhere in the tree. Internal notes only; no code or behavior change.
+
 ## 1.2.134 - 2026-06-23
 
 ### Changed
