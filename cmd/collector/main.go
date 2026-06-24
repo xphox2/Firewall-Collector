@@ -52,7 +52,7 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
-const version = "1.2.129"
+const version = "1.2.133"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -312,6 +312,7 @@ func main() {
 		c.devices = devices
 		c.deviceMu.Unlock()
 		c.setTFTPServerIP(tftpIP)
+		c.applyTFTPAllowlist()
 		fmt.Printf("  -> %d devices assigned\n", len(devices))
 		for _, d := range devices {
 			community := d.SNMPCommunity
@@ -924,9 +925,54 @@ func (c *Collector) startTFTPServer() {
 
 	c.tftpServer = tftpServer
 	c.tftpListenIP = c.cfg.TFTPListenAddr
+	// Apply the source-IP allowlist + rate limit now (deny-all until the device
+	// list is fetched), then re-apply after every device-list refresh.
+	c.applyTFTPAllowlist()
 	markListenerBound("tftp", true)
 	c.metrics.SetListenerBound("tftp", true)
 	log.Printf("[TFTP] Server started on %s (outbound IP determined per-device at backup time)", addr)
+}
+
+// tftpMinWRQInterval is the AUDIT-050 per-source-IP minimum interval between
+// accepted TFTP write requests. FortiGate config backups are infrequent
+// (poll-triggered), so 30s amply spaces legitimate uploads while throttling a
+// flood from a single source.
+const tftpMinWRQInterval = 30 * time.Second
+
+// applyTFTPAllowlist restricts the TFTP write server to the source IPs of the
+// devices this probe currently monitors and enforces a per-source-IP rate
+// limit. The tftp.Server has carried these AUDIT-050 controls since they were
+// added, but cmd/collector never called them — so the WRQ handler accepted
+// forged config uploads from ANY host that could reach UDP/69, letting an
+// attacker submit an authoritative config-revision for any device_id and poison
+// config-change detection (CTO-loop 2026-06-23, H2). Called at startup and on
+// every device-list refresh so the allowlist tracks the assigned fleet. An empty
+// device list yields a non-nil empty allowlist (deny-all) — the secure default
+// while no devices are assigned.
+func (c *Collector) applyTFTPAllowlist() {
+	if c.tftpServer == nil {
+		return
+	}
+	c.deviceMu.RLock()
+	ips := deviceSourceIPs(c.devices)
+	c.deviceMu.RUnlock()
+	c.tftpServer.SetAllowedSourceIPs(ips)
+	c.tftpServer.SetMinWRQInterval(tftpMinWRQInterval)
+	log.Printf("[TFTP] Source-IP allowlist applied: %d device IP(s), min WRQ interval %v", len(ips), tftpMinWRQInterval)
+}
+
+// deviceSourceIPs returns the non-empty management IPs of the given devices —
+// the set permitted to submit TFTP config uploads. Returns a non-nil empty
+// slice when no device has an IP, so SetAllowedSourceIPs denies all (rather than
+// nil = allow-all).
+func deviceSourceIPs(devices []relay.DeviceInfo) []string {
+	ips := make([]string, 0, len(devices))
+	for _, d := range devices {
+		if d.IPAddress != "" {
+			ips = append(ips, d.IPAddress)
+		}
+	}
+	return ips
 }
 
 func (c *Collector) determineOutboundIP(targetHost string) string {
@@ -1456,6 +1502,7 @@ func (c *Collector) deviceRefreshLoop() {
 			c.devices = devices
 			c.deviceMu.Unlock()
 			c.setTFTPServerIP(tftpIP)
+			c.applyTFTPAllowlist()
 
 			names := make([]string, len(devices))
 			for i, d := range devices {

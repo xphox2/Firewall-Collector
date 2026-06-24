@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,28 +12,19 @@ import (
 	"firewall-collector/internal/relay/queue"
 )
 
-// TestDoDirectSend_BackoffUsesExpBackoff pins that the retry-with-backoff
-// loop in doDirectSend uses the extracted expBackoff helper (1s, 2s, 4s
-// for attempts 0, 1, 2) rather than the previous hardcoded 2s sleep. The
-// audit found that 1.2.127 extracted the helper for sendBatch and
-// sendOneRevisionWithRetry but missed this third call site; this test
-// fails if a future refactor regresses back to a constant sleep.
-//
-// Wall-clock is real: the test takes ~3s (1s + 2s of expBackoff sleeps
-// between the 3 attempts). Tolerance is loose because Go scheduler +
-// HTTP RTT can add tens of milliseconds.
-func TestDoDirectSend_BackoffUsesExpBackoff(t *testing.T) {
-	var (
-		callTimes []time.Time
-		callMu    sync.Mutex
-	)
+// TestDoDirectSend_SingleAttemptThenBuffers pins the H9 (v1.2.132) contract:
+// doDirectSend makes exactly ONE live attempt and, on a transient failure,
+// buffers the payload to the metric spillover queue instead of burning multiple
+// seconds of inline expBackoff per metric per device. Durability now comes from
+// the queue (drained on recovery, survives restart), not inline retries — so a
+// server outage must NOT block the poll loop with multi-second sleeps. This test
+// fails if a future change reintroduces the inline retry loop.
+func TestDoDirectSend_SingleAttemptThenBuffers(t *testing.T) {
+	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callMu.Lock()
-		callTimes = append(callTimes, time.Now())
-		callMu.Unlock()
-		// Drain the body so the connection can be reused.
+		atomic.AddInt32(&calls, 1)
 		_, _ = io.Copy(io.Discard, r.Body)
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(http.StatusInternalServerError) // persistent 500 (transient)
 	}))
 	defer srv.Close()
 
@@ -62,6 +52,7 @@ func TestDoDirectSend_BackoffUsesExpBackoff(t *testing.T) {
 		syslogQueue:   open("syslog"),
 		flowQueue:     open("flows"),
 		revisionQueue: open("revisions"),
+		metricQueue:   open("metrics"),
 	}
 	c.probeID = 42
 	c.approved.Store(true)
@@ -75,51 +66,15 @@ func TestDoDirectSend_BackoffUsesExpBackoff(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on persistent 500, got nil")
 	}
-	callMu.Lock()
-	calls := append([]time.Time(nil), callTimes...)
-	callMu.Unlock()
-
-	if got := len(calls); got != 3 {
-		t.Fatalf("server call count = %d, want 3 (initial + 2 retries)", got)
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("server call count = %d, want 1 (single attempt; no inline retry loop)", got)
 	}
-
-	// Gap between call 0 and call 1 must be ~expBackoff(0) = 1s.
-	// Gap between call 1 and call 2 must be ~expBackoff(1) = 2s.
-	gap1 := calls[1].Sub(calls[0])
-	gap2 := calls[2].Sub(calls[1])
-	totalGap := gap1 + gap2
-
-	// Tolerances: lower bound is the helper value minus 50ms scheduler
-	// slop; upper bound is generous to allow CI jitter.
-	const slack = 100 * time.Millisecond
-	if gap1 < 1*time.Second-slack {
-		t.Errorf("gap[0->1] = %v, want ~1s (expBackoff(0)); doDirectSend may have regressed to a constant sleep", gap1)
+	// No multi-second inline backoff: the call returns promptly and buffers.
+	if elapsed > 1*time.Second {
+		t.Errorf("elapsed = %v, want <1s (inline expBackoff retries must be gone)", elapsed)
 	}
-	if gap1 > 1*time.Second+2*time.Second {
-		t.Errorf("gap[0->1] = %v, suspiciously long for expBackoff(0)=1s", gap1)
-	}
-	if gap2 < 2*time.Second-slack {
-		t.Errorf("gap[1->2] = %v, want ~2s (expBackoff(1)); doDirectSend may have regressed to a constant sleep", gap2)
-	}
-	if gap2 > 2*time.Second+2*time.Second {
-		t.Errorf("gap[1->2] = %v, suspiciously long for expBackoff(1)=2s", gap2)
-	}
-
-	// Sanity: total wall-clock should be ~3s (1s + 2s) plus a bit of
-	// HTTP RTT. The audit's old behavior was ~4s (2s + 2s); if we
-	// regress back to constant 2s, this assertion fires too.
-	if elapsed < 3*time.Second-slack {
-		t.Errorf("total elapsed = %v, want ~3s (expBackoff(0)+expBackoff(1)); constant 2s sleep would yield ~4s", elapsed)
-	}
-	if elapsed > 3*time.Second+3*time.Second {
-		t.Errorf("total elapsed = %v, suspiciously long", elapsed)
-	}
-
-	// And: total wall-clock should be NOTICEABLY less than the old
-	// constant-2s behavior (4s + RTT). If this test ever measures ~4s,
-	// the helper application was reverted.
-	if totalGap > 3500*time.Millisecond {
-		t.Errorf("retry gaps total = %v, want ~3s; a regression to constant 2s sleep would yield ~4s", totalGap)
+	if d := c.metricQueue.Depth(); d != 1 {
+		t.Errorf("metric queue depth = %d, want 1 (failed send must be buffered, not dropped)", d)
 	}
 }
 
@@ -142,13 +97,13 @@ func TestDoDirectSend_SuccessOnFirstTry_SkipsBackoff(t *testing.T) {
 		return q
 	}
 	c := &Client{
-		Config:         Config{ServerURL: srv.URL, RegistrationKey: "test-key"},
-		httpClient:     srv.Client(),
-		trapQueue:      open("traps"),
-		pingQueue:      open("pings"),
-		syslogQueue:    open("syslog"),
-		flowQueue:      open("flows"),
-		revisionQueue:  open("revisions"),
+		Config:        Config{ServerURL: srv.URL, RegistrationKey: "test-key"},
+		httpClient:    srv.Client(),
+		trapQueue:     open("traps"),
+		pingQueue:     open("pings"),
+		syslogQueue:   open("syslog"),
+		flowQueue:     open("flows"),
+		revisionQueue: open("revisions"),
 	}
 	c.probeID = 42
 	c.approved.Store(true)
