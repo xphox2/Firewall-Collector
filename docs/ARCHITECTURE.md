@@ -44,9 +44,9 @@ as a long-lived process. On startup it:
 | `cmd/diag-backup` | Single-shot diagnostic binary: SSH + TFTP round-trip with a `VERDICT:` line. Not on by default — operator-invoked. |
 | `cmd/tftp-test` | Standalone TFTP client test. Operator-invoked. |
 | `internal/config` | Loads and validates env vars. Refuses to start without `PROBE_REGISTRATION_KEY`. |
-| `internal/relay` | The HTTP client to the server: `Register`, `Heartbeat`, `FetchDevicesAndConfig`, `SendSystemStatus`, `SendInterfaceStats`, `SendTrapEvents`, `SendFlowSamples`, `SendSyslogMessages`, `SendPingResults`, `SendConfigRevision`, `SendHardwareSensors`, `SendLicenseInfo`, `SendVPNStatus`, `SendHAStatus`, `SendSDWANHealth`, `SendSecurityStats`, `SendProcessSnapshot`, `SendInterfaceErrorSnapshots`, `SendSensorDetails`, `SendLicenseDetails`. Owns the mTLS client config. Implements the `schema_version` handshake (1.2.108+). |
+| `internal/relay` | The HTTP client to the server: `Register`, `SendHeartbeat`, `FetchDevicesAndConfig`, `SendSystemStatuses`, `SendInterfaceStats`, `SendInterfaceAddresses`, `SendTrap`, `SendFlowSample`, `SendSyslogMessage`, `SendPingResult`, `SendConfigRevision`, `SendHardwareSensors`, `SendProcessorStats`, `SendLicenseInfo`, `SendVPNStatuses`, `SendHAStatuses`, `SendSDWANHealth`, `SendSecurityStats`, `SendProcessSnapshot`, `SendInterfaceErrorSnapshots`, `SendSensorDetails`, `SendLicenseDetails`. Owns the mTLS client config. Implements the `schema_version` handshake (1.2.108+). |
 | `internal/relay/queue` | `SpilloverQueue` — in-memory slice + BoltDB on disk. FIFO eviction. Restart-survivable. Used by all six streams/queues (the five event streams plus the metric queue added in 1.2.133). |
-| `internal/snmp` | `SNMPClient` (v1/v2c/v3), `TrapReceiver`, the `VendorProfile` registry with 8 in-tree profiles. |
+| `internal/snmp` | `SNMPClient` (v1/v2c/v3), `TrapReceiver`, the `VendorProfile` registry with 6 registered profiles (FortiGate, Palo Alto, SonicWall, pfSense, OPNsense, Firewalla; `vendor_linux_vpn.go`/`vendor_bsd_vpn.go` are shared VPN-parsing helpers, not standalone profiles). |
 | `internal/syslog` | RFC 5424 parser + FortiGate hostname/SD device-ID extraction. |
 | `internal/sflow` | sFlow v5 datagram parser. |
 | `internal/ssh` | `FortiGateClient` (password or public key, optional PTY for TFTP-backup channels). |

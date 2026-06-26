@@ -63,11 +63,12 @@ All `true` by default. Set to `false` / `0` / `no` to disable.
 |---|---|---|
 | `PROBE_MAX_QUEUE_SIZE` | `10000` | In-memory cap per stream. Beyond this, FIFO eviction to BoltDB. |
 | `PROBE_MAX_BATCH_SIZE` | `1000` | Items per HTTP POST. |
+| `PROBE_QUEUE_DISK_PATH` | `` (empty) | Directory for the disk-spillover queues. Empty = in-memory only (telemetry is dropped, not buffered, while the server is unreachable). Set to a writable persistent dir to survive outages/restarts. |
 
-The disk-spillover queue's path is wired in `cmd/collector/main.go:138-148`
-(`relay.Config.QueueDiskPath`); the current production default leaves it
-empty (in-memory only) and the disk persistence activates when the env
-var is set. **This is documented in the env-var file but the wiring is
+The disk-spillover queue's path is wired in `cmd/collector/main.go:187`
+(`relay.Config.QueueDiskPath` ← `PROBE_QUEUE_DISK_PATH`); the current
+production default leaves it empty (in-memory only) and the disk
+persistence activates when the env var is set. **This is documented in the env-var file but the wiring is
 intentionally opt-in** — see `internal/relay/queue/queue.go` for the
 queue's `Path` / `Bucket` / `MaxMem` / `MaxBytes` fields.
 

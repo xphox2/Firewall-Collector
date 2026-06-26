@@ -12,21 +12,31 @@ The collector's vendor profile registry lives in
 
 ```go
 type VendorProfile interface {
-    Name() string                                          // e.g. "fortigate"
+    Name() string                                       // e.g. "fortigate"
 
-    // Optional sub-interfaces (any combination of these may be implemented):
-    DialupVPNProvider  // GetVPNStatus
-    SSLVPNProvider     // GetVPNStatus (SSL)
-    HAProvider         // GetHAStatus
-    SecurityStatsProvider // GetSecurityStats
-    SDWANProvider      // GetSDWANHealth
-    LicenseProvider    // GetLicenseInfo
+    SystemOIDs() []string
+    ParseSystemStatus(pdus []gosnmp.SnmpPDU) *relay.SystemStatus
+    VPNBaseOID() string
+    ParseVPNStatus(pdus []gosnmp.SnmpPDU) []relay.VPNStatus
+    HWSensorBaseOID() string
+    ParseHardwareSensors(pdus []gosnmp.SnmpPDU) []relay.HardwareSensor
+    ProcessorBaseOID() string
+    ParseProcessorStats(pdus []gosnmp.SnmpPDU) []relay.ProcessorStats
+    TrapOIDs() map[string]TrapDef
 }
 ```
 
-In-tree vendors: `fortigate` (default), `paloalto`, `sonicwall`,
-`pfsense`, `opnsense`, `firewalla`, `linux_vpn`, `bsd_vpn`. They
-register themselves in `init()`.
+Features your device doesn't expose are one-line stubs (`""` for a
+`*BaseOID()`, `nil` for the matching `Parse*`). Six **optional**
+sub-interfaces are declared separately in the same file and picked up by
+type assertion when a profile implements them: `DialupVPNProvider`,
+`SSLVPNProvider`, `HAProvider`, `SecurityStatsProvider`, `SDWANProvider`,
+`LicenseProvider`.
+
+In-tree registered profiles: `fortigate` (default), `paloalto`,
+`sonicwall`, `pfsense`, `opnsense`, `firewalla`. They register
+themselves in `init()`. (`vendor_linux_vpn.go` / `vendor_bsd_vpn.go` are
+shared VPN-parsing helpers, not registered profiles.)
 
 To add a new profile:
 
@@ -41,4 +51,4 @@ To add a new profile:
    `VendorProfile` interface satisfaction).
 
 See the existing `vendor_fortigate.go` for a complete reference
-implementation that satisfies all five optional sub-interfaces.
+implementation that satisfies all six optional sub-interfaces.

@@ -15,19 +15,31 @@ The collector has a vendor-profile registry. To add a new vendor:
    ```go
    type VendorProfile interface {
        Name() string
-       Detect(sysObjectID string) bool
-       SystemStatusBaseOID() string
+       SystemOIDs() []string
        ParseSystemStatus(pdus []gosnmp.SnmpPDU) *relay.SystemStatus
-       InterfaceStatsBaseOID() string
-       ParseInterfaceStats(pdus []gosnmp.SnmpPDU) []relay.InterfaceStats
-       // ... and more, see vendor.go
+       VPNBaseOID() string
+       ParseVPNStatus(pdus []gosnmp.SnmpPDU) []relay.VPNStatus
+       HWSensorBaseOID() string
+       ParseHardwareSensors(pdus []gosnmp.SnmpPDU) []relay.HardwareSensor
+       ProcessorBaseOID() string
+       ParseProcessorStats(pdus []gosnmp.SnmpPDU) []relay.ProcessorStats
+       TrapOIDs() map[string]TrapDef
    }
    ```
 
-3. Register the profile in `NewVendorRegistry` at
-   `internal/snmp/vendor.go:130`. The order matters — more-specific
-   profiles (FortiGate, Palo Alto) come before generic fallbacks
-   (Linux/BSD).
+   Features your device doesn't expose are one-line stubs (`""` for a
+   `*BaseOID()`, `nil` for the matching `Parse*`). Richer features
+   (dial-up/SSL VPN, HA, security/SD-WAN/license stats) are exposed by
+   implementing the optional sub-interfaces also declared in `vendor.go`
+   (`DialupVPNProvider`, `SSLVPNProvider`, `HAProvider`,
+   `SecurityStatsProvider`, `SDWANProvider`, `LicenseProvider`).
+
+3. Register the profile from the file's `init()` with
+   `RegisterVendor(&<Name>Profile{})` (see any existing
+   `vendor_*.go`). The registry is a name-keyed map — there is no
+   ordering; the device's configured `vendor` selects the profile via
+   `GetVendorProfile(name)`, and FortiGate is the `DefaultVendor()`
+   fallback.
 4. Add tests in `internal/snmp/vendor_<name>_test.go` covering
    happy-path, sysObjectID detection, and graceful-empty returns for
    the optional interfaces (VPN, HA, sensors, etc.).
@@ -85,7 +97,7 @@ uses LF; CRLF will appear as a "modified" file in CI.
 
 1. Branch from `master`: `git checkout -b audit-NNN-short-name`.
 2. Make your changes. Add tests. Bump `const version` in
-   `cmd/collector/main.go:55` per the patch-versioning rule
+   `cmd/collector/main.go:45` per the patch-versioning rule
    (1.2.74 → 1.2.75 → 1.2.76). Add a `## 1.2.x` section to
    `CHANGELOG.md` at the top, matching the existing style.
 3. Commit. Do **not** include a `Co-Authored-By:` trailer.
