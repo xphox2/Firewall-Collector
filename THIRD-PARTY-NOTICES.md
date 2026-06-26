@@ -15,6 +15,7 @@ direct dependencies and their licenses; the full transitive set is pinned in
 | [github.com/prometheus/client_golang](https://github.com/prometheus/client_golang) | v1.23.2 | Apache-2.0 |
 | [go.etcd.io/bbolt](https://github.com/etcd-io/bbolt) | v1.4.3 | MIT |
 | [golang.org/x/crypto](https://pkg.go.dev/golang.org/x/crypto) | v0.52.0 | BSD-3-Clause |
+| [golang.org/x/net](https://pkg.go.dev/golang.org/x/net) | v0.55.0 | BSD-3-Clause |
 
 ### Indirect dependencies
 
@@ -22,8 +23,8 @@ The above pull in a handful of indirect dependencies; the full list and their
 versions are in `go.mod`. License terms for each module are available at
 `https://pkg.go.dev/<module-path>?tab=licenses`. Notable transitive dependencies
 include `prometheus/client_model` / `prometheus/common` (Apache-2.0),
-`golang.org/x/sys` / `golang.org/x/net` (BSD-3-Clause), `google/uuid`
-(BSD-3-Clause), `cespare/xxhash` (MIT), and `munnerz/goautoneg` (BSD-3-Clause).
+`golang.org/x/sys` (BSD-3-Clause), `cespare/xxhash` (MIT), and
+`munnerz/goautoneg` (BSD-3-Clause).
 
 ---
 

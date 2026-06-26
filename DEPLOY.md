@@ -32,7 +32,7 @@ git push origin master
 
 1. Go to **Actions** tab in your GitHub repo
 2. You should see the build running
-3. Once complete, image will be at: `docker.io/xphox/firewall-collector:1.2.137` (and `:1.2`, `:stable`, `:latest` aliases on the default branch)
+3. Once complete, image will be at: `docker.io/xphox/firewall-collector:1.2.143` (and `:1.2`, `:stable`, `:latest` aliases on the default branch)
 
 ---
 

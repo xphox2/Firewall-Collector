@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.2.143 - 2026-06-25
+
+### Docs
+- **Documentation accuracy sweep — reconciled every doc with the current code (mirrors the server-repo pass).** A code-vs-docs verification pass found and fixed several stale/incorrect claims:
+  - **README.md:** version badge `1.2.137` → `1.2.143`; the `PROBE_SNMP_TRAP_COMMUNITY` row was wrong (claimed "Yes (if traps enabled)" / "empty rejected at startup") — it has been an **optional** allowlist since v1.2.110: empty accepts any community and logs a startup warning (`internal/config/config.go`).
+  - **docs/ARCHITECTURE.md:** the `internal/relay` method list used several names that don't exist — corrected to the real ones (`SendHeartbeat`, `SendSystemStatuses`, `SendVPNStatuses`, `SendHAStatuses`, `SendTrap`, `SendFlowSample`, `SendSyslogMessage`, `SendPingResult`) and added the missing `SendProcessorStats` / `SendInterfaceAddresses`; the SNMP registry is **6 registered profiles**, not 8 (`vendor_linux_vpn.go`/`vendor_bsd_vpn.go` are shared VPN-parsing helpers, not standalone profiles).
+  - **docs/CUSTOM-VENDOR.md:** the `VendorProfile` interface block was wrong (showed the optional sub-interfaces as embedded required members) — replaced with the real concrete-method interface; clarified the **six** optional sub-interfaces are separate and picked up by type assertion; dropped `linux_vpn`/`bsd_vpn` from the "registered profiles" list; "all five" → "all six".
+  - **docs/ENV-VARS.md:** added the missing `PROBE_QUEUE_DISK_PATH` row; corrected the wiring reference `cmd/collector/main.go:138-148` → `:187`.
+  - **CONTRIBUTING.md:** fixed the `VendorProfile` interface snippet and the registration step (vendors register via `RegisterVendor(&XProfile{})` in `init()`, name-keyed map, no ordering — there is no `NewVendorRegistry`); version-const line ref `main.go:55` → `:45`.
+  - **THIRD-PARTY-NOTICES.md:** `golang.org/x/net v0.55.0` (BSD-3-Clause) is a **direct** dependency (imported in `internal/ping`) — moved it into the direct table and removed the incorrect `google/uuid` mention (not a dependency).
+  - **DEPLOY.md:** example image tag `:1.2.137` → `:1.2.143`.
+  - **docs/audit-2026-06-23-consolidated.md:** status-banner header `v1.2.141` → `v1.2.142` (the body already listed the v1.2.142 LOW-tail fixes as resolved).
+
+  No code or behaviour change (the only non-doc edit is the `const version` bump). FEATURES.md's "12 internal packages" was verified accurate (11 top-level + `relay/queue`) and left unchanged.
+
 ## 1.2.142 - 2026-06-24
 
 ### Fixed

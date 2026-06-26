@@ -1,6 +1,6 @@
 # Internal Audit — 2026-06-23 (Collector subset + cross-repo)
 
-> **STATUS (updated 2026-06-24, collector at v1.2.141).** This is the live
+> **STATUS (updated 2026-06-25, collector at v1.2.142).** This is the live
 > tracker for still-open items.
 >
 > **Resolved & shipped:** H2 (TFTP source-IP allowlist actually wired, v1.2.132),
