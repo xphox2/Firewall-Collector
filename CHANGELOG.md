@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.145 - 2026-06-29
+
+### Added
+- **sFlow interface counter-sample parsing + forwarding (schema_version 2).** The sFlow parser now decodes `counters_sample` (data format 2) and `counters_sample_expanded` (format 4) and, for each generic interface-counters record (if_counters, format 1), emits an `InterfaceCounterSample` carrying ifSpeed plus cumulative in/out octets, errors, and discards — the agent-pushed equivalent of an SNMP interface poll. These are forwarded to the new server `/flow-counters` endpoint, giving interface bandwidth (and ifSpeed for the capacity detector) even where SNMP is unavailable or host-restricted.
+  - **Schema v2 gating**: `SchemaVersionMax` 1→2 (Min stays 1). The collector now stores the server-negotiated schema version at registration and only sends counter samples when the server negotiated v2 — so a pre-v2 server never sees the new endpoint (no 404/re-register storm). Once the server is upgraded and the probe re-registers at v2, counters start flowing with no probe restart.
+  - New disk-spillover queue (`flow-counters`) with the same persistence/retry guarantees as the other telemetry queues. `drainAndSend` now nil-guards a disabled queue.
+  - Parsing is bounds-checked against the record/sample end with capped record counts (fuzz-safe); added `readUint64` for the 64-bit ifSpeed/octets fields.
+  - Tests: counters_sample round-trip (speed/octets/errors/discards + sampler address); no-handler skip; ensureQueues + schema-handshake assertions updated for v2.
+
 ## 1.2.144 - 2026-06-29
 
 ### Added

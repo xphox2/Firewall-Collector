@@ -43,6 +43,70 @@ func u32be(buf []byte, v uint32) []byte {
 	return binary.BigEndian.AppendUint32(buf, v)
 }
 
+func u64be(buf []byte, v uint64) []byte {
+	return binary.BigEndian.AppendUint64(buf, v)
+}
+
+// buildIfCountersRecord builds a generic interface-counters record (if_counters,
+// counter data format 1). Field order follows RFC 3176.
+func buildIfCountersRecord(ifIndex uint32, ifSpeed, inOctets, outOctets uint64, inDiscards, inErrors, outDiscards, outErrors uint32) []byte {
+	p := make([]byte, 0, 88)
+	p = u32be(p, ifIndex)
+	p = u32be(p, 6) // ifType = ethernetCsmacd
+	p = u64be(p, ifSpeed)
+	p = u32be(p, 1) // ifDirection = full-duplex
+	p = u32be(p, 3) // ifStatus
+	p = u64be(p, inOctets)
+	p = u32be(p, 0) // ifInUcastPkts
+	p = u32be(p, 0) // ifInMulticastPkts
+	p = u32be(p, 0) // ifInBroadcastPkts
+	p = u32be(p, inDiscards)
+	p = u32be(p, inErrors)
+	p = u32be(p, 0) // ifInUnknownProtos
+	p = u64be(p, outOctets)
+	p = u32be(p, 0) // ifOutUcastPkts
+	p = u32be(p, 0) // ifOutMulticastPkts
+	p = u32be(p, 0) // ifOutBroadcastPkts
+	p = u32be(p, outDiscards)
+	p = u32be(p, outErrors)
+	p = u32be(p, 0) // ifPromiscuousMode
+
+	r := make([]byte, 0, 8+len(p))
+	r = u32be(r, 1) // enterprise=0, format=1 (if_counters)
+	r = u32be(r, uint32(len(p)))
+	r = append(r, p...)
+	return r
+}
+
+// buildCountersSample wraps counter records in a counters_sample (format 2).
+// sourceID encodes (type<<24)|index.
+func buildCountersSample(seqNum, sourceID uint32, records ...[]byte) []byte {
+	s := make([]byte, 0, 32)
+	s = u32be(s, seqNum)
+	s = u32be(s, sourceID)
+	s = u32be(s, uint32(len(records)))
+	for _, r := range records {
+		s = append(s, r...)
+	}
+	return s
+}
+
+// buildCountersDatagram wraps one counters_sample (format 2) into a datagram.
+func buildCountersDatagram(agentIP [4]byte, seq uint32, sample []byte) []byte {
+	d := make([]byte, 0, 28+len(sample))
+	d = u32be(d, 5) // version=5
+	d = u32be(d, 1) // address_type=1 (IPv4)
+	d = append(d, agentIP[:]...)
+	d = u32be(d, 1)   // sub_agent_id
+	d = u32be(d, seq) // sequence_number
+	d = u32be(d, 0)   // uptime
+	d = u32be(d, 1)   // num_samples
+	d = u32be(d, 2)   // enterprise=0, format=2 (counters_sample)
+	d = u32be(d, uint32(len(sample)))
+	d = append(d, sample...)
+	return d
+}
+
 // buildIPv4EthernetTCPHeader constructs a minimal Ethernet/IPv4/TCP header
 // suitable for the sFlow raw-packet-header record. srcIP/dstIP are 4 bytes
 // each, srcPort/dstPort are network-order, tcpFlags goes into byte 13 of
@@ -362,6 +426,58 @@ func TestParseSFlowDatagram_ExtendedGateway(t *testing.T) {
 	if s.SrcAddr != "10.0.0.1" || s.DstPort != 443 {
 		t.Errorf("raw packet fields lost: SrcAddr=%q DstPort=%d", s.SrcAddr, s.DstPort)
 	}
+}
+
+// TestParseSFlowDatagram_CountersSample verifies a counters_sample (format 2)
+// with an if_counters record emits an InterfaceCounterSample with the interface
+// speed/octets/errors/discards populated and the sampler address attached.
+func TestParseSFlowDatagram_CountersSample(t *testing.T) {
+	rec := buildIfCountersRecord(5, 1_000_000_000, 123456789, 987654321, 2, 7, 1, 3)
+	cs := buildCountersSample(99, (0<<24)|5, rec)
+	dg := buildCountersDatagram([4]byte{192, 168, 1, 10}, 7, cs)
+
+	r, _ := newTestReceiver()
+	var mu sync.Mutex
+	var got []*relay.InterfaceCounterSample
+	r.SetCounterHandler(func(c *relay.InterfaceCounterSample) {
+		mu.Lock()
+		got = append(got, c)
+		mu.Unlock()
+	})
+	r.parseSFlowDatagram(dg)
+
+	if len(got) != 1 {
+		t.Fatalf("expected 1 counter sample, got %d", len(got))
+	}
+	c := got[0]
+	if c.IfIndex != 5 {
+		t.Errorf("IfIndex = %d, want 5", c.IfIndex)
+	}
+	if c.IfSpeed != 1_000_000_000 {
+		t.Errorf("IfSpeed = %d, want 1e9", c.IfSpeed)
+	}
+	if c.InOctets != 123456789 || c.OutOctets != 987654321 {
+		t.Errorf("octets = in %d / out %d, want 123456789 / 987654321", c.InOctets, c.OutOctets)
+	}
+	if c.InErrors != 7 || c.OutErrors != 3 {
+		t.Errorf("errors = in %d / out %d, want 7 / 3", c.InErrors, c.OutErrors)
+	}
+	if c.InDiscards != 2 || c.OutDiscards != 1 {
+		t.Errorf("discards = in %d / out %d, want 2 / 1", c.InDiscards, c.OutDiscards)
+	}
+	if c.SamplerAddress != "192.168.1.10" {
+		t.Errorf("SamplerAddress = %q, want 192.168.1.10", c.SamplerAddress)
+	}
+}
+
+// TestParseSFlowDatagram_CountersSampleNoHandler confirms counter samples are
+// skipped (no panic) when no counter handler is registered.
+func TestParseSFlowDatagram_CountersSampleNoHandler(t *testing.T) {
+	rec := buildIfCountersRecord(5, 1_000_000_000, 1, 2, 0, 0, 0, 0)
+	cs := buildCountersSample(1, 5, rec)
+	dg := buildCountersDatagram([4]byte{10, 0, 0, 1}, 1, cs)
+	r, _ := newTestReceiver() // only a flow handler set; counterHandler nil
+	r.parseSFlowDatagram(dg)  // must not panic
 }
 
 // TestParseSFlowDatagram_NoGatewayOmitsBGPFields confirms a flow sample with no

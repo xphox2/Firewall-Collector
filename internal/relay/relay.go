@@ -205,6 +205,31 @@ type FlowSample struct {
 	NextHop string `json:"next_hop,omitempty"`
 }
 
+// InterfaceCounterSample is one sFlow counters_sample (RFC 3176 data format 2/4)
+// carrying the generic interface counters (if_counters record, format 1): the
+// agent-pushed equivalent of SNMP ifSpeed / ifInOctets / ifOutOctets etc. The
+// server uses these as an interface-bandwidth source (and ifSpeed for the
+// capacity detector) when SNMP is unavailable or host-restricted. Gated behind
+// schema_version >= 2: the collector only emits these to a server that
+// negotiated v2, so a pre-v2 server never sees the new /flow-counters endpoint.
+type InterfaceCounterSample struct {
+	Timestamp      time.Time `json:"timestamp"`
+	DeviceID       uint      `json:"device_id"`
+	ProbeID        uint      `json:"probe_id"`
+	SamplerAddress string    `json:"sampler_address"`
+	IfIndex        uint32    `json:"if_index"`
+	IfType         uint32    `json:"if_type,omitempty"`
+	IfSpeed        uint64    `json:"if_speed,omitempty"` // bits/sec (sFlow reports 64-bit ifSpeed)
+	IfDirection    uint32    `json:"if_direction,omitempty"`
+	IfStatus       uint32    `json:"if_status,omitempty"`
+	InOctets       uint64    `json:"in_octets,omitempty"`
+	InErrors       uint64    `json:"in_errors,omitempty"`
+	InDiscards     uint64    `json:"in_discards,omitempty"`
+	OutOctets      uint64    `json:"out_octets,omitempty"`
+	OutErrors      uint64    `json:"out_errors,omitempty"`
+	OutDiscards    uint64    `json:"out_discards,omitempty"`
+}
+
 type HardwareSensor struct {
 	Timestamp time.Time `json:"timestamp"`
 	DeviceID  uint      `json:"device_id"`
@@ -346,9 +371,13 @@ type Config struct {
 // collector advertises SchemaVersionMax on register; a server that supports
 // only an older range replies HTTP 426 (Upgrade Required) with the supported
 // range in the X-Probe-Schema-Version-Supported header.
+// v2 (R5) adds the sFlow interface counter-samples telemetry type
+// (/flow-counters endpoint). It is gated: the collector only emits counter
+// samples to a server that negotiated v2, so a v1 server never sees the new
+// endpoint. v1 remains fully supported (Min stays 1) for mixed-version deploys.
 const (
 	SchemaVersionMin = 1
-	SchemaVersionMax = 1
+	SchemaVersionMax = 2
 )
 
 type RegisterRequest struct {
@@ -393,10 +422,16 @@ type Client struct {
 	// Queues are lazily opened on first Send* (see ensureQueues) so
 	// tests that only exercise non-queue code paths (mTLS, send
 	// retries, etc.) do not have to pre-configure a disk path.
-	trapQueue   *queue.SpilloverQueue
-	pingQueue   *queue.SpilloverQueue
-	syslogQueue *queue.SpilloverQueue
-	flowQueue   *queue.SpilloverQueue
+	trapQueue        *queue.SpilloverQueue
+	pingQueue        *queue.SpilloverQueue
+	syslogQueue      *queue.SpilloverQueue
+	flowQueue        *queue.SpilloverQueue
+	flowCounterQueue *queue.SpilloverQueue // sFlow interface counters (schema v2)
+
+	// negotiatedSchema holds the schema_version the server selected at register
+	// time (0 until first successful registration → treated as v1). Read on the
+	// send path to gate v2-only telemetry (counter samples); written in Register.
+	negotiatedSchema atomic.Int32
 
 	// AUDIT-054 (v2): config-revision retry queue. Same SpilloverQueue
 	// primitive as the 4 event queues above. Marshaled *ConfigRevision
@@ -529,18 +564,19 @@ func (c *Client) ensureQueues() {
 		c.pingQueue = open("pings")
 		c.syslogQueue = open("syslog")
 		c.flowQueue = open("flows")
+		c.flowCounterQueue = open("flow-counters")
 		c.revisionQueue = open("revisions")
 		c.metricQueue = open("metrics")
 
 		if openErr != nil {
 			// Partial open: close whatever succeeded and run fully disabled,
 			// rather than with an inconsistent subset of queues.
-			for _, q := range []*queue.SpilloverQueue{c.trapQueue, c.pingQueue, c.syslogQueue, c.flowQueue, c.revisionQueue, c.metricQueue} {
+			for _, q := range []*queue.SpilloverQueue{c.trapQueue, c.pingQueue, c.syslogQueue, c.flowQueue, c.flowCounterQueue, c.revisionQueue, c.metricQueue} {
 				if q != nil {
 					_ = q.Close()
 				}
 			}
-			c.trapQueue, c.pingQueue, c.syslogQueue, c.flowQueue, c.revisionQueue, c.metricQueue = nil, nil, nil, nil, nil, nil
+			c.trapQueue, c.pingQueue, c.syslogQueue, c.flowQueue, c.flowCounterQueue, c.revisionQueue, c.metricQueue = nil, nil, nil, nil, nil, nil, nil
 			return
 		}
 
@@ -732,6 +768,7 @@ func (c *Client) Register() error {
 	if negotiated == 0 {
 		negotiated = 1
 	}
+	c.negotiatedSchema.Store(int32(negotiated))
 
 	if !result.Approved {
 		log.Printf("Probe registered (schema_version %d) but waiting for approval in admin panel...", negotiated)
@@ -939,6 +976,30 @@ func (c *Client) SendFlowSample(sample *FlowSample) {
 	}
 	if err := c.flowQueue.Push(data); err != nil {
 		log.Printf("[Relay] Failed to enqueue flow sample: %v", err)
+	}
+}
+
+// SendInterfaceCounterSample enqueues an sFlow interface counter sample. It is
+// gated on schema v2: if the server negotiated v1 (or registration hasn't
+// completed yet) the sample is dropped silently rather than queued, so we never
+// POST the /flow-counters endpoint to a server that doesn't have it (which would
+// 404 and trip the re-registration path). Once the server is upgraded and the
+// probe re-registers at v2, counters start flowing — no probe restart needed.
+func (c *Client) SendInterfaceCounterSample(cs *InterfaceCounterSample) {
+	if c.negotiatedSchema.Load() < 2 {
+		return
+	}
+	c.ensureQueues()
+	if c.flowCounterQueue == nil {
+		return
+	}
+	data, err := json.Marshal(cs)
+	if err != nil {
+		log.Printf("[Relay] Failed to marshal interface counter sample: %v", err)
+		return
+	}
+	if err := c.flowCounterQueue.Push(data); err != nil {
+		log.Printf("[Relay] Failed to enqueue interface counter sample: %v", err)
 	}
 }
 
@@ -1266,6 +1327,14 @@ func (c *Client) syncData() {
 		drainLabel: "flows", unmarshalLabel: "flow",
 		noun: "flow samples", nounLong: "flow samples", interChunkDelay: 0,
 	})
+	// sFlow interface counters (schema v2). The queue only ever holds samples
+	// when the server negotiated v2 (SendInterfaceCounterSample gates the push),
+	// so draining to /flow-counters is safe against pre-v2 servers.
+	drainAndSend(c, baseURL, drainChunk, queueDrainSpec[InterfaceCounterSample]{
+		queue: c.flowCounterQueue, endpoint: "/flow-counters", sendName: "flow-counters",
+		drainLabel: "flow-counters", unmarshalLabel: "interface counter",
+		noun: "interface counters", nounLong: "interface counter samples", interChunkDelay: 0,
+	})
 
 	// AUDIT-054: drain the config-revision retry queue. Same bounded
 	// chunking as the 4 event queues above. Each batch is then handed
@@ -1401,6 +1470,9 @@ type queueDrainSpec[T any] struct {
 // forwards each chunk, requeuing on failure. Shared by every event queue so the
 // per-queue loops no longer copy-paste the pipeline.
 func drainAndSend[T any](c *Client, baseURL string, drainChunk int, spec queueDrainSpec[T]) {
+	if spec.queue == nil {
+		return // queue not opened (spillover disabled, or a v2-gated queue on a v1 server)
+	}
 	for {
 		raw, err := spec.queue.Drain(drainChunk)
 		if err != nil {
@@ -1512,12 +1584,13 @@ func (c *Client) Stop() {
 		// replay the full queue. Done after the final flush so we
 		// capture any data the loop just sent.
 		for name, q := range map[string]*queue.SpilloverQueue{
-			"traps":     c.trapQueue,
-			"pings":     c.pingQueue,
-			"syslog":    c.syslogQueue,
-			"flows":     c.flowQueue,
-			"revisions": c.revisionQueue,
-			"metrics":   c.metricQueue,
+			"traps":         c.trapQueue,
+			"pings":         c.pingQueue,
+			"syslog":        c.syslogQueue,
+			"flows":         c.flowQueue,
+			"flow-counters": c.flowCounterQueue,
+			"revisions":     c.revisionQueue,
+			"metrics":       c.metricQueue,
 		} {
 			if q == nil {
 				continue

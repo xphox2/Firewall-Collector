@@ -17,13 +17,14 @@ import (
 )
 
 type SFlowReceiver struct {
-	ListenAddr string
-	Port       int
-	handler    func(*relay.FlowSample)
-	conn       *net.UDPConn
-	stopChan   chan struct{}
-	stopOnce   sync.Once
-	running    atomic.Bool
+	ListenAddr     string
+	Port           int
+	handler        func(*relay.FlowSample)
+	counterHandler func(*relay.InterfaceCounterSample)
+	conn           *net.UDPConn
+	stopChan       chan struct{}
+	stopOnce       sync.Once
+	running        atomic.Bool
 }
 
 func NewSFlowReceiver(listenAddr string, port int) *SFlowReceiver {
@@ -62,6 +63,13 @@ func (r *SFlowReceiver) Start(handler func(*relay.FlowSample)) error {
 
 	log.Printf("[sFlow] Listening on %s:%d", r.ListenAddr, r.Port)
 	return nil
+}
+
+// SetCounterHandler registers the callback for sFlow counter samples (interface
+// counters). It must be set before Start when counter samples are wanted; a nil
+// handler (the default) makes the parser skip counters_sample records entirely.
+func (r *SFlowReceiver) SetCounterHandler(h func(*relay.InterfaceCounterSample)) {
+	r.counterHandler = h
 }
 
 func (r *SFlowReceiver) Stop() error {
@@ -108,6 +116,17 @@ func readUint32(data []byte, offset *int) (uint32, bool) {
 	}
 	v := binary.BigEndian.Uint32(data[*offset:])
 	*offset += 4
+	return v, true
+}
+
+// readUint64 reads an XDR unsigned hyper (8 bytes, big-endian). sFlow counter
+// records use it for ifSpeed / ifInOctets / ifOutOctets.
+func readUint64(data []byte, offset *int) (uint64, bool) {
+	if *offset+8 > len(data) {
+		return 0, false
+	}
+	v := binary.BigEndian.Uint64(data[*offset:])
+	*offset += 8
 	return v, true
 }
 
@@ -188,6 +207,9 @@ func (r *SFlowReceiver) parseSFlowDatagram(data []byte) {
 		if enterprise == 0 && (format == 1 || format == 3) {
 			// Flow sample (format=1) or expanded flow sample (format=3)
 			r.parseFlowSample(data, &offset, format, sampleEnd, agentAddr, dgSequence, now)
+		} else if enterprise == 0 && (format == 2 || format == 4) {
+			// Counters sample (format=2) or expanded (format=4)
+			r.parseCountersSample(data, &offset, format, sampleEnd, agentAddr, now)
 		}
 
 		// Skip to end of this sample regardless
@@ -438,6 +460,145 @@ func parseExtendedGateway(data []byte, offset *int, recEnd int, sample *relay.Fl
 		}
 		sample.ASPath = strings.Join(parts, " ")
 	}
+}
+
+// parseCountersSample decodes an sFlow counters_sample (format 2) or
+// counters_sample_expanded (format 4) and, for each generic interface-counters
+// record (if_counters, data format 1), emits an InterfaceCounterSample via the
+// counter handler. Header: sequence_number(4) + source_id + num_records(4). In
+// format 2 source_id is one word ((type<<24)|index); in format 4 it is two
+// words (type, index). All reads are bounded; num_records is capped.
+func (r *SFlowReceiver) parseCountersSample(data []byte, offset *int, format uint32, sampleEnd int, agentAddr string, now time.Time) {
+	if r.counterHandler == nil {
+		return
+	}
+	if _, ok := readUint32(data, offset); !ok { // sequence_number
+		return
+	}
+	var ifIndex uint32
+	if format == 2 {
+		srcID, ok := readUint32(data, offset)
+		if !ok {
+			return
+		}
+		ifIndex = srcID & 0x00FFFFFF // low 24 bits = index, high 8 = type
+	} else { // format 4 (expanded)
+		if _, ok := readUint32(data, offset); !ok { // source_id_type
+			return
+		}
+		idx, ok := readUint32(data, offset)
+		if !ok {
+			return
+		}
+		ifIndex = idx
+	}
+	numRecords, ok := readUint32(data, offset)
+	if !ok {
+		return
+	}
+	const maxRecords = 256
+	if numRecords > maxRecords {
+		numRecords = maxRecords
+	}
+	for j := uint32(0); j < numRecords && *offset < sampleEnd; j++ {
+		recEF, ok := readUint32(data, offset)
+		if !ok {
+			return
+		}
+		recLen, ok := readUint32(data, offset)
+		if !ok {
+			return
+		}
+		recEnd := *offset + int(recLen)
+		if recEnd > sampleEnd {
+			return
+		}
+		recEnterprise := recEF >> 12
+		recFormat := recEF & 0xFFF
+		if recEnterprise == 0 && recFormat == 1 {
+			// generic interface counters (if_counters)
+			parseIfCounters(data, offset, ifIndex, agentAddr, now, r.counterHandler)
+		}
+		*offset = recEnd
+	}
+}
+
+// parseIfCounters decodes the generic interface counters record (sFlow if_counters,
+// counter data format 1) into an InterfaceCounterSample and hands it to emit. The
+// record's own ifIndex is preferred; fallbackIfIndex (from the sample source_id)
+// is used only if the record reports 0. Every read is length-checked, so a short
+// or hostile record returns cleanly without emitting.
+//
+// Layout: ifIndex(4) ifType(4) ifSpeed(8) ifDirection(4) ifStatus(4)
+// ifInOctets(8) ifInUcastPkts(4) ifInMulticastPkts(4) ifInBroadcastPkts(4)
+// ifInDiscards(4) ifInErrors(4) ifInUnknownProtos(4)
+// ifOutOctets(8) ifOutUcastPkts(4) ifOutMulticastPkts(4) ifOutBroadcastPkts(4)
+// ifOutDiscards(4) ifOutErrors(4) ifPromiscuousMode(4).
+func parseIfCounters(data []byte, offset *int, fallbackIfIndex uint32, agentAddr string, now time.Time, emit func(*relay.InterfaceCounterSample)) {
+	cs := &relay.InterfaceCounterSample{Timestamp: now, SamplerAddress: agentAddr}
+
+	ifIndex, ok := readUint32(data, offset)
+	if !ok {
+		return
+	}
+	cs.IfIndex = ifIndex
+	if cs.IfIndex == 0 {
+		cs.IfIndex = fallbackIfIndex
+	}
+	if cs.IfType, ok = readUint32(data, offset); !ok {
+		return
+	}
+	if cs.IfSpeed, ok = readUint64(data, offset); !ok {
+		return
+	}
+	if cs.IfDirection, ok = readUint32(data, offset); !ok {
+		return
+	}
+	if cs.IfStatus, ok = readUint32(data, offset); !ok {
+		return
+	}
+	if cs.InOctets, ok = readUint64(data, offset); !ok {
+		return
+	}
+	for i := 0; i < 3; i++ { // ifIn{Ucast,Multicast,Broadcast}Pkts
+		if _, ok = readUint32(data, offset); !ok {
+			return
+		}
+	}
+	inDiscards, ok := readUint32(data, offset)
+	if !ok {
+		return
+	}
+	cs.InDiscards = uint64(inDiscards)
+	inErrors, ok := readUint32(data, offset)
+	if !ok {
+		return
+	}
+	cs.InErrors = uint64(inErrors)
+	if _, ok = readUint32(data, offset); !ok { // ifInUnknownProtos
+		return
+	}
+	if cs.OutOctets, ok = readUint64(data, offset); !ok {
+		return
+	}
+	for i := 0; i < 3; i++ { // ifOut{Ucast,Multicast,Broadcast}Pkts
+		if _, ok = readUint32(data, offset); !ok {
+			return
+		}
+	}
+	outDiscards, ok := readUint32(data, offset)
+	if !ok {
+		return
+	}
+	cs.OutDiscards = uint64(outDiscards)
+	outErrors, ok := readUint32(data, offset)
+	if !ok {
+		return
+	}
+	cs.OutErrors = uint64(outErrors)
+	// ifPromiscuousMode trailing field intentionally not read — unused.
+
+	emit(cs)
 }
 
 func parseEthernet(hdr []byte, sample *relay.FlowSample) {

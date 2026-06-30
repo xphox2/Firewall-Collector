@@ -42,7 +42,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.2.144"
+const version = "1.2.145"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -393,6 +393,16 @@ func main() {
 
 	if probeCfg.SFlowEnabled {
 		sflowReceiver := sflow.NewSFlowReceiver(probeCfg.ListenAddr, probeCfg.SFlowPort)
+		// Counter samples (schema v2): resolve device the same way as flows; the
+		// relay client drops these when the server negotiated v1, so it's safe to
+		// always register the handler.
+		sflowReceiver.SetCounterHandler(func(cs *relay.InterfaceCounterSample) {
+			cs.ProbeID = probeID
+			if cs.DeviceID == 0 {
+				cs.DeviceID = c.resolveDeviceByIP(cs.SamplerAddress)
+			}
+			relayClient.SendInterfaceCounterSample(cs)
+		})
 		if err := sflowReceiver.Start(func(sample *relay.FlowSample) {
 			sample.ProbeID = probeID
 			if sample.DeviceID == 0 {
