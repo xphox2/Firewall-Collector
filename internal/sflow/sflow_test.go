@@ -119,10 +119,10 @@ func buildFlowSampleWithDrops(seqNum, sourceID, samplingRate, drops uint32, reco
 	s = u32be(s, seqNum)
 	s = u32be(s, sourceID)
 	s = u32be(s, samplingRate)
-	s = u32be(s, 0)        // sample_pool
-	s = u32be(s, drops)    // drops (sFlow v5 §3.1.1)
-	s = u32be(s, 0)        // input
-	s = u32be(s, 0)        // output
+	s = u32be(s, 0)     // sample_pool
+	s = u32be(s, drops) // drops (sFlow v5 §3.1.1)
+	s = u32be(s, 0)     // input
+	s = u32be(s, 0)     // output
 	s = u32be(s, uint32(len(records)))
 	for _, r := range records {
 		s = append(s, r...)
@@ -296,6 +296,102 @@ func TestParseSFlowDatagram_DropsFieldCaptured(t *testing.T) {
 	}
 	if got[0].Drops != 42 {
 		t.Errorf("Drops = %d, want 42 (the audit found this field was previously read and discarded)", got[0].Drops)
+	}
+}
+
+// buildExtendedGatewayRecord builds an sFlow extended_gateway record (RFC 3176
+// data format 1003) with an IPv4 next-hop, src_as, and a single sequence AS-path
+// segment. The origin AS (sample.DstAS) is the last entry of asPath.
+func buildExtendedGatewayRecord(nextHop [4]byte, srcAS uint32, asPath []uint32) []byte {
+	payload := make([]byte, 0, 64)
+	payload = u32be(payload, 1) // next_hop addr type = IPv4
+	payload = append(payload, nextHop[:]...)
+	payload = u32be(payload, 64500) // as (this gateway) — unused by parser
+	payload = u32be(payload, srcAS) // src_as
+	payload = u32be(payload, 64510) // src_peer_as — unused
+	payload = u32be(payload, 1)     // dst_as_path segment count = 1
+	payload = u32be(payload, 2)     // segment type = 2 (sequence)
+	payload = u32be(payload, uint32(len(asPath)))
+	for _, a := range asPath {
+		payload = u32be(payload, a)
+	}
+	payload = u32be(payload, 0)   // communities count = 0
+	payload = u32be(payload, 100) // localpref
+
+	r := make([]byte, 0, 8+len(payload))
+	r = u32be(r, 1003) // enterprise=0, format=1003
+	r = u32be(r, uint32(len(payload)))
+	r = append(r, payload...)
+	return r
+}
+
+// TestParseSFlowDatagram_ExtendedGateway verifies the extended_gateway (1003)
+// record populates SrcAS, DstAS (origin = last AS-path hop), ASPath, and NextHop
+// on the emitted sample, alongside the raw-packet-header record in the same flow
+// sample.
+func TestParseSFlowDatagram_ExtendedGateway(t *testing.T) {
+	srcIP := [4]byte{10, 0, 0, 1}
+	dstIP := [4]byte{10, 0, 0, 2}
+	ethTCP := buildIPv4EthernetTCPHeader(srcIP, dstIP, 12345, 443, 0x02)
+	rawRec := buildRawPacketRecord(ethTCP, uint32(16+len(ethTCP)))
+	gwRec := buildExtendedGatewayRecord([4]byte{192, 0, 2, 1}, 64511, []uint32{64500, 65000, 64496})
+	sample := buildFlowSample(42, 100, 512, rawRec, gwRec)
+	dg := buildDatagram([4]byte{192, 168, 1, 10}, 7, sample)
+
+	r, get := newTestReceiver()
+	r.parseSFlowDatagram(dg)
+
+	got := get()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 flow sample, got %d", len(got))
+	}
+	s := got[0]
+	if s.SrcAS != 64511 {
+		t.Errorf("SrcAS = %d, want 64511", s.SrcAS)
+	}
+	if s.DstAS != 64496 {
+		t.Errorf("DstAS = %d, want 64496 (origin = last AS-path hop)", s.DstAS)
+	}
+	if s.ASPath != "64500 65000 64496" {
+		t.Errorf("ASPath = %q, want %q", s.ASPath, "64500 65000 64496")
+	}
+	if s.NextHop != "192.0.2.1" {
+		t.Errorf("NextHop = %q, want %q", s.NextHop, "192.0.2.1")
+	}
+	// The raw-packet record must still be parsed in the same sample.
+	if s.SrcAddr != "10.0.0.1" || s.DstPort != 443 {
+		t.Errorf("raw packet fields lost: SrcAddr=%q DstPort=%d", s.SrcAddr, s.DstPort)
+	}
+}
+
+// TestParseSFlowDatagram_NoGatewayOmitsBGPFields confirms a flow sample with no
+// extended_gateway record leaves the BGP fields zero/empty, so they omit from
+// the JSON wire form (backward-compat for pre-adopting servers).
+func TestParseSFlowDatagram_NoGatewayOmitsBGPFields(t *testing.T) {
+	srcIP := [4]byte{10, 0, 0, 1}
+	dstIP := [4]byte{10, 0, 0, 2}
+	ethTCP := buildIPv4EthernetTCPHeader(srcIP, dstIP, 12345, 443, 0x02)
+	rawRec := buildRawPacketRecord(ethTCP, uint32(16+len(ethTCP)))
+	dg := buildDatagram([4]byte{192, 168, 1, 10}, 7, buildFlowSample(1, 100, 512, rawRec))
+
+	r, get := newTestReceiver()
+	r.parseSFlowDatagram(dg)
+	got := get()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 flow sample, got %d", len(got))
+	}
+	s := got[0]
+	if s.SrcAS != 0 || s.DstAS != 0 || s.ASPath != "" || s.NextHop != "" {
+		t.Errorf("expected empty BGP fields, got SrcAS=%d DstAS=%d ASPath=%q NextHop=%q", s.SrcAS, s.DstAS, s.ASPath, s.NextHop)
+	}
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, key := range []string{"src_as", "dst_as", "as_path", "next_hop"} {
+		if strings.Contains(string(b), key) {
+			t.Errorf("JSON should omit %q when unset: %s", key, b)
+		}
 	}
 }
 

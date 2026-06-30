@@ -19,32 +19,32 @@ var (
 	swOIDSysUpTime = ".1.3.6.1.2.1.1.3.0"
 
 	// --- SNWL-COMMON-MIB (.1.3.6.1.4.1.8741.2.1.1) ---
-	swOIDModel          = ".1.3.6.1.4.1.8741.2.1.1.1.0"
-	swOIDSerialNumber   = ".1.3.6.1.4.1.8741.2.1.1.2.0"
+	swOIDModel           = ".1.3.6.1.4.1.8741.2.1.1.1.0"
+	swOIDSerialNumber    = ".1.3.6.1.4.1.8741.2.1.1.2.0"
 	swOIDFirmwareVersion = ".1.3.6.1.4.1.8741.2.1.1.3.0"
 
 	// --- SONICWALL-FIREWALL-IP-STATISTICS-MIB ---
-	swOIDMaxConn      = ".1.3.6.1.4.1.8741.1.3.1.1.0" // sonicMaxConnCacheEntries
-	swOIDCurrentConn  = ".1.3.6.1.4.1.8741.1.3.1.2.0" // sonicCurrentConnCacheEntries
-	swOIDCpuUtil      = ".1.3.6.1.4.1.8741.1.3.1.3.0" // sonicCurrentCPUUtil (%)
-	swOIDRamUtil      = ".1.3.6.1.4.1.8741.1.3.1.4.0" // sonicCurrentRAMUtil (%)
+	swOIDMaxConn     = ".1.3.6.1.4.1.8741.1.3.1.1.0" // sonicMaxConnCacheEntries
+	swOIDCurrentConn = ".1.3.6.1.4.1.8741.1.3.1.2.0" // sonicCurrentConnCacheEntries
+	swOIDCpuUtil     = ".1.3.6.1.4.1.8741.1.3.1.3.0" // sonicCurrentCPUUtil (%)
+	swOIDRamUtil     = ".1.3.6.1.4.1.8741.1.3.1.4.0" // sonicCurrentRAMUtil (%)
 
 	// --- VPN SA Statistics Table ---
-	swBaseOIDVPNSA       = ".1.3.6.1.4.1.8741.1.3.2.1.1.1"
-	swOIDSAPeerGateway   = ".1.3.6.1.4.1.8741.1.3.2.1.1.1.2"
-	swOIDSASrcAddrBegin  = ".1.3.6.1.4.1.8741.1.3.2.1.1.1.3"
-	swOIDSASrcAddrEnd    = ".1.3.6.1.4.1.8741.1.3.2.1.1.1.4"
-	swOIDSADstAddrBegin  = ".1.3.6.1.4.1.8741.1.3.2.1.1.1.5"
-	swOIDSADstAddrEnd    = ".1.3.6.1.4.1.8741.1.3.2.1.1.1.6"
-	swOIDSAEncryptBytes  = ".1.3.6.1.4.1.8741.1.3.2.1.1.1.9"
-	swOIDSADecryptBytes  = ".1.3.6.1.4.1.8741.1.3.2.1.1.1.11"
-	swOIDSAUserName      = ".1.3.6.1.4.1.8741.1.3.2.1.1.1.14"
+	swBaseOIDVPNSA      = ".1.3.6.1.4.1.8741.1.3.2.1.1.1"
+	swOIDSAPeerGateway  = ".1.3.6.1.4.1.8741.1.3.2.1.1.1.2"
+	swOIDSASrcAddrBegin = ".1.3.6.1.4.1.8741.1.3.2.1.1.1.3"
+	swOIDSASrcAddrEnd   = ".1.3.6.1.4.1.8741.1.3.2.1.1.1.4"
+	swOIDSADstAddrBegin = ".1.3.6.1.4.1.8741.1.3.2.1.1.1.5"
+	swOIDSADstAddrEnd   = ".1.3.6.1.4.1.8741.1.3.2.1.1.1.6"
+	swOIDSAEncryptBytes = ".1.3.6.1.4.1.8741.1.3.2.1.1.1.9"
+	swOIDSADecryptBytes = ".1.3.6.1.4.1.8741.1.3.2.1.1.1.11"
+	swOIDSAUserName     = ".1.3.6.1.4.1.8741.1.3.2.1.1.1.14"
 
 	// --- Hardware Sensors Table ---
-	swBaseOIDSensors     = ".1.3.6.1.4.1.8741.1.3.3.3.1.1"
-	swOIDSensorDevice    = ".1.3.6.1.4.1.8741.1.3.3.3.1.1.3"
-	swOIDSensorValue     = ".1.3.6.1.4.1.8741.1.3.3.3.1.1.4"
-	swOIDSensorUnit      = ".1.3.6.1.4.1.8741.1.3.3.3.1.1.5"
+	swBaseOIDSensors  = ".1.3.6.1.4.1.8741.1.3.3.3.1.1"
+	swOIDSensorDevice = ".1.3.6.1.4.1.8741.1.3.3.3.1.1.3"
+	swOIDSensorValue  = ".1.3.6.1.4.1.8741.1.3.3.3.1.1.4"
+	swOIDSensorUnit   = ".1.3.6.1.4.1.8741.1.3.3.3.1.1.5"
 
 	// --- DPI-SSL Statistics ---
 )

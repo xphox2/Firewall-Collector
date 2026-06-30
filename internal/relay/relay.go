@@ -191,6 +191,18 @@ type FlowSample struct {
 	// pre-adopting server (which doesn't know about Drops) sees no
 	// wire field at all and continues to function unchanged.
 	Drops uint64 `json:"drops,omitempty"`
+	// BGP/AS enrichment from the sFlow extended_gateway record (RFC 3176
+	// data format 1003), present only when the sampling router is BGP-speaking
+	// and exports it (many firewalls don't). SrcAS/DstAS are the source AS and
+	// the destination's origin AS (last hop of the dst AS path); ASPath is the
+	// space-separated dst AS path; NextHop is the BGP next-hop address. All are
+	// omitempty so a pre-adopting server sees no wire fields and is unchanged —
+	// the same backward-compatible pattern as Drops above. The server prefers
+	// these AS numbers over its GeoLite2 lookup when present.
+	SrcAS   uint32 `json:"src_as,omitempty"`
+	DstAS   uint32 `json:"dst_as,omitempty"`
+	ASPath  string `json:"as_path,omitempty"`
+	NextHop string `json:"next_hop,omitempty"`
 }
 
 type HardwareSensor struct {

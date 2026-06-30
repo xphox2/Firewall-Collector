@@ -19,34 +19,34 @@ var (
 
 	// --- UCD-SNMP-MIB CPU (1.3.6.1.4.1.2021.11) ---
 	fwOIDCpuUser   = ".1.3.6.1.4.1.2021.11.9.0"  // ssCpuRawUser (%)
-	fwOIDCpuSystem = ".1.3.6.1.4.1.2021.11.10.0"  // ssCpuRawSystem (%)
-	fwOIDCpuIdle   = ".1.3.6.1.4.1.2021.11.11.0"  // ssCpuRawIdle (%)
+	fwOIDCpuSystem = ".1.3.6.1.4.1.2021.11.10.0" // ssCpuRawSystem (%)
+	fwOIDCpuIdle   = ".1.3.6.1.4.1.2021.11.11.0" // ssCpuRawIdle (%)
 
 	// --- UCD-SNMP-MIB Memory (1.3.6.1.4.1.2021.4) ---
 	fwOIDMemTotalReal = ".1.3.6.1.4.1.2021.4.5.0"  // memTotalReal (kB)
 	fwOIDMemAvailReal = ".1.3.6.1.4.1.2021.4.6.0"  // memAvailReal (kB)
-	fwOIDMemBuffer    = ".1.3.6.1.4.1.2021.4.14.0"  // memBuffer (kB)
-	fwOIDMemCached    = ".1.3.6.1.4.1.2021.4.15.0"  // memCached (kB)
-	fwOIDMemTotalSwap = ".1.3.6.1.4.1.2021.4.3.0"   // memTotalSwap (kB)
+	fwOIDMemBuffer    = ".1.3.6.1.4.1.2021.4.14.0" // memBuffer (kB)
+	fwOIDMemCached    = ".1.3.6.1.4.1.2021.4.15.0" // memCached (kB)
+	fwOIDMemTotalSwap = ".1.3.6.1.4.1.2021.4.3.0"  // memTotalSwap (kB)
 
 	// --- HOST-RESOURCES-MIB Disk (1.3.6.1.2.1.25.2.3.1) ---
 
 	// --- HOST-RESOURCES-MIB Processor (1.3.6.1.2.1.25.3.3.1) ---
-	fwBaseOIDProcessor  = ".1.3.6.1.2.1.25.3.3.1"
-	fwOIDProcessorLoad  = ".1.3.6.1.2.1.25.3.3.1.2"  // hrProcessorLoad (%)
+	fwBaseOIDProcessor = ".1.3.6.1.2.1.25.3.3.1"
+	fwOIDProcessorLoad = ".1.3.6.1.2.1.25.3.3.1.2" // hrProcessorLoad (%)
 
 	// --- UCD-SNMP-MIB Load Averages (1.3.6.1.4.1.2021.10.1) ---
-	fwOIDLaLoad1  = ".1.3.6.1.4.1.2021.10.1.3.1"  // laLoad 1-min (string)
-	fwOIDLaLoad5  = ".1.3.6.1.4.1.2021.10.1.3.2"  // laLoad 5-min (string)
-	fwOIDLaLoad15 = ".1.3.6.1.4.1.2021.10.1.3.3"  // laLoad 15-min (string)
+	fwOIDLaLoad1  = ".1.3.6.1.4.1.2021.10.1.3.1" // laLoad 1-min (string)
+	fwOIDLaLoad5  = ".1.3.6.1.4.1.2021.10.1.3.2" // laLoad 5-min (string)
+	fwOIDLaLoad15 = ".1.3.6.1.4.1.2021.10.1.3.3" // laLoad 15-min (string)
 
 	// --- lmSensors via NET-SNMP (1.3.6.1.4.1.2021.13.16) ---
-	fwBaseOIDLmTempSensor = ".1.3.6.1.4.1.2021.13.16.2.1"
-	fwOIDLmTempSensorDescr = ".1.3.6.1.4.1.2021.13.16.2.1.2"  // lmTempSensorsDevice
-	fwOIDLmTempSensorValue = ".1.3.6.1.4.1.2021.13.16.2.1.3"  // lmTempSensorsValue (milli°C)
+	fwBaseOIDLmTempSensor  = ".1.3.6.1.4.1.2021.13.16.2.1"
+	fwOIDLmTempSensorDescr = ".1.3.6.1.4.1.2021.13.16.2.1.2" // lmTempSensorsDevice
+	fwOIDLmTempSensorValue = ".1.3.6.1.4.1.2021.13.16.2.1.3" // lmTempSensorsValue (milli°C)
 
-	fwOIDLmFanSensorDescr = ".1.3.6.1.4.1.2021.13.16.3.1.2"  // lmFanSensorsDevice
-	fwOIDLmFanSensorValue = ".1.3.6.1.4.1.2021.13.16.3.1.3"  // lmFanSensorsValue (RPM)
+	fwOIDLmFanSensorDescr = ".1.3.6.1.4.1.2021.13.16.3.1.2" // lmFanSensorsDevice
+	fwOIDLmFanSensorValue = ".1.3.6.1.4.1.2021.13.16.3.1.3" // lmFanSensorsValue (RPM)
 )
 
 // FirewallaProfile implements VendorProfile for Firewalla devices.

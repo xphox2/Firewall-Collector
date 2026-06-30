@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -300,6 +302,9 @@ func (r *SFlowReceiver) parseFlowSample(data []byte, offset *int, format uint32,
 		if recEnterprise == 0 && recFormat == 1 {
 			// Raw packet header record
 			parseRawPacketHeader(data, offset, recEnd, sample)
+		} else if recEnterprise == 0 && recFormat == 1003 {
+			// Extended gateway (BGP) record — AS path / next hop.
+			parseExtendedGateway(data, offset, recEnd, sample)
 		}
 
 		*offset = recEnd
@@ -346,6 +351,92 @@ func parseRawPacketHeader(data []byte, offset *int, recEnd int, sample *relay.Fl
 	if headerProto == 1 {
 		// Ethernet
 		parseEthernet(hdr, sample)
+	}
+}
+
+// parseExtendedGateway decodes the sFlow extended_gateway record (RFC 3176 data
+// format 1003): the BGP next-hop address, the source AS, and the destination AS
+// path. It fills sample.NextHop, sample.SrcAS, sample.DstAS (the origin AS — the
+// last hop of the path) and sample.ASPath (space-separated). Every read is
+// bounded by recEnd and the array counts are capped, so a malformed or hostile
+// record can't drive an unbounded loop (this parser is fuzzed). On any short
+// read it returns with whatever it parsed so far; the caller resets offset to
+// recEnd regardless.
+//
+// Record layout: next_hop(address) + as(4) + src_as(4) + src_peer_as(4) +
+// dst_as_path<segments> + communities<> + localpref(4). Each path segment is
+// type(4) + as_count(4) + as[as_count](4 each). We ignore communities/localpref.
+func parseExtendedGateway(data []byte, offset *int, recEnd int, sample *relay.FlowSample) {
+	// next_hop address: type(4) + 4|16 bytes
+	addrType, ok := readUint32(data, offset)
+	if !ok {
+		return
+	}
+	switch addrType {
+	case 1: // IPv4
+		if *offset+4 > recEnd {
+			return
+		}
+		sample.NextHop = net.IP(data[*offset : *offset+4]).String()
+		*offset += 4
+	case 2: // IPv6
+		if *offset+16 > recEnd {
+			return
+		}
+		sample.NextHop = net.IP(data[*offset : *offset+16]).String()
+		*offset += 16
+	default:
+		return
+	}
+
+	if _, ok = readUint32(data, offset); !ok { // as (this gateway's AS) — unused
+		return
+	}
+	srcAS, ok := readUint32(data, offset)
+	if !ok {
+		return
+	}
+	sample.SrcAS = srcAS
+	if _, ok = readUint32(data, offset); !ok { // src_peer_as — unused
+		return
+	}
+
+	const maxSegments = 64
+	const maxASPerSeg = 256
+	segCount, ok := readUint32(data, offset)
+	if !ok {
+		return
+	}
+	if segCount > maxSegments {
+		segCount = maxSegments
+	}
+	asPath := make([]uint32, 0, 16)
+	for s := uint32(0); s < segCount && *offset < recEnd; s++ {
+		if _, ok = readUint32(data, offset); !ok { // segment type (1=set, 2=sequence)
+			return
+		}
+		asCount, ok := readUint32(data, offset)
+		if !ok {
+			return
+		}
+		if asCount > maxASPerSeg {
+			asCount = maxASPerSeg
+		}
+		for a := uint32(0); a < asCount && *offset < recEnd; a++ {
+			v, ok := readUint32(data, offset)
+			if !ok {
+				return
+			}
+			asPath = append(asPath, v)
+		}
+	}
+	if len(asPath) > 0 {
+		sample.DstAS = asPath[len(asPath)-1] // origin AS of the destination
+		parts := make([]string, len(asPath))
+		for i, v := range asPath {
+			parts[i] = strconv.FormatUint(uint64(v), 10)
+		}
+		sample.ASPath = strings.Join(parts, " ")
 	}
 }
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.144 - 2026-06-29
+
+### Added
+- **sFlow `extended_gateway` (BGP) record parsing.** The sFlow parser now decodes the extended_gateway flow record (RFC 3176 data format 1003) alongside the raw packet header, extracting the BGP next-hop, the source AS, and the destination AS path. These populate four new `FlowSample` fields — `src_as`, `dst_as` (the origin AS = last hop of the AS path), `as_path` (space-separated), and `next_hop` — forwarded to the server, which prefers them over its GeoLite2 ASN lookup. All four are `omitempty`, so a pre-adopting server sees no new wire fields and is unaffected (the same backward-compatible pattern as the `drops` counter). No schema-version bump; present only for BGP-speaking samplers that export the record. Parsing is bounds-checked against the record end with capped AS-path/segment counts (fuzz-safe).
+  - Tests: extended_gateway record round-trip (src/dst AS, AS path, next hop, coexisting with the raw-packet record); and confirmation that a sample without the record omits all BGP fields from the JSON.
+
 ## 1.2.143 - 2026-06-25
 
 ### Docs

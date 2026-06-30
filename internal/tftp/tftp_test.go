@@ -102,10 +102,10 @@ func TestTFTPServerWRQ(t *testing.T) {
 	}
 
 	var (
-		mu          sync.Mutex
-		gotName     string
-		gotData     []byte
-		handlerHit  = make(chan struct{})
+		mu         sync.Mutex
+		gotName    string
+		gotData    []byte
+		handlerHit = make(chan struct{})
 	)
 	server.SetWriteHandler(func(fname string, data []byte, addr net.Addr) error {
 		mu.Lock()
@@ -250,4 +250,3 @@ func buildRequest(opcode uint16, filename string) []byte {
 	pkt = append(pkt, 0)
 	return pkt
 }
-

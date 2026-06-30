@@ -489,6 +489,6 @@ func (p *PaloAltoProfile) TrapOIDs() map[string]TrapDef {
 		// System events
 		".1.3.6.1.4.1.25461.2.1.3.2.0.600": {Type: "system-general", Severity: "info"},
 		// Threat events
-		".1.3.6.1.4.1.25461.2.1.3.2.0.4":   {Type: "threat-detected", Severity: "critical"},
+		".1.3.6.1.4.1.25461.2.1.3.2.0.4": {Type: "threat-detected", Severity: "critical"},
 	}
 }

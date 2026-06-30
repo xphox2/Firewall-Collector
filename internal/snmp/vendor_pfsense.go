@@ -30,7 +30,7 @@ var (
 
 	// --- BEGEMOT-PF-MIB (enterprise 12325 = FreeBSD/Begemot) ---
 	// PF state table — active sessions equivalent
-	pfOIDStateCount   = ".1.3.6.1.4.1.12325.1.200.1.3.1.0" // pfStateTableCount
+	pfOIDStateCount = ".1.3.6.1.4.1.12325.1.200.1.3.1.0" // pfStateTableCount
 	// PF counters
 	// PF status
 	pfOIDPfRunning = ".1.3.6.1.4.1.12325.1.200.1.1.1.0" // PF enabled (1=yes)
