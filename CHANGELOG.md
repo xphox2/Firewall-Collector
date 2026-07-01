@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.153 - 2026-07-01
+
+### Docs
+- **Engineering audit 2026-07-01: added `docs/audit-2026-07-01-consolidated.md`** (collector-scoped copy of the dual-repo consolidated report). 12 collector findings confirmed: per-source rate-limiter idle eviction can never fire (H6), queue replay loads the whole spool into RAM at startup (H7), TCP syslog bypasses the UDP rate-limit defense (M16), bbolt NoSync corruption disables all seven queues (M17), fsync under the shared queue mutex (M18), idempotency-key re-mint on requeue (M19), no v1 fallback on schema-handshake 426 (M20), ENV-VARS.md contradicting the code (M23), sFlow sub-record boundary reads (L9), lax syslog priority parsing (L10), dead SO_REUSEPORT worker blackhole (L11), and flow-counters drain ignoring the negotiated schema version (L13). Documentation-only in this version — fixes land in follow-up commits.
+
 ## 1.2.152 - 2026-07-01
 
 ### Fixed

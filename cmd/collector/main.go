@@ -43,7 +43,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.2.152"
+const version = "1.2.153"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -107,7 +107,7 @@ type Collector struct {
 	cfgBackupTimers map[string]*time.Timer
 	cfgBackupMu     sync.Mutex
 	deviceMu        sync.RWMutex
-	ifaceIPMap      map[string]uint // interface IP → device ID cache
+	ifaceIPMap      map[string]uint // interface IP â†’ device ID cache
 	ifaceIPMu       sync.RWMutex
 	stopChan        chan struct{}
 	stopOnce        sync.Once
@@ -191,7 +191,7 @@ func main() {
 	// Observability (AUDIT-057): start the metrics + probe server
 	// early so /healthz is reachable as soon as we have a process to
 	// probe, even before the first heartbeat. Bind to loopback by
-	// default — set PROBE_METRICS_ADDR to "0.0.0.0:9090" to expose
+	// default â€” set PROBE_METRICS_ADDR to "0.0.0.0:9090" to expose
 	// on all interfaces (e.g. for a Prometheus scraper outside the
 	// host).
 	metricsAddr := config.GetEnv("PROBE_METRICS_ADDR", "127.0.0.1:9090")
@@ -264,7 +264,7 @@ func main() {
 				log.Fatalf("Failed to register after %d attempts: %v", maxAttempts, regErr)
 			}
 			backoff := time.Duration(attempt*attempt) * time.Second // 1s,4s,9s,16s,25s
-			log.Printf("Registration attempt %d/%d failed: %v — retrying in %s", attempt, maxAttempts, regErr, backoff)
+			log.Printf("Registration attempt %d/%d failed: %v â€” retrying in %s", attempt, maxAttempts, regErr, backoff)
 			time.Sleep(backoff)
 		}
 	}
@@ -369,9 +369,9 @@ func main() {
 
 	// newLimiter builds a per-source-IP limiter for one UDP listener with that
 	// listener's own limits (a syslog flood can't consume the sFlow budget, and
-	// each firewall — a distinct source IP — gets its own per-source bucket).
-	// Returns nil when disabled — the receivers treat nil as "no limit". Burst
-	// auto-defaults to 2× the per-source rate inside ratelimit.New.
+	// each firewall â€” a distinct source IP â€” gets its own per-source bucket).
+	// Returns nil when disabled â€” the receivers treat nil as "no limit". Burst
+	// auto-defaults to 2Ã— the per-source rate inside ratelimit.New.
 	newLimiter := func(perSourcePPS, globalPPS int) *ratelimit.Limiter {
 		if !probeCfg.RateLimitEnabled {
 			return nil
@@ -501,7 +501,7 @@ func main() {
 // runHeartbeatLoop wraps relayClient.HeartbeatLoop so we can record
 // the timestamp of every successful heartbeat (read by /readyz) and
 // increment the success/failure Prometheus counters on each cycle.
-// This is "wiring only" — the actual heartbeat logic is unchanged.
+// This is "wiring only" â€” the actual heartbeat logic is unchanged.
 func (c *Collector) runHeartbeatLoop(mu *sync.RWMutex, last *time.Time) {
 	if err := c.relayClient.SendHeartbeat(); err != nil {
 		log.Printf("Initial heartbeat error: %v", err)
@@ -583,7 +583,7 @@ func (c *Collector) runStartupDiagnostic() {
 	}
 
 	if target == nil {
-		fmt.Println("  [Diagnostic] No enabled devices — skipping SNMP connectivity test")
+		fmt.Println("  [Diagnostic] No enabled devices â€” skipping SNMP connectivity test")
 		return
 	}
 
@@ -636,7 +636,7 @@ func (c *Collector) runStartupDiagnostic() {
 
 	// Test 1: Vendor-neutral sysObjectID GET (works on ANY SNMP device)
 	fmt.Println()
-	fmt.Println("  [Diagnostic] === Test 1: Basic SNMP (sysObjectID — works on any device) ===")
+	fmt.Println("  [Diagnostic] === Test 1: Basic SNMP (sysObjectID â€” works on any device) ===")
 	start := time.Now()
 	basicResult, basicErr := client.GetRaw([]string{".1.3.6.1.2.1.1.2.0"})
 	elapsed := time.Since(start)
@@ -669,7 +669,7 @@ func (c *Collector) runStartupDiagnostic() {
 			fmt.Println("  [Diagnostic] >>> This device may not be a FortiGate, or FortiGate MIB is not enabled.")
 		}
 	} else {
-		fmt.Printf("  [Diagnostic] VENDOR POLL OK (%v): %s — CPU=%.1f%% Mem=%.1f%% Sessions=%d\n",
+		fmt.Printf("  [Diagnostic] VENDOR POLL OK (%v): %s â€” CPU=%.1f%% Mem=%.1f%% Sessions=%d\n",
 			elapsed.Round(time.Millisecond), status.Hostname, status.CPUUsage, status.MemoryUsage, status.SessionCount)
 	}
 	fmt.Println()
@@ -878,8 +878,8 @@ func (c *Collector) checkAndSendConfigRevision(dev relay.DeviceInfo, checksum st
 // parseUploadFilename extracts the deviceID and the trigger source the
 // collector encoded into the TFTP filename. Two formats are supported:
 //
-//	"fgt_<id>_<trigger>_config" — current format, encodes provenance
-//	"fgt_<id>_config"           — legacy (older collectors / manual uploads)
+//	"fgt_<id>_<trigger>_config" â€” current format, encodes provenance
+//	"fgt_<id>_config"           â€” legacy (older collectors / manual uploads)
 //
 // Returns (deviceID, triggerSource). triggerSource defaults to "poll" for
 // the legacy path so older inflight backups continue to land cleanly.
@@ -893,8 +893,8 @@ func parseUploadFilename(filename string) (uint, string) {
 		return 0, "poll"
 	}
 	trigger := "poll"
-	// "fgt_<id>_<trigger>_config" → 4 parts; the trigger is parts[2].
-	// "fgt_<id>_config"           → 3 parts; no embedded trigger.
+	// "fgt_<id>_<trigger>_config" â†’ 4 parts; the trigger is parts[2].
+	// "fgt_<id>_config"           â†’ 3 parts; no embedded trigger.
 	if len(parts) >= 4 {
 		switch parts[2] {
 		case "syslog", "poll", "manual":
@@ -912,8 +912,8 @@ func devIDFromFilename(filename string) uint {
 }
 
 // detectBackupQuality scans the uploaded config bytes for FortiOS 7.2.1+
-// password-masking markers. A masked backup is *not* fully restorable —
-// secrets must be re-entered after restore — and we surface that on the
+// password-masking markers. A masked backup is *not* fully restorable â€”
+// secrets must be re-entered after restore â€” and we surface that on the
 // revision row so operators see it in the UI.
 func detectBackupQuality(data []byte) string {
 	// Same markers as configdiff.vendor_fortigate.go (kept in sync intentionally).
@@ -993,12 +993,12 @@ const tftpMinWRQInterval = 30 * time.Second
 // applyTFTPAllowlist restricts the TFTP write server to the source IPs of the
 // devices this probe currently monitors and enforces a per-source-IP rate
 // limit. The tftp.Server has carried these AUDIT-050 controls since they were
-// added, but cmd/collector never called them — so the WRQ handler accepted
+// added, but cmd/collector never called them â€” so the WRQ handler accepted
 // forged config uploads from ANY host that could reach UDP/69, letting an
 // attacker submit an authoritative config-revision for any device_id and poison
 // config-change detection (2026-06-23 audit, H2). Called at startup and on
 // every device-list refresh so the allowlist tracks the assigned fleet. An empty
-// device list yields a non-nil empty allowlist (deny-all) — the secure default
+// device list yields a non-nil empty allowlist (deny-all) â€” the secure default
 // while no devices are assigned.
 func (c *Collector) applyTFTPAllowlist() {
 	if c.tftpServer == nil {
@@ -1012,7 +1012,7 @@ func (c *Collector) applyTFTPAllowlist() {
 	log.Printf("[TFTP] Source-IP allowlist applied: %d device IP(s), min WRQ interval %v", len(ips), tftpMinWRQInterval)
 }
 
-// deviceSourceIPs returns the non-empty management IPs of the given devices —
+// deviceSourceIPs returns the non-empty management IPs of the given devices â€”
 // the set permitted to submit TFTP config uploads. Returns a non-nil empty
 // slice when no device has an IP, so SetAllowedSourceIPs denies all (rather than
 // nil = allow-all).
@@ -1053,7 +1053,7 @@ func (c *Collector) setTFTPServerIP(ip string) {
 	c.tftpServerIPMu.Unlock()
 	if prev != ip {
 		if ip == "" {
-			log.Printf("[TFTP] Admin-set TFTP server IP cleared — will fall back to per-device auto-detection")
+			log.Printf("[TFTP] Admin-set TFTP server IP cleared â€” will fall back to per-device auto-detection")
 		} else {
 			log.Printf("[TFTP] Admin-set TFTP server IP: %s", ip)
 		}
@@ -1081,7 +1081,7 @@ func (c *Collector) fetchConfigViaTFTP(dev relay.DeviceInfo, checksum string, tr
 		log.Printf("[TFTP] Using admin-configured server IP %s for device %s", tftpTarget, dev.Name)
 	} else {
 		tftpTarget = c.determineOutboundIP(dev.IPAddress)
-		log.Printf("[TFTP] No admin-configured server IP — auto-detected %s for device %s", tftpTarget, dev.Name)
+		log.Printf("[TFTP] No admin-configured server IP â€” auto-detected %s for device %s", tftpTarget, dev.Name)
 	}
 	// Encode trigger in the filename so the TFTP write handler (registered once
 	// at server-start time) can recover provenance per upload without shared state.
@@ -1117,7 +1117,7 @@ func (c *Collector) sendConfigRevisionViaTFTP(dev relay.DeviceInfo, checksum str
 	if err != nil {
 		return fmt.Errorf("TFTP backup command failed: %w", err)
 	}
-	log.Printf("[TFTP] SSH command accepted by %s — waiting for firewall to TFTP-upload config to collector", dev.Name)
+	log.Printf("[TFTP] SSH command accepted by %s â€” waiting for firewall to TFTP-upload config to collector", dev.Name)
 
 	return nil
 }
@@ -1316,7 +1316,7 @@ func (c *Collector) sendVPNStatuses(dev relay.DeviceInfo, phase1Output, phase2Ou
 
 // sendMetric collects one optional metric set, stamps each record with the
 // device ID and poll time, and forwards it to the sink. Collection errors and
-// empty results are skipped silently — these metrics are optional per device
+// empty results are skipped silently â€” these metrics are optional per device
 // (a device that doesn't support one simply returns nothing); only a send
 // failure is logged. get/stamp/send are closures because Go generics cannot
 // call a method or set a struct field generically.
@@ -1388,7 +1388,7 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 		return
 	}
 
-	// Success — reset circuit breaker, record last-successful-poll,
+	// Success â€” reset circuit breaker, record last-successful-poll,
 	// and update Prometheus gauges.
 	c.recordPollSuccess(dev.ID)
 	status.DeviceID = dev.ID
@@ -1482,7 +1482,7 @@ func (c *Collector) recordPollFailure(deviceID uint) {
 	count := c.failCount[deviceID]
 	c.failCountMu.Unlock()
 	if count == 3 {
-		log.Printf("[SNMP] Device %d: 3 consecutive failures — entering backoff mode", deviceID)
+		log.Printf("[SNMP] Device %d: 3 consecutive failures â€” entering backoff mode", deviceID)
 	}
 }
 
@@ -1501,8 +1501,8 @@ func (c *Collector) recordObservedHostKey(deviceID uint, fingerprint string) {
 }
 
 // snapshotObservedHostKeys returns a copy of the observed-fingerprint map for
-// the heartbeat. Re-sending the same fingerprints is harmless — the server
-// treats a known key as a no-op — so the map is not cleared.
+// the heartbeat. Re-sending the same fingerprints is harmless â€” the server
+// treats a known key as a no-op â€” so the map is not cleared.
 func (c *Collector) snapshotObservedHostKeys() map[uint]string {
 	c.observedHostKeysMu.RLock()
 	defer c.observedHostKeysMu.RUnlock()
@@ -1527,7 +1527,7 @@ func (c *Collector) recordPollSuccess(deviceID uint) {
 	// poll so /metrics publishes a non-zero
 	// firewall_collector_last_successful_poll_timestamp for the device.
 	// The duration itself is recorded by the deferred OnPollDuration
-	// in pollDevice — we only update the timestamp here.
+	// in pollDevice â€” we only update the timestamp here.
 	c.lastSuccessfulPollMu.Lock()
 	c.lastSuccessfulPoll[deviceID] = time.Now()
 	c.lastSuccessfulPollMu.Unlock()
@@ -1603,14 +1603,14 @@ func (c *Collector) handleSyslogMessage(msg *relay.SyslogMessage, probeID uint) 
 		deviceID = c.resolveDeviceByIP(msg.SourceIP)
 	}
 	if deviceID == 0 {
-		log.Printf("[Syslog→Backup] config-change event from %s but no matching device (logid=%s cfgtid=%s cfgpath=%s)",
+		log.Printf("[Syslogâ†’Backup] config-change event from %s but no matching device (logid=%s cfgtid=%s cfgpath=%s)",
 			msg.SourceIP, ev.Logid, ev.Cfgtid, ev.Cfgpath)
 		return
 	}
 
 	dev, ok := c.findDeviceByID(deviceID)
 	if !ok {
-		log.Printf("[Syslog→Backup] device id=%d not in current device list", deviceID)
+		log.Printf("[Syslogâ†’Backup] device id=%d not in current device list", deviceID)
 		return
 	}
 
@@ -1624,10 +1624,10 @@ const configBackupDebounce = 60 * time.Second
 
 // scheduleConfigBackup runs `fetchConfigViaTFTP` on the given device after the
 // configBackupDebounce window, keyed on (deviceID, cfgtid). Production entry
-// point — wraps scheduleConfigBackupWith to inject the actual TFTP fetch.
+// point â€” wraps scheduleConfigBackupWith to inject the actual TFTP fetch.
 func (c *Collector) scheduleConfigBackup(dev relay.DeviceInfo, ev *syslog.FortiEvent) {
 	c.scheduleConfigBackupWith(dev, ev, configBackupDebounce, func() {
-		log.Printf("[Syslog→Backup] firing TFTP backup for %s (logid=%s cfgtid=%s cfgpath=%s)",
+		log.Printf("[Syslogâ†’Backup] firing TFTP backup for %s (logid=%s cfgtid=%s cfgpath=%s)",
 			dev.Name, ev.Logid, ev.Cfgtid, ev.Cfgpath)
 		c.fetchConfigViaTFTP(dev, "", "syslog")
 	})
@@ -1636,7 +1636,7 @@ func (c *Collector) scheduleConfigBackup(dev relay.DeviceInfo, ev *syslog.FortiE
 // scheduleConfigBackupWith is the testable core. Two events with the same
 // (deviceID, cfgtid) within the debounce window collapse to a single fire of
 // `action`. Different cfgtids are independent timers. If cfgtid is empty
-// (rare — some events don't carry one), the key degrades to "<deviceID>:_"
+// (rare â€” some events don't carry one), the key degrades to "<deviceID>:_"
 // so we still get one backup per device per debounce window.
 func (c *Collector) scheduleConfigBackupWith(dev relay.DeviceInfo, ev *syslog.FortiEvent, debounce time.Duration, action func()) {
 	tid := ev.Cfgtid
@@ -1660,7 +1660,7 @@ func (c *Collector) scheduleConfigBackupWith(dev relay.DeviceInfo, ev *syslog.Fo
 	})
 	c.cfgBackupMu.Unlock()
 
-	log.Printf("[Syslog→Backup] queued backup for %s in %v (logid=%s cfgtid=%s cfgpath=%s action=%s user=%s)",
+	log.Printf("[Syslogâ†’Backup] queued backup for %s in %v (logid=%s cfgtid=%s cfgpath=%s action=%s user=%s)",
 		dev.Name, debounce, ev.Logid, ev.Cfgtid, ev.Cfgpath, ev.Action, ev.User)
 }
 
@@ -1713,7 +1713,7 @@ func (c *Collector) stop() {
 		// the slowest SSH command (10-min commandTimeout per audit, but
 		// most return in seconds); 30s is the configured deadline for
 		// an orderly drain. If they don't all finish, we still proceed
-		// — better to ship a "slow shutdown" warning than hang forever.
+		// â€” better to ship a "slow shutdown" warning than hang forever.
 		done := make(chan struct{})
 		go func() {
 			c.pollWg.Wait()
@@ -1764,7 +1764,7 @@ func (c *Collector) stop() {
 
 		// Stop the metrics server LAST so /metrics and /readyz are
 		// reachable for the whole shutdown. Use a short bounded
-		// context — there's no in-flight work to wait for, the http
+		// context â€” there's no in-flight work to wait for, the http
 		// server only serves scrapes.
 		if c.metricsServer != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1779,7 +1779,7 @@ func (c *Collector) stop() {
 // isSSHToolSubcommand reports whether args[0] is the ssh-test subcommand.
 // Only an exact first-arg match of "ssh-test" is supported: "ssh-test"
 // must appear as os.Args[1]. Flags-then-subcommand forms (e.g. "--debug ssh-test")
-// are explicitly rejected — main() only checks os.Args[1], so routing
+// are explicitly rejected â€” main() only checks os.Args[1], so routing
 // anything else would silently start the long-running collector and
 // ignore the operator's intent to invoke the diagnostic tool.
 func isSSHToolSubcommand(args []string) bool {
@@ -1793,7 +1793,7 @@ func isSSHToolSubcommand(args []string) bool {
 //
 // Level allow-list: debug | info | warn | warning | error. Anything else
 // is silently clamped to info and a one-shot warning is written to
-// os.Stderr (the production stderr, not buf — so test stderr capture
+// os.Stderr (the production stderr, not buf â€” so test stderr capture
 // can see it).
 //
 // Format allow-list: text | json. Unknown values are silently treated
