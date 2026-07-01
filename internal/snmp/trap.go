@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"firewall-collector/internal/ratelimit"
 	"firewall-collector/internal/relay"
 	"firewall-collector/internal/safego"
 
@@ -24,6 +25,16 @@ type TrapReceiver struct {
 	community  string
 	server     *gosnmp.TrapListener
 	handler    func(*relay.TrapEvent)
+	limiter    *ratelimit.Limiter
+	onRateDrop func()
+}
+
+// SetRateLimiter attaches a per-source-IP rate limiter. Traps from a source over
+// its rate are dropped before the per-trap goroutine is spawned (so a flood
+// can't spawn unbounded goroutines). Nil disables limiting. Set before Start.
+func (t *TrapReceiver) SetRateLimiter(l *ratelimit.Limiter, onDrop func()) {
+	t.limiter = l
+	t.onRateDrop = onDrop
 }
 
 func NewTrapReceiver(listenAddr string, port int, community string) *TrapReceiver {
@@ -43,6 +54,14 @@ func (t *TrapReceiver) Start(handler func(*relay.TrapEvent)) error {
 	t.handler = handler
 
 	t.server.OnNewTrap = func(packet *gosnmp.SnmpPacket, addr *net.UDPAddr) {
+		// Per-source rate limit BEFORE spawning the per-trap goroutine, so a
+		// flooding source can't drive unbounded goroutine creation.
+		if t.limiter != nil && addr != nil && !t.limiter.Allow(addr.IP.String()) {
+			if t.onRateDrop != nil {
+				t.onRateDrop()
+			}
+			return
+		}
 		safego.Go("snmpTrap:"+addr.IP.String(), func() {
 			// The community is a shared secret used to authenticate the trap;
 			// it is deliberately omitted from this log line so it is not exposed

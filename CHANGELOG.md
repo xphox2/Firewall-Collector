@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.146 - 2026-06-30
+
+### Added
+- **Per-source-IP UDP rate limiting on the sFlow, syslog, and SNMP-trap receivers.** UDP is connectionless and spoofable — previously the collector parsed and queued every datagram from any source on a single goroutine, so one misbehaving or hostile agent (or an accidental high-rate exporter) could starve the parse loop and flood the spillover queue → the central server. New `internal/ratelimit` token-bucket limiter sheds excess traffic *before* parsing/queueing:
+  - **Two tiers:** a per-source bucket (one noisy agent can't drown the others) + a global per-listener ceiling (bounds total datagrams/sec so the parse loop can't be overwhelmed).
+  - **Bounded memory:** the per-source map is capped (`PROBE_RATE_LIMIT_MAX_SOURCES`, default 8192) with idle-bucket eviction, so a spoofed-source flood can't turn the defense into a memory-exhaustion DoS; sources beyond the cap fall through to the global bucket only.
+  - **SNMP traps:** the limit is checked before the per-trap goroutine is spawned, so a trap flood can't drive unbounded goroutine creation.
+  - **Kernel buffer:** the sFlow and syslog UDP sockets now request an 8 MiB `SO_RCVBUF` so short legitimate bursts aren't dropped by the socket before the loop drains them.
+  - **On by default with generous limits** (500 pps/source, 1000 burst, 20000 pps/listener global) that sit well above a normal firewall's export rate, so legitimate telemetry is never dropped. Every drop increments `firewall_collector_rate_limited_drops_total{listener}` (labeled by listener, NOT source IP — bounded cardinality) so a flooding/misconfigured source is visible. Tunable via `PROBE_RATE_LIMIT_ENABLED`, `PROBE_RATE_LIMIT_PER_SOURCE_PPS`, `PROBE_RATE_LIMIT_PER_SOURCE_BURST`, `PROBE_RATE_LIMIT_GLOBAL_PPS`, `PROBE_RATE_LIMIT_MAX_SOURCES`.
+  - Tests: per-source bucket, global ceiling, bounded-map overflow → global, idle eviction, stats counters. No new dependency (self-contained token bucket).
+
 ## 1.2.145 - 2026-06-29
 
 ### Added

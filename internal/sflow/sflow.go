@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"firewall-collector/internal/ratelimit"
 	"firewall-collector/internal/relay"
 	"firewall-collector/internal/safego"
 )
@@ -21,10 +22,20 @@ type SFlowReceiver struct {
 	Port           int
 	handler        func(*relay.FlowSample)
 	counterHandler func(*relay.InterfaceCounterSample)
+	limiter        *ratelimit.Limiter
+	onRateDrop     func()
 	conn           *net.UDPConn
 	stopChan       chan struct{}
 	stopOnce       sync.Once
 	running        atomic.Bool
+}
+
+// SetRateLimiter attaches a per-source-IP UDP rate limiter. Datagrams from a
+// source over its rate are dropped (onDrop called, if set) before parsing. A nil
+// limiter disables limiting. Set before Start.
+func (r *SFlowReceiver) SetRateLimiter(l *ratelimit.Limiter, onDrop func()) {
+	r.limiter = l
+	r.onRateDrop = onDrop
 }
 
 func NewSFlowReceiver(listenAddr string, port int) *SFlowReceiver {
@@ -57,6 +68,9 @@ func (r *SFlowReceiver) Start(handler func(*relay.FlowSample)) error {
 	if err != nil {
 		return fmt.Errorf("failed to listen on UDP %s:%d: %w", r.ListenAddr, r.Port, err)
 	}
+	// Enlarge the kernel receive buffer so short legitimate bursts aren't dropped
+	// by the socket before the read loop can drain them. Best-effort.
+	_ = r.conn.SetReadBuffer(ratelimit.UDPReadBufferBytes)
 
 	r.running.Store(true)
 	safego.Go("sflow:read", r.readLoop)
@@ -92,7 +106,7 @@ func (r *SFlowReceiver) readLoop() {
 	buf := make([]byte, 65536)
 	for r.running.Load() {
 		r.conn.SetReadDeadline(time.Now().Add(1 * time.Second))
-		n, _, err := r.conn.ReadFromUDP(buf)
+		n, remoteAddr, err := r.conn.ReadFromUDP(buf)
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				continue
@@ -101,6 +115,15 @@ func (r *SFlowReceiver) readLoop() {
 				log.Printf("[sFlow] Read error: %v", err)
 			}
 			return
+		}
+
+		// Per-source rate limit: shed datagrams from a flooding source before
+		// parsing/queueing (nil limiter = disabled).
+		if r.limiter != nil && remoteAddr != nil && !r.limiter.Allow(remoteAddr.IP.String()) {
+			if r.onRateDrop != nil {
+				r.onRateDrop()
+			}
+			continue
 		}
 
 		if n > 0 {

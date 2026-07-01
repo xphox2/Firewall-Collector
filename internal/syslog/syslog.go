@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"firewall-collector/internal/ratelimit"
 	"firewall-collector/internal/relay"
 	"firewall-collector/internal/safego"
 )
@@ -162,11 +163,20 @@ type UDPSyslogReceiver struct {
 	ListenAddr string
 	Port       int
 	handler    func(*relay.SyslogMessage)
+	limiter    *ratelimit.Limiter
+	onRateDrop func()
 	conn       *net.UDPConn
 	running    atomic.Bool
 	stopCh     chan struct{}
 	stopOnce   sync.Once
 	wg         sync.WaitGroup
+}
+
+// SetRateLimiter attaches a per-source-IP rate limiter; datagrams from a source
+// over its rate are dropped before parsing. Nil disables limiting. Set before Start.
+func (u *UDPSyslogReceiver) SetRateLimiter(l *ratelimit.Limiter, onDrop func()) {
+	u.limiter = l
+	u.onRateDrop = onDrop
 }
 
 func NewUDPSyslogReceiver(listenAddr string, port int) *UDPSyslogReceiver {
@@ -193,6 +203,7 @@ func (u *UDPSyslogReceiver) Start(handler func(*relay.SyslogMessage)) error {
 	if err != nil {
 		return fmt.Errorf("failed to listen on UDP %s: %w", addr, err)
 	}
+	_ = u.conn.SetReadBuffer(ratelimit.UDPReadBufferBytes)
 
 	u.running.Store(true)
 	u.wg.Add(1)
@@ -233,6 +244,15 @@ func (u *UDPSyslogReceiver) readLoop() {
 			}
 			if u.running.Load() {
 				log.Printf("[Syslog UDP] Read error: %v", err)
+			}
+			continue
+		}
+
+		// Per-source rate limit: shed datagrams from a flooding source before
+		// parsing (nil limiter = disabled).
+		if u.limiter != nil && clientAddr != nil && !u.limiter.Allow(clientAddr.IP.String()) {
+			if u.onRateDrop != nil {
+				u.onRateDrop()
 			}
 			continue
 		}

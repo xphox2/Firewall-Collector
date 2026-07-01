@@ -49,6 +49,17 @@ type ProbeConfig struct {
 	SyslogEnabled   bool
 	SFlowEnabled    bool
 	PingEnabled     bool
+
+	// Per-source-IP UDP rate limiting for the sFlow/syslog/trap receivers. On by
+	// default with generous limits (well above a normal firewall's export rate),
+	// so a flooding or spoofed source is shed before it can overwhelm the parse
+	// loop or the spillover queue, without dropping legitimate telemetry. Each
+	// listener gets its own limiter with these settings.
+	RateLimitEnabled        bool
+	RateLimitPerSourcePPS   int // sustained datagrams/sec per source IP
+	RateLimitPerSourceBurst int // per-source burst allowance
+	RateLimitGlobalPPS      int // aggregate datagrams/sec ceiling (per listener)
+	RateLimitMaxSources     int // max distinct source IPs tracked (memory bound)
 }
 
 func Load() (*Config, error) {
@@ -87,6 +98,12 @@ func Load() (*Config, error) {
 			SyslogEnabled:   parseBool("PROBE_SYSLOG_ENABLED", true),
 			SFlowEnabled:    parseBool("PROBE_SFLOW_ENABLED", true),
 			PingEnabled:     parseBool("PROBE_PING_ENABLED", true),
+
+			RateLimitEnabled:        parseBool("PROBE_RATE_LIMIT_ENABLED", true),
+			RateLimitPerSourcePPS:   parseInt("PROBE_RATE_LIMIT_PER_SOURCE_PPS", 500),
+			RateLimitPerSourceBurst: parseInt("PROBE_RATE_LIMIT_PER_SOURCE_BURST", 1000),
+			RateLimitGlobalPPS:      parseInt("PROBE_RATE_LIMIT_GLOBAL_PPS", 20000),
+			RateLimitMaxSources:     parseInt("PROBE_RATE_LIMIT_MAX_SOURCES", 8192),
 		},
 	}
 

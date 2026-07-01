@@ -104,6 +104,8 @@ type Metrics struct {
 	queueDepth   *prometheus.GaugeVec
 	queueDropped *prometheus.CounterVec
 
+	rateLimitedDrops *prometheus.CounterVec
+
 	metricSendFailed *prometheus.CounterVec
 
 	pollDuration *prometheus.HistogramVec
@@ -201,6 +203,15 @@ func New(cfg Config) *Metrics {
 		Help: "Number of items dropped because a queue was full. Non-zero values mean silent data loss — investigate immediately.",
 	}, []string{"queue"})
 
+	// Labeled by listener (sflow|syslog|snmp_trap), NOT source IP — a source-IP
+	// label would be unbounded cardinality (the same spoof-flood that the limiter
+	// defends against would blow up the metrics registry). A spike here means a
+	// source is flooding that receiver: misconfigured exporter or an attack.
+	m.rateLimitedDrops = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "firewall_collector_rate_limited_drops_total",
+		Help: "Datagrams dropped by the per-source-IP rate limiter, by listener.",
+	}, []string{"listener"})
+
 	m.pollDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name: "firewall_collector_poll_duration_seconds",
 		Help: "Histogram of SNMP poll cycle durations per device.",
@@ -247,6 +258,7 @@ func New(cfg Config) *Metrics {
 		m.dataBatchSent,
 		m.queueDepth,
 		m.queueDropped,
+		m.rateLimitedDrops,
 		m.pollDuration,
 		m.pollFailures,
 		m.lastPollPublished,
@@ -306,6 +318,16 @@ func (m *Metrics) SetQueueDepth(queue string, depth int) {
 // for the given queue. Call from the SendXxx queue-full branches.
 func (m *Metrics) IncQueueDropped(queue string) {
 	m.queueDropped.WithLabelValues(queue).Inc()
+}
+
+// IncRateLimitedDrop increments firewall_collector_rate_limited_drops_total for
+// the given listener (sflow|syslog|snmp_trap). Call from the receiver's
+// rate-limit drop branch. Nil-safe so tests/wiring without metrics don't panic.
+func (m *Metrics) IncRateLimitedDrop(listener string) {
+	if m == nil {
+		return
+	}
+	m.rateLimitedDrops.WithLabelValues(listener).Inc()
 }
 
 // IncMetricSendFailed increments firewall_collector_metric_send_failed_total for

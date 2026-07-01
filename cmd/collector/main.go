@@ -19,6 +19,7 @@ import (
 	"firewall-collector/internal/config"
 	"firewall-collector/internal/observability"
 	"firewall-collector/internal/ping"
+	"firewall-collector/internal/ratelimit"
 	"firewall-collector/internal/relay"
 	"firewall-collector/internal/safego"
 	"firewall-collector/internal/sflow"
@@ -42,7 +43,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.2.145"
+const version = "1.2.146"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -348,8 +349,28 @@ func main() {
 	fmt.Println("[5/6] Starting receivers...")
 	probeID := relayClient.GetProbeID()
 
+	// newLimiter builds a fresh per-source-IP rate limiter for one UDP listener
+	// (each listener gets its own so a syslog flood can't consume the sFlow
+	// budget). Returns nil when disabled — the receivers treat nil as "no limit".
+	newLimiter := func() *ratelimit.Limiter {
+		if !probeCfg.RateLimitEnabled {
+			return nil
+		}
+		return ratelimit.New(ratelimit.Config{
+			PerSourceRate:  float64(probeCfg.RateLimitPerSourcePPS),
+			PerSourceBurst: float64(probeCfg.RateLimitPerSourceBurst),
+			GlobalRate:     float64(probeCfg.RateLimitGlobalPPS),
+			MaxSources:     probeCfg.RateLimitMaxSources,
+		})
+	}
+	if probeCfg.RateLimitEnabled {
+		log.Printf("UDP rate limiting enabled: %d pps/source (burst %d), %d pps global, max %d sources tracked per listener",
+			probeCfg.RateLimitPerSourcePPS, probeCfg.RateLimitPerSourceBurst, probeCfg.RateLimitGlobalPPS, probeCfg.RateLimitMaxSources)
+	}
+
 	if probeCfg.SNMPTrapEnabled {
 		trapReceiver := snmp.NewTrapReceiver(probeCfg.ListenAddr, probeCfg.SNMPTrapPort, probeCfg.TrapCommunity)
+		trapReceiver.SetRateLimiter(newLimiter(), func() { c.metrics.IncRateLimitedDrop("snmp_trap") })
 		if err := trapReceiver.Start(func(trap *relay.TrapEvent) {
 			trap.ProbeID = probeID
 			if trap.DeviceID == 0 {
@@ -379,6 +400,7 @@ func main() {
 		}
 
 		syslogUDP := syslog.NewUDPSyslogReceiver(probeCfg.ListenAddr, probeCfg.SyslogPort)
+		syslogUDP.SetRateLimiter(newLimiter(), func() { c.metrics.IncRateLimitedDrop("syslog") })
 		if err := syslogUDP.Start(func(msg *relay.SyslogMessage) {
 			c.handleSyslogMessage(msg, probeID)
 		}); err != nil {
@@ -393,6 +415,7 @@ func main() {
 
 	if probeCfg.SFlowEnabled {
 		sflowReceiver := sflow.NewSFlowReceiver(probeCfg.ListenAddr, probeCfg.SFlowPort)
+		sflowReceiver.SetRateLimiter(newLimiter(), func() { c.metrics.IncRateLimitedDrop("sflow") })
 		// Counter samples (schema v2): resolve device the same way as flows; the
 		// relay client drops these when the server negotiated v1, so it's safe to
 		// always register the handler.
