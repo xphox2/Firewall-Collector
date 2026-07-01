@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.152 - 2026-07-01
+
+### Fixed
+- **Startup registration now retries with backoff instead of hard-exiting on the first failure.** A single failed `Register()` did `log.Fatalf` → the whole collector exited (stopping all telemetry and the disk-spillover drain) on any transient server hiccup or rolling redeploy. It now retries up to 6 times with quadratic backoff (1s/4s/9s/16s/25s), logging the server's actual error each attempt, before exiting non-zero for the container restart policy to handle longer outages. Pair with a `restart: unless-stopped` policy so the collector self-recovers once the server is reachable.
+
 ## 1.2.151 - 2026-07-01
 
 ### Fixed

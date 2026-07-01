@@ -43,7 +43,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.2.151"
+const version = "1.2.152"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -245,10 +245,28 @@ func main() {
 	}
 	fmt.Printf("  -> Metrics server on %s (PROBE_METRICS_ADDR)\n", metricsAddr)
 
-	// Register with server
+	// Register with server. Retry with bounded backoff before giving up: a
+	// transient server outage or a rolling redeploy shouldn't hard-kill the
+	// collector on the first failure (which would also stop the disk-spillover
+	// queue from draining). Each attempt logs the server's actual error
+	// (Register surfaces the response body), so a genuine misconfig is visible.
+	// After the attempts are exhausted we exit non-zero so the container's
+	// restart policy takes over for longer outages.
 	fmt.Println("[1/6] Registering with server...")
-	if err := relayClient.Register(); err != nil {
-		log.Fatalf("Failed to register: %v", err)
+	{
+		const maxAttempts = 6
+		var regErr error
+		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			if regErr = relayClient.Register(); regErr == nil {
+				break
+			}
+			if attempt == maxAttempts {
+				log.Fatalf("Failed to register after %d attempts: %v", maxAttempts, regErr)
+			}
+			backoff := time.Duration(attempt*attempt) * time.Second // 1s,4s,9s,16s,25s
+			log.Printf("Registration attempt %d/%d failed: %v — retrying in %s", attempt, maxAttempts, regErr, backoff)
+			time.Sleep(backoff)
+		}
 	}
 	fmt.Printf("  -> Registered as '%s' (ID: %d)\n\n", relayClient.GetProbeName(), relayClient.GetProbeID())
 
