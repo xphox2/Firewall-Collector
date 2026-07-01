@@ -57,6 +57,31 @@ All `true` by default. Set to `false` / `0` / `no` to disable.
 | `PROBE_PING_ENABLED` | `true` | ICMP ping collector. |
 | `PROBE_TFTP_CONFIG_ENABLED` | `true` | TFTP WRQ-receive (FortiGate config push). |
 
+## UDP rate limiting
+
+Per-source-IP token-bucket limiting on the sFlow/syslog/trap receivers, so a
+flooding or spoofed source can't starve the parse loop or the spillover queue.
+Each firewall is a distinct source IP with its own bucket; limits are per
+listener (syslog is high — FortiGate traffic logging is chatty). On by default
+with generous headroom; drops increment `firewall_collector_rate_limited_drops_total{listener}`.
+
+| Variable | Default | Description |
+|---|---|---|
+| `PROBE_RATE_LIMIT_ENABLED` | `true` | Master switch for UDP rate limiting. |
+| `PROBE_RATE_LIMIT_MAX_SOURCES` | `8192` | Max distinct source IPs tracked per listener (memory bound). |
+| `PROBE_SFLOW_RATE_LIMIT_PPS` | `1000` | sFlow datagrams/sec per source. |
+| `PROBE_SFLOW_RATE_LIMIT_GLOBAL_PPS` | `30000` | sFlow aggregate ceiling across all sources. |
+| `PROBE_SYSLOG_RATE_LIMIT_PPS` | `5000` | Syslog msgs/sec per source (high — traffic logs). |
+| `PROBE_SYSLOG_RATE_LIMIT_GLOBAL_PPS` | `100000` | Syslog aggregate ceiling. |
+| `PROBE_TRAP_RATE_LIMIT_PPS` | `500` | SNMP traps/sec per source. |
+| `PROBE_TRAP_RATE_LIMIT_GLOBAL_PPS` | `10000` | SNMP trap aggregate ceiling. |
+
+## UDP receive scaling
+
+| Variable | Default | Description |
+|---|---|---|
+| `PROBE_UDP_WORKERS` | `1` | Parallel SO_REUSEPORT receive sockets/goroutines per high-volume UDP listener (sFlow, syslog). Set >1 to spread receive across cores when CPU-bound on receive (Linux only; clamped to 1 elsewhere). |
+
 ## Queue + batch sizing
 
 | Variable | Default | Description |

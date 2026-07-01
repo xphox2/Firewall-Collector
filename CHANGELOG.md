@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.150 - 2026-07-01
+
+### Docs
+- **Documented the rate-limiting and UDP-worker env vars in `docs/ENV-VARS.md`** (added in v1.2.146–148 but not yet in the reference): `PROBE_RATE_LIMIT_*`, the per-listener `PROBE_{SFLOW,SYSLOG,TRAP}_RATE_LIMIT_[GLOBAL_]PPS`, and `PROBE_UDP_WORKERS`. No behavior change.
+
 ## 1.2.149 - 2026-07-01
 
 ### Fixed
