@@ -50,16 +50,25 @@ type ProbeConfig struct {
 	SFlowEnabled    bool
 	PingEnabled     bool
 
-	// Per-source-IP UDP rate limiting for the sFlow/syslog/trap receivers. On by
-	// default with generous limits (well above a normal firewall's export rate),
-	// so a flooding or spoofed source is shed before it can overwhelm the parse
-	// loop or the spillover queue, without dropping legitimate telemetry. Each
-	// listener gets its own limiter with these settings.
-	RateLimitEnabled        bool
-	RateLimitPerSourcePPS   int // sustained datagrams/sec per source IP
-	RateLimitPerSourceBurst int // per-source burst allowance
-	RateLimitGlobalPPS      int // aggregate datagrams/sec ceiling (per listener)
-	RateLimitMaxSources     int // max distinct source IPs tracked (memory bound)
+	// Per-source-IP UDP rate limiting for the sFlow/syslog/trap receivers. Each
+	// listener has its OWN limiter with per-listener limits, because their normal
+	// volumes differ by orders of magnitude: one FortiGate's traffic logging over
+	// syslog can be thousands of msgs/sec, while sFlow datagrams and SNMP traps
+	// are low-rate. A single collector serving dozens of firewalls therefore gets
+	// a high syslog ceiling (so legitimate logs are never dropped) but tight
+	// sFlow/trap limits (where a flood is abnormal). Each firewall is a distinct
+	// source IP, so it gets its own per-source bucket — one chatty or hostile
+	// firewall can't consume another's budget. Burst is auto-set to 2× the
+	// per-source rate. On by default with headroom well above real-world rates.
+	RateLimitEnabled    bool
+	RateLimitMaxSources int // max distinct source IPs tracked per listener (memory bound)
+
+	SFlowRateLimitPPS        int // per-source datagrams/sec (sFlow)
+	SFlowRateLimitGlobalPPS  int // aggregate ceiling across all sFlow sources
+	SyslogRateLimitPPS       int // per-source msgs/sec (syslog — high: traffic logs)
+	SyslogRateLimitGlobalPPS int // aggregate ceiling across all syslog sources
+	TrapRateLimitPPS         int // per-source traps/sec
+	TrapRateLimitGlobalPPS   int // aggregate ceiling across all trap sources
 }
 
 func Load() (*Config, error) {
@@ -99,11 +108,21 @@ func Load() (*Config, error) {
 			SFlowEnabled:    parseBool("PROBE_SFLOW_ENABLED", true),
 			PingEnabled:     parseBool("PROBE_PING_ENABLED", true),
 
-			RateLimitEnabled:        parseBool("PROBE_RATE_LIMIT_ENABLED", true),
-			RateLimitPerSourcePPS:   parseInt("PROBE_RATE_LIMIT_PER_SOURCE_PPS", 500),
-			RateLimitPerSourceBurst: parseInt("PROBE_RATE_LIMIT_PER_SOURCE_BURST", 1000),
-			RateLimitGlobalPPS:      parseInt("PROBE_RATE_LIMIT_GLOBAL_PPS", 20000),
-			RateLimitMaxSources:     parseInt("PROBE_RATE_LIMIT_MAX_SOURCES", 8192),
+			RateLimitEnabled:    parseBool("PROBE_RATE_LIMIT_ENABLED", true),
+			RateLimitMaxSources: parseInt("PROBE_RATE_LIMIT_MAX_SOURCES", 8192),
+
+			// sFlow: per-agent datagram rate is low even at high sampling, so a
+			// flood is abnormal — keep it tight.
+			SFlowRateLimitPPS:       parseInt("PROBE_SFLOW_RATE_LIMIT_PPS", 1000),
+			SFlowRateLimitGlobalPPS: parseInt("PROBE_SFLOW_RATE_LIMIT_GLOBAL_PPS", 30000),
+			// Syslog: FortiGate traffic logging can emit thousands of msgs/sec per
+			// firewall; a collector serving dozens needs a high ceiling so real
+			// logs are never dropped.
+			SyslogRateLimitPPS:       parseInt("PROBE_SYSLOG_RATE_LIMIT_PPS", 5000),
+			SyslogRateLimitGlobalPPS: parseInt("PROBE_SYSLOG_RATE_LIMIT_GLOBAL_PPS", 100000),
+			// Traps: event-driven, low-rate.
+			TrapRateLimitPPS:       parseInt("PROBE_TRAP_RATE_LIMIT_PPS", 500),
+			TrapRateLimitGlobalPPS: parseInt("PROBE_TRAP_RATE_LIMIT_GLOBAL_PPS", 10000),
 		},
 	}
 

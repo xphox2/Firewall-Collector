@@ -43,7 +43,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.2.146"
+const version = "1.2.147"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -349,28 +349,32 @@ func main() {
 	fmt.Println("[5/6] Starting receivers...")
 	probeID := relayClient.GetProbeID()
 
-	// newLimiter builds a fresh per-source-IP rate limiter for one UDP listener
-	// (each listener gets its own so a syslog flood can't consume the sFlow
-	// budget). Returns nil when disabled — the receivers treat nil as "no limit".
-	newLimiter := func() *ratelimit.Limiter {
+	// newLimiter builds a per-source-IP limiter for one UDP listener with that
+	// listener's own limits (a syslog flood can't consume the sFlow budget, and
+	// each firewall — a distinct source IP — gets its own per-source bucket).
+	// Returns nil when disabled — the receivers treat nil as "no limit". Burst
+	// auto-defaults to 2× the per-source rate inside ratelimit.New.
+	newLimiter := func(perSourcePPS, globalPPS int) *ratelimit.Limiter {
 		if !probeCfg.RateLimitEnabled {
 			return nil
 		}
 		return ratelimit.New(ratelimit.Config{
-			PerSourceRate:  float64(probeCfg.RateLimitPerSourcePPS),
-			PerSourceBurst: float64(probeCfg.RateLimitPerSourceBurst),
-			GlobalRate:     float64(probeCfg.RateLimitGlobalPPS),
-			MaxSources:     probeCfg.RateLimitMaxSources,
+			PerSourceRate: float64(perSourcePPS),
+			GlobalRate:    float64(globalPPS),
+			MaxSources:    probeCfg.RateLimitMaxSources,
 		})
 	}
 	if probeCfg.RateLimitEnabled {
-		log.Printf("UDP rate limiting enabled: %d pps/source (burst %d), %d pps global, max %d sources tracked per listener",
-			probeCfg.RateLimitPerSourcePPS, probeCfg.RateLimitPerSourceBurst, probeCfg.RateLimitGlobalPPS, probeCfg.RateLimitMaxSources)
+		log.Printf("UDP rate limiting enabled (per-source/global pps): sflow %d/%d, syslog %d/%d, trap %d/%d; max %d sources/listener",
+			probeCfg.SFlowRateLimitPPS, probeCfg.SFlowRateLimitGlobalPPS,
+			probeCfg.SyslogRateLimitPPS, probeCfg.SyslogRateLimitGlobalPPS,
+			probeCfg.TrapRateLimitPPS, probeCfg.TrapRateLimitGlobalPPS,
+			probeCfg.RateLimitMaxSources)
 	}
 
 	if probeCfg.SNMPTrapEnabled {
 		trapReceiver := snmp.NewTrapReceiver(probeCfg.ListenAddr, probeCfg.SNMPTrapPort, probeCfg.TrapCommunity)
-		trapReceiver.SetRateLimiter(newLimiter(), func() { c.metrics.IncRateLimitedDrop("snmp_trap") })
+		trapReceiver.SetRateLimiter(newLimiter(probeCfg.TrapRateLimitPPS, probeCfg.TrapRateLimitGlobalPPS), func() { c.metrics.IncRateLimitedDrop("snmp_trap") })
 		if err := trapReceiver.Start(func(trap *relay.TrapEvent) {
 			trap.ProbeID = probeID
 			if trap.DeviceID == 0 {
@@ -400,7 +404,7 @@ func main() {
 		}
 
 		syslogUDP := syslog.NewUDPSyslogReceiver(probeCfg.ListenAddr, probeCfg.SyslogPort)
-		syslogUDP.SetRateLimiter(newLimiter(), func() { c.metrics.IncRateLimitedDrop("syslog") })
+		syslogUDP.SetRateLimiter(newLimiter(probeCfg.SyslogRateLimitPPS, probeCfg.SyslogRateLimitGlobalPPS), func() { c.metrics.IncRateLimitedDrop("syslog") })
 		if err := syslogUDP.Start(func(msg *relay.SyslogMessage) {
 			c.handleSyslogMessage(msg, probeID)
 		}); err != nil {
@@ -415,7 +419,7 @@ func main() {
 
 	if probeCfg.SFlowEnabled {
 		sflowReceiver := sflow.NewSFlowReceiver(probeCfg.ListenAddr, probeCfg.SFlowPort)
-		sflowReceiver.SetRateLimiter(newLimiter(), func() { c.metrics.IncRateLimitedDrop("sflow") })
+		sflowReceiver.SetRateLimiter(newLimiter(probeCfg.SFlowRateLimitPPS, probeCfg.SFlowRateLimitGlobalPPS), func() { c.metrics.IncRateLimitedDrop("sflow") })
 		// Counter samples (schema v2): resolve device the same way as flows; the
 		// relay client drops these when the server negotiated v1, so it's safe to
 		// always register the handler.

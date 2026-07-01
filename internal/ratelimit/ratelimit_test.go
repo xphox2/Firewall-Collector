@@ -93,6 +93,55 @@ func TestIdleEviction(t *testing.T) {
 	}
 }
 
+// TestManyFirewallsNoCrossInterference simulates one collector serving dozens of
+// firewalls: each is a distinct source IP sending steadily under its per-source
+// limit. None should be dropped (each has its own bucket), the global ceiling is
+// sized for the fleet, and the tracked-source count matches the fleet size —
+// well under the map bound. This is the "dozens of firewalls" guarantee.
+func TestManyFirewallsNoCrossInterference(t *testing.T) {
+	const firewalls = 40
+	// Per-source 100/s burst 200; global 100000 (plenty for the fleet).
+	l := New(Config{PerSourceRate: 100, PerSourceBurst: 200, GlobalRate: 100000, GlobalBurst: 100000, MaxSources: 8192})
+	now := time.Unix(6000, 0)
+	for fw := 0; fw < firewalls; fw++ {
+		ip := "10.20." + itoa(fw) + ".1"
+		for i := 0; i < 200; i++ { // exactly the burst — all allowed at t0
+			if !l.allowAt(ip, now) {
+				t.Fatalf("firewall %s packet %d dropped — per-source isolation failed", ip, i)
+			}
+		}
+	}
+	_, dropped, tracked := l.Stats()
+	if dropped != 0 {
+		t.Errorf("dropped %d legitimate datagrams across %d firewalls, want 0", dropped, firewalls)
+	}
+	if tracked != firewalls {
+		t.Errorf("tracked %d sources, want %d (one bucket per firewall)", tracked, firewalls)
+	}
+	// One firewall exceeding ITS burst must not affect the others.
+	noisy := "10.20.0.1"
+	if l.allowAt(noisy, now) {
+		t.Error("noisy firewall past its burst should be dropped")
+	}
+	if !l.allowAt("10.20.1.1", now.Add(time.Second)) {
+		t.Error("a different firewall must still be allowed after a neighbor floods")
+	}
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var b [12]byte
+	pos := len(b)
+	for n > 0 {
+		pos--
+		b[pos] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(b[pos:])
+}
+
 func TestStatsCounts(t *testing.T) {
 	l := New(Config{PerSourceRate: 1, PerSourceBurst: 1, GlobalRate: 1e9, GlobalBurst: 1e9, MaxSources: 10})
 	now := time.Unix(5000, 0)

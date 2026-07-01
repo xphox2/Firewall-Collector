@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.147 - 2026-06-30
+
+### Changed
+- **Rate limiting is now per-listener, tuned for a collector serving dozens of firewalls.** v1.2.146 applied one shared limit to all three receivers, but their normal volumes differ by orders of magnitude — a single FortiGate's traffic logging over syslog can be thousands of msgs/sec, while sFlow datagrams and SNMP traps are low-rate. A shared 20000/s global would have falsely dropped legitimate syslog from a busy fleet. Each listener now has its own limits:
+  - **syslog:** 5000 pps/source, 100000 pps global (high — traffic logs, many firewalls);
+  - **sFlow:** 1000 pps/source, 30000 pps global;
+  - **SNMP trap:** 500 pps/source, 10000 pps global.
+  Each firewall is a distinct source IP, so it gets its own per-source bucket — one chatty or hostile firewall never consumes another's budget, and dozens of firewalls sit far under the tracked-source cap (default 8192). Per-source burst auto-defaults to 2× the rate. New env: `PROBE_SFLOW_RATE_LIMIT_PPS`, `PROBE_SFLOW_RATE_LIMIT_GLOBAL_PPS`, `PROBE_SYSLOG_RATE_LIMIT_PPS`, `PROBE_SYSLOG_RATE_LIMIT_GLOBAL_PPS`, `PROBE_TRAP_RATE_LIMIT_PPS`, `PROBE_TRAP_RATE_LIMIT_GLOBAL_PPS` (the single `PROBE_RATE_LIMIT_PER_SOURCE_PPS`/`_BURST`/`_GLOBAL_PPS` from v1.2.146 are replaced; `PROBE_RATE_LIMIT_ENABLED` and `PROBE_RATE_LIMIT_MAX_SOURCES` stay).
+  - Test: 40 distinct firewalls each sending a full burst — zero drops, one bucket each, and a neighbor flooding doesn't affect the others.
+
 ## 1.2.146 - 2026-06-30
 
 ### Added
