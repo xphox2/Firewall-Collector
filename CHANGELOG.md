@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.149 - 2026-07-01
+
+### Fixed
+- **`go mod tidy` check (CI).** v1.2.148 imported `golang.org/x/sys/unix` directly in the new Linux-tagged `internal/reuseport` file, but go.mod still listed `golang.org/x/sys` as `// indirect`, so the CI tidy-check failed. Promoted it to a direct dependency. No code change.
+
 ## 1.2.148 - 2026-06-30
 
 ### Added
