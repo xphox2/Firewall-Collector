@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.151 - 2026-07-01
+
+### Fixed
+- **Registration failures now include the server's error message** instead of a bare status code. A failed `Register()` logged only `registration failed with HTTP status 404`, hiding the actual cause the server returned (e.g. "Probe not found — it may have been deleted", "Invalid registration key"). It now reads the response body and surfaces the server's `error`/`message`, so onboarding problems are self-explanatory: `registration failed (HTTP 404): Probe not found — it may have been deleted`.
+
 ## 1.2.150 - 2026-07-01
 
 ### Docs

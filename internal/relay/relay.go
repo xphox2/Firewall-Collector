@@ -739,7 +739,27 @@ func (c *Client) Register() error {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("registration failed with HTTP status %d", resp.StatusCode)
+		// Surface the server's error body so the failure is self-explanatory
+		// (e.g. "Probe not found — it may have been deleted", "Invalid
+		// registration key") instead of a bare status code the operator has to
+		// go spelunking for.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		var er struct {
+			Error   string `json:"error"`
+			Message string `json:"message"`
+		}
+		_ = json.Unmarshal(body, &er)
+		detail := er.Error
+		if detail == "" {
+			detail = er.Message
+		}
+		if detail == "" {
+			detail = strings.TrimSpace(string(body))
+		}
+		if detail == "" {
+			return fmt.Errorf("registration failed with HTTP status %d", resp.StatusCode)
+		}
+		return fmt.Errorf("registration failed (HTTP %d): %s", resp.StatusCode, detail)
 	}
 
 	var result RegisterResponse
