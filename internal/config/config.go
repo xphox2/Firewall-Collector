@@ -63,6 +63,12 @@ type ProbeConfig struct {
 	RateLimitEnabled    bool
 	RateLimitMaxSources int // max distinct source IPs tracked per listener (memory bound)
 
+	// UDPWorkers is the number of parallel receive sockets/goroutines per
+	// high-volume UDP listener (sFlow, syslog) via SO_REUSEPORT. Default 1 (single
+	// socket, current behavior). Set >1 to spread receive+parse across cores when
+	// the receive goroutine is CPU-bound — Linux only (clamped to 1 elsewhere).
+	UDPWorkers int
+
 	SFlowRateLimitPPS        int // per-source datagrams/sec (sFlow)
 	SFlowRateLimitGlobalPPS  int // aggregate ceiling across all sFlow sources
 	SyslogRateLimitPPS       int // per-source msgs/sec (syslog — high: traffic logs)
@@ -110,6 +116,8 @@ func Load() (*Config, error) {
 
 			RateLimitEnabled:    parseBool("PROBE_RATE_LIMIT_ENABLED", true),
 			RateLimitMaxSources: parseInt("PROBE_RATE_LIMIT_MAX_SOURCES", 8192),
+
+			UDPWorkers: parseInt("PROBE_UDP_WORKERS", 1),
 
 			// sFlow: per-agent datagram rate is low even at high sampling, so a
 			// flood is abnormal — keep it tight.

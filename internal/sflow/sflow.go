@@ -14,6 +14,7 @@ import (
 
 	"firewall-collector/internal/ratelimit"
 	"firewall-collector/internal/relay"
+	"firewall-collector/internal/reuseport"
 	"firewall-collector/internal/safego"
 )
 
@@ -24,10 +25,19 @@ type SFlowReceiver struct {
 	counterHandler func(*relay.InterfaceCounterSample)
 	limiter        *ratelimit.Limiter
 	onRateDrop     func()
-	conn           *net.UDPConn
+	workers        int
+	conns          []*net.UDPConn
+	wg             sync.WaitGroup
 	stopChan       chan struct{}
 	stopOnce       sync.Once
 	running        atomic.Bool
+}
+
+// SetWorkers sets the number of parallel receive sockets/goroutines (SO_REUSEPORT
+// fan-out). n<=1 (the default) uses a single socket. n>1 requires SO_REUSEPORT
+// (Linux); on other platforms it is clamped to 1. Set before Start.
+func (r *SFlowReceiver) SetWorkers(n int) {
+	r.workers = n
 }
 
 // SetRateLimiter attaches a per-source-IP UDP rate limiter. Datagrams from a
@@ -59,23 +69,32 @@ func (r *SFlowReceiver) Start(handler func(*relay.FlowSample)) error {
 
 	r.handler = handler
 
-	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", r.ListenAddr, r.Port))
-	if err != nil {
-		return fmt.Errorf("failed to resolve UDP address: %w", err)
-	}
+	addr := fmt.Sprintf("%s:%d", r.ListenAddr, r.Port)
+	workers := reuseport.Workers(r.workers, "sFlow")
 
-	r.conn, err = net.ListenUDP("udp", addr)
-	if err != nil {
-		return fmt.Errorf("failed to listen on UDP %s:%d: %w", r.ListenAddr, r.Port, err)
+	for i := 0; i < workers; i++ {
+		conn, err := reuseport.Listen("udp", addr)
+		if err != nil {
+			for _, c := range r.conns { // roll back any sockets already opened
+				_ = c.Close()
+			}
+			r.conns = nil
+			return fmt.Errorf("failed to listen on UDP %s (worker %d): %w", addr, i, err)
+		}
+		// Enlarge the kernel receive buffer so short legitimate bursts aren't
+		// dropped by the socket before the read loop can drain them. Best-effort.
+		_ = conn.SetReadBuffer(ratelimit.UDPReadBufferBytes)
+		r.conns = append(r.conns, conn)
 	}
-	// Enlarge the kernel receive buffer so short legitimate bursts aren't dropped
-	// by the socket before the read loop can drain them. Best-effort.
-	_ = r.conn.SetReadBuffer(ratelimit.UDPReadBufferBytes)
 
 	r.running.Store(true)
-	safego.Go("sflow:read", r.readLoop)
+	for _, conn := range r.conns {
+		c := conn
+		r.wg.Add(1)
+		safego.Go("sflow:read", func() { r.readLoop(c) })
+	}
 
-	log.Printf("[sFlow] Listening on %s:%d", r.ListenAddr, r.Port)
+	log.Printf("[sFlow] Listening on %s (%d worker(s))", addr, workers)
 	return nil
 }
 
@@ -95,18 +114,24 @@ func (r *SFlowReceiver) Stop() error {
 	r.stopOnce.Do(func() {
 		r.running.Store(false)
 		close(r.stopChan)
-		if r.conn != nil {
-			closeErr = r.conn.Close()
+		for _, c := range r.conns {
+			if c != nil {
+				if err := c.Close(); err != nil {
+					closeErr = err
+				}
+			}
 		}
 	})
+	r.wg.Wait() // let the read loops exit before returning
 	return closeErr
 }
 
-func (r *SFlowReceiver) readLoop() {
+func (r *SFlowReceiver) readLoop(conn *net.UDPConn) {
+	defer r.wg.Done()
 	buf := make([]byte, 65536)
 	for r.running.Load() {
-		r.conn.SetReadDeadline(time.Now().Add(1 * time.Second))
-		n, remoteAddr, err := r.conn.ReadFromUDP(buf)
+		conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+		n, remoteAddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				continue

@@ -15,6 +15,7 @@ import (
 
 	"firewall-collector/internal/ratelimit"
 	"firewall-collector/internal/relay"
+	"firewall-collector/internal/reuseport"
 	"firewall-collector/internal/safego"
 )
 
@@ -165,7 +166,8 @@ type UDPSyslogReceiver struct {
 	handler    func(*relay.SyslogMessage)
 	limiter    *ratelimit.Limiter
 	onRateDrop func()
-	conn       *net.UDPConn
+	workers    int
+	conns      []*net.UDPConn
 	running    atomic.Bool
 	stopCh     chan struct{}
 	stopOnce   sync.Once
@@ -177,6 +179,13 @@ type UDPSyslogReceiver struct {
 func (u *UDPSyslogReceiver) SetRateLimiter(l *ratelimit.Limiter, onDrop func()) {
 	u.limiter = l
 	u.onRateDrop = onDrop
+}
+
+// SetWorkers sets the number of parallel receive sockets/goroutines (SO_REUSEPORT
+// fan-out). n<=1 (default) uses a single socket; n>1 requires SO_REUSEPORT
+// (Linux) and is clamped to 1 elsewhere. Set before Start.
+func (u *UDPSyslogReceiver) SetWorkers(n int) {
+	u.workers = n
 }
 
 func NewUDPSyslogReceiver(listenAddr string, port int) *UDPSyslogReceiver {
@@ -194,22 +203,29 @@ func (u *UDPSyslogReceiver) Start(handler func(*relay.SyslogMessage)) error {
 
 	u.handler = handler
 	addr := fmt.Sprintf("%s:%d", u.ListenAddr, u.Port)
-	udpAddr, err := net.ResolveUDPAddr("udp", addr)
-	if err != nil {
-		return fmt.Errorf("failed to resolve UDP address: %w", err)
-	}
+	workers := reuseport.Workers(u.workers, "Syslog UDP")
 
-	u.conn, err = net.ListenUDP("udp", udpAddr)
-	if err != nil {
-		return fmt.Errorf("failed to listen on UDP %s: %w", addr, err)
+	for i := 0; i < workers; i++ {
+		conn, err := reuseport.Listen("udp", addr)
+		if err != nil {
+			for _, c := range u.conns {
+				_ = c.Close()
+			}
+			u.conns = nil
+			return fmt.Errorf("failed to listen on UDP %s (worker %d): %w", addr, i, err)
+		}
+		_ = conn.SetReadBuffer(ratelimit.UDPReadBufferBytes)
+		u.conns = append(u.conns, conn)
 	}
-	_ = u.conn.SetReadBuffer(ratelimit.UDPReadBufferBytes)
 
 	u.running.Store(true)
-	u.wg.Add(1)
-	safego.Go("syslogUdp:read", u.readLoop)
+	for _, conn := range u.conns {
+		c := conn
+		u.wg.Add(1)
+		safego.Go("syslogUdp:read", func() { u.readLoop(c) })
+	}
 
-	log.Printf("[Syslog UDP] Listening on %s", addr)
+	log.Printf("[Syslog UDP] Listening on %s (%d worker(s))", addr, workers)
 	return nil
 }
 
@@ -222,8 +238,12 @@ func (u *UDPSyslogReceiver) Stop() error {
 	u.stopOnce.Do(func() {
 		u.running.Store(false)
 		close(u.stopCh)
-		if u.conn != nil {
-			closeErr = u.conn.Close()
+		for _, c := range u.conns {
+			if c != nil {
+				if err := c.Close(); err != nil {
+					closeErr = err
+				}
+			}
 		}
 	})
 
@@ -231,13 +251,13 @@ func (u *UDPSyslogReceiver) Stop() error {
 	return closeErr
 }
 
-func (u *UDPSyslogReceiver) readLoop() {
+func (u *UDPSyslogReceiver) readLoop(conn *net.UDPConn) {
 	defer u.wg.Done()
 
 	buf := make([]byte, MaxMessageSize)
 	for u.running.Load() {
-		u.conn.SetReadDeadline(time.Now().Add(1 * time.Second))
-		n, clientAddr, err := u.conn.ReadFromUDP(buf)
+		conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+		n, clientAddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				continue

@@ -43,7 +43,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.2.147"
+const version = "1.2.148"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -405,6 +405,7 @@ func main() {
 
 		syslogUDP := syslog.NewUDPSyslogReceiver(probeCfg.ListenAddr, probeCfg.SyslogPort)
 		syslogUDP.SetRateLimiter(newLimiter(probeCfg.SyslogRateLimitPPS, probeCfg.SyslogRateLimitGlobalPPS), func() { c.metrics.IncRateLimitedDrop("syslog") })
+		syslogUDP.SetWorkers(probeCfg.UDPWorkers)
 		if err := syslogUDP.Start(func(msg *relay.SyslogMessage) {
 			c.handleSyslogMessage(msg, probeID)
 		}); err != nil {
@@ -420,6 +421,7 @@ func main() {
 	if probeCfg.SFlowEnabled {
 		sflowReceiver := sflow.NewSFlowReceiver(probeCfg.ListenAddr, probeCfg.SFlowPort)
 		sflowReceiver.SetRateLimiter(newLimiter(probeCfg.SFlowRateLimitPPS, probeCfg.SFlowRateLimitGlobalPPS), func() { c.metrics.IncRateLimitedDrop("sflow") })
+		sflowReceiver.SetWorkers(probeCfg.UDPWorkers)
 		// Counter samples (schema v2): resolve device the same way as flows; the
 		// relay client drops these when the server negotiated v1, so it's safe to
 		// always register the handler.

@@ -12,6 +12,49 @@ import (
 	"firewall-collector/internal/relay"
 )
 
+// TestUDPSyslogReceiver_MultiWorkerReceive exercises the real Start → UDP →
+// readLoop → Stop path with SetWorkers(2): two SO_REUSEPORT sockets on Linux,
+// clamped to one elsewhere. Either way the receiver must deliver messages sent
+// to its port — this validates the multi-socket refactor end-to-end.
+func TestUDPSyslogReceiver_MultiWorkerReceive(t *testing.T) {
+	// Discover a free port to bind a fixed one — multi-worker needs a shared
+	// concrete port (an ephemeral :0 would give each worker a different port).
+	probe, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("probe port: %v", err)
+	}
+	port := probe.LocalAddr().(*net.UDPAddr).Port
+	_ = probe.Close()
+
+	var count atomic.Int32
+	r := NewUDPSyslogReceiver("127.0.0.1", port)
+	r.SetWorkers(2)
+	if err := r.Start(func(m *relay.SyslogMessage) { count.Add(1) }); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer r.Stop()
+
+	conn, err := net.Dial("udp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	line := []byte("<13>1 2025-04-10T05:01:53.000000-07:00 h a p m - - hello\n")
+	for i := 0; i < 10; i++ {
+		if _, err := conn.Write(line); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && count.Load() == 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if count.Load() == 0 {
+		t.Fatal("multi-worker UDP syslog receiver received no messages")
+	}
+}
+
 func TestParseRFC5424_FortiGateTypical(t *testing.T) {
 	line := `<189> 1 2025-04-10T05:01:53.000000-07:00 FGT-1000 fglog 1234 MSG-001 [origin] date=2025-04-10 time=05:01:53 logid="0100044547"`
 	msg, err := ParseRFC5424([]byte(line))

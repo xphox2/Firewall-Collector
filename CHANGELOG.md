@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.148 - 2026-06-30
+
+### Added
+- **SO_REUSEPORT multi-worker UDP receive (opt-in) for the sFlow and syslog listeners.** By default each UDP receiver drains one socket on one goroutine — bound to a single core. `PROBE_UDP_WORKERS=N` now opens N sockets on the same port with `SO_REUSEPORT` and runs one reader goroutine per socket, so the kernel load-balances datagrams across N cores. Use it if the receive goroutine becomes CPU-bound at high volume (the signal: kernel `RcvbufErrors` climbing while `firewall_collector_rate_limited_drops_total` stays flat).
+  - New `internal/reuseport` package, build-tagged: real `SO_REUSEPORT` on Linux (`golang.org/x/sys/unix`), a no-op single-socket fallback everywhere else — so the collector still builds/runs on non-Linux dev machines. The production collector runs in a Linux container, where the fan-out is active. `N>1` is automatically clamped to 1 (with a log line) on platforms without `SO_REUSEPORT`.
+  - The per-source rate limiter is **shared across a listener's workers** (it was already mutex-guarded), so a source's budget is enforced regardless of which socket the kernel routes it to — a firewall can't get N× its limit.
+  - SNMP traps stay single-socket (gosnmp owns that socket; traps are low-rate). Default `PROBE_UDP_WORKERS=1` = unchanged behavior.
+  - Tests: reuseport shared-bind property (two sockets, same port) vs single-socket fallback; end-to-end multi-worker syslog receive.
+
 ## 1.2.147 - 2026-06-30
 
 ### Changed
