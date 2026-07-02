@@ -21,6 +21,12 @@ import (
 
 const MaxMessageSize = 64 * 1024
 
+// maxTCPSyslogConns caps concurrent TCP syslog connections (M16 of the
+// 2026-07-01 audit). Each connection holds a 64 KiB read buffer plus a
+// growable bytes.Buffer and a goroutine, so an unbounded accept loop is a
+// memory/FD-exhaustion vector from any host on the monitored LAN.
+const maxTCPSyslogConns = 256
+
 // SyslogReceiver handles TCP syslog connections.
 type SyslogReceiver struct {
 	ListenAddr string
@@ -31,6 +37,16 @@ type SyslogReceiver struct {
 	stopCh     chan struct{}
 	stopOnce   sync.Once
 	connWg     sync.WaitGroup
+
+	// M16 of the 2026-07-01 audit: the TCP syslog path had none of the
+	// protections the UDP path got in v1.2.x — no per-source rate limit, no
+	// connection cap, no accept backoff — so it was a full bypass of the
+	// syslog defense on the same port. A hostile host could open thousands of
+	// connections or stream garbage at TCP line rate, exhausting the probe or
+	// flooding parse-error logs, entirely sidestepping the UDP PPS budget.
+	limiter    *ratelimit.Limiter
+	onRateDrop func()
+	connSem    chan struct{} // bounded concurrent-connection semaphore
 }
 
 func NewSyslogReceiver(listenAddr string, port int) *SyslogReceiver {
@@ -38,7 +54,15 @@ func NewSyslogReceiver(listenAddr string, port int) *SyslogReceiver {
 		ListenAddr: listenAddr,
 		Port:       port,
 		stopCh:     make(chan struct{}),
+		connSem:    make(chan struct{}, maxTCPSyslogConns),
 	}
+}
+
+// SetRateLimiter attaches a per-source-IP rate limiter checked per parsed line
+// (M16). Nil disables limiting. Set before Start. Mirrors the UDP receiver.
+func (s *SyslogReceiver) SetRateLimiter(l *ratelimit.Limiter, onDrop func()) {
+	s.limiter = l
+	s.onRateDrop = onDrop
 }
 
 func (s *SyslogReceiver) Start(handler func(*relay.SyslogMessage)) error {
@@ -80,17 +104,48 @@ func (s *SyslogReceiver) Stop() error {
 }
 
 func (s *SyslogReceiver) acceptLoop() {
+	var backoff time.Duration
 	for s.running.Load() {
 		conn, err := s.listener.Accept()
 		if err != nil {
-			if s.running.Load() {
-				log.Printf("[Syslog TCP] Accept error: %v", err)
+			if !s.running.Load() {
+				return
 			}
+			// M16: back off on a persistent accept error (e.g. EMFILE from the
+			// very flood we're defending against) instead of spinning a tight
+			// error-logging loop. Temporary errors get a short, capped sleep.
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				continue
+			}
+			if backoff == 0 {
+				backoff = 5 * time.Millisecond
+			} else if backoff < time.Second {
+				backoff *= 2
+			}
+			log.Printf("[Syslog TCP] Accept error: %v (backing off %s)", err, backoff)
+			select {
+			case <-time.After(backoff):
+			case <-s.stopCh:
+				return
+			}
+			continue
+		}
+		backoff = 0
+
+		// M16: bound concurrent connections. Beyond the cap, refuse the newest
+		// connection immediately rather than letting an attacker exhaust
+		// memory/FDs with thousands of idle-but-open connections.
+		select {
+		case s.connSem <- struct{}{}:
+		default:
+			log.Printf("[Syslog TCP] Connection cap (%d) reached — refusing %s", maxTCPSyslogConns, conn.RemoteAddr())
+			_ = conn.Close()
 			continue
 		}
 		s.connWg.Add(1)
 		safego.Go("syslogTcp:handleConn", func() {
 			defer s.connWg.Done()
+			defer func() { <-s.connSem }()
 			s.handleConnection(conn)
 		})
 	}
@@ -98,6 +153,12 @@ func (s *SyslogReceiver) acceptLoop() {
 
 func (s *SyslogReceiver) handleConnection(conn net.Conn) {
 	defer conn.Close()
+
+	// M16: resolve the source IP once for the per-line rate-limit check.
+	sourceIP := conn.RemoteAddr().String()
+	if host, _, err := net.SplitHostPort(sourceIP); err == nil {
+		sourceIP = host
+	}
 
 	buf := make([]byte, MaxMessageSize)
 	var messageBuf bytes.Buffer
@@ -128,18 +189,23 @@ func (s *SyslogReceiver) handleConnection(conn net.Conn) {
 				continue
 			}
 
-			msg, err := ParseRFC5424(line)
-			if err != nil {
-				log.Printf("[Syslog TCP] Parse error: %v", err)
+			// M16: per-source rate limit BEFORE parse, so a garbage-line flood
+			// costs nothing (no parse, no handler, no parse-error log spam) and
+			// respects the same PPS budget as the UDP path.
+			if !s.limiter.Allow(sourceIP) {
+				if s.onRateDrop != nil {
+					s.onRateDrop()
+				}
 				continue
 			}
 
+			msg, err := ParseRFC5424(line)
+			if err != nil {
+				continue // M16: don't log per malformed line — a flood would DoS the log
+			}
+
 			if msg != nil && s.handler != nil {
-				if host, _, err := net.SplitHostPort(conn.RemoteAddr().String()); err == nil {
-					msg.SourceIP = host
-				} else {
-					msg.SourceIP = conn.RemoteAddr().String()
-				}
+				msg.SourceIP = sourceIP
 				s.handler(msg)
 			}
 		}

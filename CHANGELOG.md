@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.157 - 2026-07-01
+
+### Fixed
+- **TCP syslog is no longer a bypass of the syslog rate-limit defense (audit 2026-07-01 finding M16).** v1.2.x added per-source rate limiting, a bounded source map, and drop metrics to all three UDP listeners, but the TCP syslog receiver on the same port got none of it — a hostile host on the monitored network could open thousands of connections (each holding a 64 KiB buffer + goroutine) to exhaust the probe, or stream garbage at TCP line rate to flood parse-error logs and the relay, entirely sidestepping the UDP PPS budget. The TCP path now: enforces the same per-source rate limiter (checked per parsed line, *before* parse, so a garbage flood costs nothing), caps concurrent connections (256, refusing the newest beyond the cap), backs off with a capped delay on persistent `Accept` errors (e.g. EMFILE) instead of tight-looping, and no longer logs one line per malformed message.
+- **A corrupt spillover file self-heals instead of disabling all seven queues (audit 2026-07-01 finding M17).** The queues open BoltDB with `NoSync`, under which a power loss can corrupt (not just truncate) the file — and pre-fix a corrupt file failed `Open`, which made the caller disable **all seven** spillover queues on that single failure, silently removing all outage buffering until an operator manually deleted the `.bolt` file. `Open` now quarantines an unreadable file (renames it to `<name>.bolt.corrupt-<ts>`) and recreates a fresh spool, so durability self-heals go-forward (losing only the already-unreadable data).
+- **The spillover fsync no longer stalls every UDP ingest worker (audit 2026-07-01 finding M18).** The throttled `db.Sync()` — a full-file fsync of a potentially ~1 GiB spool — ran inside `appendToDisk` while holding the queue mutex shared by every UDP receive worker, so the periodic fsync blocked all workers and could drop datagrams precisely under the flood/outage the queue exists to cover. fsync now runs on a dedicated background ticker off the hot path (writes just set a dirty flag; an idle queue never fsyncs); `Close` still does a final unconditional fsync for graceful-shutdown durability.
+
 ## 1.2.156 - 2026-07-01
 
 ### Fixed

@@ -43,7 +43,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.2.156"
+const version = "1.2.157"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -411,6 +411,9 @@ func main() {
 
 	if probeCfg.SyslogEnabled {
 		syslogTCP := syslog.NewSyslogReceiver(probeCfg.ListenAddr, probeCfg.SyslogPort)
+		// M16 of the 2026-07-01 audit: give the TCP path the same per-source
+		// rate limit as UDP (they share the port and the PPS budget).
+		syslogTCP.SetRateLimiter(newLimiter(probeCfg.SyslogRateLimitPPS, probeCfg.SyslogRateLimitGlobalPPS), func() { c.metrics.IncRateLimitedDrop("syslog") })
 		if err := syslogTCP.Start(func(msg *relay.SyslogMessage) {
 			c.handleSyslogMessage(msg, probeID)
 		}); err != nil {
