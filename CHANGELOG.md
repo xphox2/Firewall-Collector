@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.160 - 2026-07-02
+
+### Fixed
+- **A server rollback to schema v1 no longer flaps the probe's approval (audit 2026-07-01 finding L13).** The flow-counter queue (sFlow interface counters, a schema-v2-only feature) was drained unconditionally each sync. New pushes are gated on the negotiated version, but a backlog queued while the server was v2 survives a server **rollback** to v1 — and POSTing it to the now-absent `/flow-counters` endpoint returned 404, which `sendBatch` misread as "probe deleted", flipping `approved=false` and forcing a full re-register on **every** sync (an approval flap that also stopped real telemetry). `syncData` now drains the flow-counter queue only while the server negotiates v2; otherwise it discards the undeliverable backlog (`discardQueue`) so it neither 404s nor grows. As defense-in-depth against the race where samples were queued at the instant of rollback, `sendBatch` now treats a 404 **specifically on `/flow-counters`** as "endpoint unsupported → drop the batch" and records the downgrade (`negotiatedSchema=1`) instead of re-registering — a genuinely deleted probe still surfaces via 404 on the core endpoints (`/flows`, `/pings`, …), which keep the re-register path. Regression tests `TestSendBatch_FlowCounters404DropsNotDeapprove_L13` and `TestSendBatch_CoreEndpoint404StillReregisters_L13`.
+
 ## 1.2.159 - 2026-07-02
 
 ### Fixed

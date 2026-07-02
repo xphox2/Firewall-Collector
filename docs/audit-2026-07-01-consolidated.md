@@ -278,6 +278,7 @@ Multi-agent consensus report: 15 finder dimensions + 8 critic-directed follow-up
 - **server** · `internal/models/models.go:847` — add `IfDirection` + migration, or remove from the collector struct.
 
 ### L13. Flow-counters queue drains without re-checking the negotiated schema version — after a server rollback, endless 404s are misread as probe-not-found (approval flap + re-register every sync)
+> **✅ RESOLVED (collector v1.2.160)** — `syncData` only drains the flow-counter queue when the server currently negotiates schema v2; when it doesn't (a rollback to v1), the undeliverable v2 backlog is discarded (`discardQueue`) instead of POSTed to the now-absent `/flow-counters` endpoint. As defense-in-depth, `sendBatch` treats a 404 specifically on `/flow-counters` as "endpoint unsupported → drop the batch" and records the downgrade (`negotiatedSchema=1`) instead of deapproving + re-registering; a genuinely deleted probe still surfaces via 404 on the core endpoints. Tests `TestSendBatch_FlowCounters404DropsNotDeapprove_L13`, `TestSendBatch_CoreEndpoint404StillReregisters_L13`.
 - **collector** · `internal/relay/relay.go:1353` — skip/discard the drain when negotiated <2; treat endpoint-404 as "unsupported, drop batch" not "probe deleted".
 
 ### L14. config.env.example ships SNMP_TRAP_COMMUNITY=public and deploy.sh seeds it verbatim — native installs accept the world's best-known community on exposed 162/udp

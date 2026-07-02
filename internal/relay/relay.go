@@ -1416,14 +1416,22 @@ func (c *Client) syncData() {
 		drainLabel: "flows", unmarshalLabel: "flow",
 		noun: "flow samples", nounLong: "flow samples", interChunkDelay: 0,
 	})
-	// sFlow interface counters (schema v2). The queue only ever holds samples
-	// when the server negotiated v2 (SendInterfaceCounterSample gates the push),
-	// so draining to /flow-counters is safe against pre-v2 servers.
-	drainAndSend(c, baseURL, drainChunk, queueDrainSpec[InterfaceCounterSample]{
-		queue: c.flowCounterQueue, endpoint: "/flow-counters", sendName: "flow-counters",
-		drainLabel: "flow-counters", unmarshalLabel: "interface counter",
-		noun: "interface counters", nounLong: "interface counter samples", interChunkDelay: 0,
-	})
+	// sFlow interface counters are a schema-v2-only endpoint. Only drain them
+	// when the server CURRENTLY negotiates v2. SendInterfaceCounterSample gates
+	// new pushes on v2, but a backlog queued while the server was v2 survives a
+	// server ROLLBACK to v1 — and POSTing it to the now-absent /flow-counters
+	// endpoint 404s, which sendBatch would misread as "probe deleted", flapping
+	// the probe's approval and forcing a re-register every sync (audit L13).
+	// Discard the undeliverable backlog instead, so it neither 404s nor grows.
+	if c.negotiatedSchema.Load() >= 2 {
+		drainAndSend(c, baseURL, drainChunk, queueDrainSpec[InterfaceCounterSample]{
+			queue: c.flowCounterQueue, endpoint: "/flow-counters", sendName: "flow-counters",
+			drainLabel: "flow-counters", unmarshalLabel: "interface counter",
+			noun: "interface counters", nounLong: "interface counter samples", interChunkDelay: 0,
+		})
+	} else {
+		discardQueue(c.flowCounterQueue, drainChunk, "flow-counters")
+	}
 
 	// AUDIT-054: drain the config-revision retry queue. Same bounded
 	// chunking as the 4 event queues above. Each batch is then handed
@@ -1584,6 +1592,34 @@ func drainAndSend[T any](c *Client, baseURL string, drainChunk int, spec queueDr
 	}
 }
 
+// discardQueue empties a queue without sending it, used when the queue's
+// endpoint is known to be unsupported by the currently-negotiated server (audit
+// L13 — a schema-v2 counter backlog against a server rolled back to v1). Drains
+// in bounded chunks so a large backlog doesn't materialize in RAM at once.
+func discardQueue(q *queue.SpilloverQueue, chunk int, label string) {
+	if q == nil {
+		return
+	}
+	total := 0
+	for {
+		raw, err := q.Drain(chunk)
+		if err != nil {
+			log.Printf("[Relay] discard %s: %v", label, err)
+			return
+		}
+		if len(raw) == 0 {
+			break
+		}
+		total += len(raw)
+		if len(raw) < chunk {
+			break
+		}
+	}
+	if total > 0 {
+		log.Printf("[Relay] discarded %d buffered %s (server schema < 2; endpoint unavailable)", total, label)
+	}
+}
+
 func isRetryableStatus(statusCode int) bool {
 	switch statusCode {
 	// 429 (Too Many Requests) is TRANSIENT — the server rate-limits probe
@@ -1628,6 +1664,18 @@ func (c *Client) sendBatch(url, name string, data interface{}) bool {
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			log.Printf("[Relay] Sent %s batch to server", name)
 			return true
+		}
+
+		// A 404 on the schema-v2-only /flow-counters endpoint means the endpoint
+		// is UNSUPPORTED (a pre-v2 or rolled-back server), NOT that the probe was
+		// deleted — so drop this batch instead of deapproving + re-registering,
+		// and reflect the downgrade so syncData stops draining v2 counters next
+		// cycle (audit L13). A genuinely deleted probe still surfaces as a 404 on
+		// the core endpoints (/flows, /pings, …), which keep the re-register path.
+		if resp.StatusCode == 404 && name == "flow-counters" {
+			log.Printf("[Relay] /flow-counters unsupported by server (404); dropping batch and disabling counter sync until re-negotiation")
+			c.negotiatedSchema.Store(1)
+			return true // treat as consumed so the batch is not requeued
 		}
 
 		if resp.StatusCode == 404 || resp.StatusCode == 401 || resp.StatusCode == 403 {
