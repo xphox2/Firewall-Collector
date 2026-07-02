@@ -1,6 +1,7 @@
 package config
 
 import (
+	"log"
 	"os"
 	"strconv"
 	"time"
@@ -105,7 +106,14 @@ func Load() (*Config, error) {
 			TFTPListenAddr:    GetEnv("PROBE_LISTEN_ADDR", "0.0.0.0") + ":" + GetEnv("PROBE_TFTP_PORT", "69"),
 
 			MaxQueueSize: parseInt("PROBE_MAX_QUEUE_SIZE", 10000),
-			MaxBatchSize: parseInt("PROBE_MAX_BATCH_SIZE", 1000),
+			// M1 of the 2026-07-01 audit: the server hard-caps ingestion
+			// batches at 1000 items (100 for system-status) and, pre-fix,
+			// TRUNCATED the tail silently — so any operator-raised value
+			// above 1000 lost the tail of every batch permanently (the
+			// batch ID was marked processed, defeating retry). Clamp here
+			// so a misconfigured value can never cause loss; clampBatchSize
+			// logs when it engages.
+			MaxBatchSize: clampBatchSize(parseInt("PROBE_MAX_BATCH_SIZE", 1000)),
 
 			QueueDiskPath: os.Getenv("PROBE_QUEUE_DISK_PATH"),
 
@@ -161,6 +169,21 @@ func parseDurationSeconds(envKey string, defaultSeconds int) time.Duration {
 		}
 	}
 	return time.Duration(defaultSeconds) * time.Second
+}
+
+// serverMaxBatchItems is the central server's hard per-request ingestion cap
+// (Firewall-Mon handlers_data.go). Batches above it are truncated server-side,
+// so sending more than this per request can only lose data.
+const serverMaxBatchItems = 1000
+
+// clampBatchSize bounds PROBE_MAX_BATCH_SIZE to the server's ingestion cap
+// (M1 of the 2026-07-01 audit — see the call site).
+func clampBatchSize(v int) int {
+	if v > serverMaxBatchItems {
+		log.Printf("PROBE_MAX_BATCH_SIZE=%d exceeds the server's %d-item ingestion cap; clamping to %d (larger batches would be truncated server-side)", v, serverMaxBatchItems, serverMaxBatchItems)
+		return serverMaxBatchItems
+	}
+	return v
 }
 
 func parseInt(envKey string, defaultVal int) int {

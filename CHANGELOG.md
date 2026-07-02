@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.155 - 2026-07-01
+
+### Fixed
+- **`PROBE_MAX_BATCH_SIZE` is now clamped to the server's 1000-item ingestion cap (audit 2026-07-01 finding M1, collector half).** The knob had no upper bound, but the central server hard-caps every ingestion batch at 1000 items and (pre-v0.10.538) silently truncated the tail — then marked the batch's idempotency ID processed, so the dropped tail could never be resent. Raising the knob above 1000 therefore *caused* permanent, invisible data loss instead of improving throughput. Values above 1000 are now clamped with a startup log explaining why.
+
 ## 1.2.154 - 2026-07-01
 
 ### Fixed
