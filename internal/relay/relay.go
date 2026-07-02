@@ -3,6 +3,7 @@ package relay
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
@@ -694,16 +695,23 @@ func newTraceContext() (traceparent, requestID string) {
 	return fmt.Sprintf("00-%s-%s-01", tid, hex.EncodeToString(spanID)), tid
 }
 
-// newBatchID returns a random idempotency key for one probe data batch
-// (AUDIT-042). It is generated once per batch and reused across that batch's
-// retry attempts, so the server can dedupe a batch whose response timed out
-// after it was actually saved instead of inserting duplicate rows.
-func newBatchID() string {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("ts-%d", time.Now().UnixNano())
-	}
-	return hex.EncodeToString(b)
+// contentBatchID returns the idempotency key for one probe data batch
+// (AUDIT-042): the SHA-256 of the marshaled payload.
+//
+// M19 of the 2026-07-01 audit: the key used to be RANDOM, minted per send
+// call — so it only deduped the in-call retries. A batch that timed out
+// client-side AFTER the server committed it was requeued and re-sent on the
+// next sync cycle under a FRESH key the server could not match, inserting
+// every row twice (duplicated cumulative interface counters then skewed the
+// delta-based bandwidth math). Deriving the key from the CONTENT makes it
+// stable across send attempts, requeues, sync cycles, and process restarts:
+// an identical body always carries the identical key, so the server's
+// (probe_id, batch_id) dedup catches the replay no matter when it happens.
+// Every payload embeds collector-stamped time.Now() timestamps, so distinct
+// collections never collide.
+func contentBatchID(payload []byte) string {
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:16])
 }
 
 // --- Registration ---
@@ -1071,7 +1079,14 @@ func (c *Client) doDirectSend(endpoint string, name string, payload interface{})
 
 	url := fmt.Sprintf("%s/api/probes/%d/%s", c.Config.ServerURL, c.GetProbeID(), endpoint)
 
-	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
+	// M19: direct metric sends previously carried NO idempotency key, so a
+	// response lost after a server-side commit meant the buffered replay
+	// inserted every row twice. The content-derived key travels with the
+	// identical marshaled body through the spillover queue, so the drain's
+	// re-POST dedupes server-side (v0.10.539 adds the check to these routes).
+	hdr := map[string]string{"X-Probe-Batch-ID": contentBatchID(jsonData)}
+
+	resp, err := c.doAuthenticatedRequestH("POST", url, jsonData, hdr)
 	if err != nil {
 		// Transport failure (server down): buffer for the recovery drain.
 		c.enqueueMetric(endpoint, name, jsonData)
@@ -1088,7 +1103,7 @@ func (c *Client) doDirectSend(endpoint string, name string, payload interface{})
 		log.Printf("[Relay] Probe rejected (%d on %s), attempting re-registration...", resp.StatusCode, name)
 		c.approved.Store(false)
 		if c.tryReregister() {
-			resp2, err2 := c.doAuthenticatedRequest("POST", url, jsonData)
+			resp2, err2 := c.doAuthenticatedRequestH("POST", url, jsonData, hdr)
 			if err2 == nil {
 				drainAndClose(resp2)
 				if resp2.StatusCode >= 200 && resp2.StatusCode < 300 {
@@ -1147,7 +1162,10 @@ func (c *Client) enqueueMetric(endpoint, name string, payload []byte) {
 // payload is dropped rather than requeued forever.
 func (c *Client) postMetricRaw(endpoint, name string, body []byte) (ok bool, permanent bool) {
 	url := fmt.Sprintf("%s/api/probes/%d/%s", c.Config.ServerURL, c.GetProbeID(), endpoint)
-	resp, err := c.doAuthenticatedRequest("POST", url, body)
+	// M19: the replayed body is byte-identical to the original send, so the
+	// content-derived key matches and the server dedupes a
+	// timed-out-but-committed original.
+	resp, err := c.doAuthenticatedRequestH("POST", url, body, map[string]string{"X-Probe-Batch-ID": contentBatchID(body)})
 	if err != nil {
 		return false, false
 	}
@@ -1538,9 +1556,10 @@ func (c *Client) sendBatch(url, name string, data interface{}) bool {
 		return false
 	}
 
-	// AUDIT-042: one idempotency key per batch, reused across all retry
-	// attempts so the server dedupes a timed-out-but-saved batch.
-	batchID := newBatchID()
+	// AUDIT-042 + M19: content-derived idempotency key — identical across
+	// retry attempts AND across sync-cycle requeues of the same chunk, so the
+	// server dedupes a timed-out-but-saved batch whenever it comes back.
+	batchID := contentBatchID(jsonData)
 	for attempt := 0; attempt < 3; attempt++ {
 		resp, err := c.doAuthenticatedRequestH("POST", url, jsonData, map[string]string{"X-Probe-Batch-ID": batchID})
 		if err != nil {

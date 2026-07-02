@@ -8,19 +8,25 @@ import (
 	"testing"
 )
 
-// TestNewBatchID_UniqueNonEmpty_AUDIT042 pins that batch ids are non-empty and
-// effectively unique (collisions would weaken server-side dedup).
-func TestNewBatchID_UniqueNonEmpty_AUDIT042(t *testing.T) {
-	seen := make(map[string]bool, 1000)
-	for i := 0; i < 1000; i++ {
-		id := newBatchID()
-		if id == "" {
-			t.Fatal("newBatchID returned empty")
-		}
-		if seen[id] {
-			t.Fatalf("duplicate batch id: %s", id)
-		}
-		seen[id] = true
+// TestContentBatchID_DeterministicAndDistinct_M19 pins the M19 (2026-07-01
+// audit) contract: batch ids are derived from the payload CONTENT, so an
+// identical body always carries the identical id (stable across retries,
+// sync-cycle requeues, and process restarts — the server dedupes a
+// timed-out-but-committed batch whenever it comes back), while distinct
+// payloads get distinct ids (every payload embeds collector-stamped
+// timestamps, so distinct collections never collide).
+func TestContentBatchID_DeterministicAndDistinct_M19(t *testing.T) {
+	a1 := contentBatchID([]byte(`[{"m":"x","ts":"2026-07-01T00:00:01Z"}]`))
+	a2 := contentBatchID([]byte(`[{"m":"x","ts":"2026-07-01T00:00:01Z"}]`))
+	b := contentBatchID([]byte(`[{"m":"x","ts":"2026-07-01T00:00:02Z"}]`))
+	if a1 == "" {
+		t.Fatal("contentBatchID returned empty")
+	}
+	if a1 != a2 {
+		t.Errorf("identical payloads got different ids (%s vs %s) — replay dedup would fail", a1, a2)
+	}
+	if a1 == b {
+		t.Error("distinct payloads collided — dedup would wrongly drop real data")
 	}
 }
 

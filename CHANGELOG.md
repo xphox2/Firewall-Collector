@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.156 - 2026-07-01
+
+### Fixed
+- **Batch idempotency keys now survive requeues, and direct metric sends carry one at all (audit 2026-07-01 finding M19).** Two gaps let a batch that timed out client-side *after* the server committed it insert every row twice on replay: (1) `sendBatch`'s key was random and minted per call, so a batch requeued into the spillover queue re-sent under a fresh key the server couldn't match; (2) the direct-send metric path (`doDirectSend`/`drainMetricQueue`) sent no `X-Probe-Batch-ID` whatsoever — and duplicated cumulative interface counters skew all delta-based bandwidth math server-side. Keys are now **derived from the payload content** (SHA-256 of the marshaled body), making them stable across retries, sync-cycle requeues, and process restarts — an identical body always carries the identical key, and every payload embeds collector-stamped timestamps so distinct collections never collide. The metric path sends the header on every attempt, including spillover replays (byte-identical body ⇒ identical key). Pairs with server v0.10.539, which adds the dedup check to the metric routes; older servers simply ignore the header.
+
 ## 1.2.155 - 2026-07-01
 
 ### Fixed
