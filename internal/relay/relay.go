@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -716,35 +717,85 @@ func contentBatchID(payload []byte) string {
 
 // --- Registration ---
 
-func (c *Client) Register() error {
-	data := RegisterRequest{
-		RegistrationKey: c.Config.RegistrationKey,
-		SchemaVersion:   SchemaVersionMax,
+// parseSchemaRange parses the server's "min-max" (or bare "N") schema-version
+// support header. ok=false when it can't be parsed (M20).
+func parseSchemaRange(s string) (min, max int, ok bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, 0, false
 	}
-
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-		return fmt.Errorf("failed to marshal registration data: %w", err)
-	}
-
-	resp, err := c.doAuthenticatedRequest("POST", c.Config.ServerURL+"/api/probes/register", jsonData)
-	if err != nil {
-		return fmt.Errorf("registration request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// The server rejects an unsupported wire-format version with 426. Surface
-	// an actionable error naming the range the server advertises so the
-	// operator knows to upgrade the server (or roll this probe back) — see
-	// MIGRATING.md. The probe keeps its on-disk queue, so no data is lost.
-	if resp.StatusCode == http.StatusUpgradeRequired {
-		supported := resp.Header.Get("X-Probe-Schema-Version-Supported")
-		if supported == "" {
-			supported = "unknown"
+	if i := strings.IndexByte(s, '-'); i >= 0 {
+		lo, e1 := strconv.Atoi(strings.TrimSpace(s[:i]))
+		hi, e2 := strconv.Atoi(strings.TrimSpace(s[i+1:]))
+		if e1 != nil || e2 != nil || lo > hi {
+			return 0, 0, false
 		}
-		return fmt.Errorf("registration rejected: this collector speaks schema_version %d but the server supports %s — upgrade the server first (see MIGRATING.md)",
-			SchemaVersionMax, supported)
+		return lo, hi, true
 	}
+	v, e := strconv.Atoi(s)
+	if e != nil {
+		return 0, 0, false
+	}
+	return v, v, true
+}
+
+func (c *Client) Register() error {
+	// M20 of the 2026-07-01 audit: advertise SchemaVersionMax but FALL BACK to
+	// the highest mutually-supported version on a 426, instead of failing. The
+	// pre-fix code hard-errored (and cmd/collector then log.Fatalf'd into a
+	// crash loop that stopped ALL site telemetry) whenever this collector was
+	// upgraded ahead of the server — but the collector speaks every version
+	// down to SchemaVersionMin (higher-version features like counter samples
+	// are already gated on the negotiated version), so registering as v1
+	// against a v1 server is correct, not an error.
+	advertise := SchemaVersionMax
+	for attempt := 0; attempt < 2; attempt++ {
+		data := RegisterRequest{
+			RegistrationKey: c.Config.RegistrationKey,
+			SchemaVersion:   advertise,
+		}
+		jsonData, err := json.Marshal(data)
+		if err != nil {
+			return fmt.Errorf("failed to marshal registration data: %w", err)
+		}
+		resp, err := c.doAuthenticatedRequest("POST", c.Config.ServerURL+"/api/probes/register", jsonData)
+		if err != nil {
+			return fmt.Errorf("registration request failed: %w", err)
+		}
+
+		if resp.StatusCode == http.StatusUpgradeRequired {
+			supported := resp.Header.Get("X-Probe-Schema-Version-Supported")
+			drainAndClose(resp)
+			serverMin, serverMax, ok := parseSchemaRange(supported)
+			if ok {
+				target := SchemaVersionMax
+				if serverMax < target {
+					target = serverMax
+				}
+				// Retry only if a compatible, strictly-lower version exists.
+				if target >= SchemaVersionMin && target >= serverMin && target < advertise {
+					log.Printf("[Relay] Server supports schema %s; re-registering as v%d (was v%d)", supported, target, advertise)
+					advertise = target
+					continue
+				}
+			}
+			shown := supported
+			if shown == "" {
+				shown = "unknown"
+			}
+			return fmt.Errorf("registration rejected: this collector speaks schema_version %d-%d but the server supports %s — no compatible version (see MIGRATING.md)",
+				SchemaVersionMin, SchemaVersionMax, shown)
+		}
+
+		return c.finishRegister(resp)
+	}
+	return fmt.Errorf("registration failed: no mutually-supported schema version after fallback")
+}
+
+// finishRegister processes a non-426 registration response (M20 refactor:
+// pulled out of Register so the 426 fallback loop can retry cleanly).
+func (c *Client) finishRegister(resp *http.Response) error {
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		// Surface the server's error body so the failure is self-explanatory

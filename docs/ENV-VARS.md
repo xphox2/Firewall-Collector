@@ -43,7 +43,7 @@ The collector binds to `PROBE_LISTEN_ADDR` (default `0.0.0.0`).
 | `PROBE_SYSLOG_PORT` | `514` | Syslog TCP + UDP. |
 | `PROBE_SFLOW_PORT` | `6343` | sFlow UDP. |
 | `PROBE_TFTP_PORT` | `69` | TFTP UDP (WRQ-receive for FortiGate config backups). |
-| `PROBE_SNMP_TRAP_COMMUNITY` | _(empty)_ | **Required** when traps are enabled — empty is rejected at startup. |
+| `PROBE_SNMP_TRAP_COMMUNITY` | _(empty)_ | Optional community allowlist filter. When set, only traps carrying this community are accepted; when **empty the collector accepts traps from ANY community** (a startup warning is logged, but it is NOT rejected). Set it to your devices' trap community to restrict the exposed 162/udp listener. |
 
 ## Feature toggles
 
@@ -88,13 +88,14 @@ with generous headroom; drops increment `firewall_collector_rate_limited_drops_t
 |---|---|---|
 | `PROBE_MAX_QUEUE_SIZE` | `10000` | In-memory cap per stream. Beyond this, FIFO eviction to BoltDB. |
 | `PROBE_MAX_BATCH_SIZE` | `1000` | Items per HTTP POST. |
-| `PROBE_QUEUE_DISK_PATH` | `` (empty) | Directory for the disk-spillover queues. Empty = in-memory only (telemetry is dropped, not buffered, while the server is unreachable). Set to a writable persistent dir to survive outages/restarts. |
+| `PROBE_QUEUE_DISK_PATH` | `` (empty); **`/queue` in the shipped Docker image/compose** | Directory for the disk-spillover queues. Empty = in-memory only (telemetry is dropped, not buffered, while the server is unreachable). The Docker image sets `/queue` by default, so container deploys DO spill to disk unless overridden. Set to a writable persistent dir to survive outages/restarts. |
 
 The disk-spillover queue's path is wired in `cmd/collector/main.go:187`
-(`relay.Config.QueueDiskPath` ← `PROBE_QUEUE_DISK_PATH`); the current
-production default leaves it empty (in-memory only) and the disk
-persistence activates when the env var is set. **This is documented in the env-var file but the wiring is
-intentionally opt-in** — see `internal/relay/queue/queue.go` for the
+(`relay.Config.QueueDiskPath` ← `PROBE_QUEUE_DISK_PATH`). The *code*
+default is empty (in-memory only), but the **shipped Docker image and
+compose set `PROBE_QUEUE_DISK_PATH=/queue`**, so container deployments
+spill to disk out of the box; only a non-container run with the var
+unset is in-memory-only. See `internal/relay/queue/queue.go` for the
 queue's `Path` / `Bucket` / `MaxMem` / `MaxBytes` fields.
 
 ## Observability

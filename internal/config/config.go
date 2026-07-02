@@ -81,12 +81,15 @@ type ProbeConfig struct {
 func Load() (*Config, error) {
 	cfg := &Config{
 		Probe: ProbeConfig{
-			RegistrationKey:    os.Getenv("PROBE_REGISTRATION_KEY"),
-			ServerURL:          GetEnv("PROBE_SERVER_URL", "https://stats.technicallabs.org"),
-			TLSCertFile:        os.Getenv("PROBE_TLS_CERT"),
-			TLSKeyFile:         os.Getenv("PROBE_TLS_KEY"),
-			CACertFile:         os.Getenv("PROBE_CA_CERT"),
-			InsecureSkipVerify: os.Getenv("PROBE_INSECURE_SKIP_VERIFY") == "true",
+			RegistrationKey: os.Getenv("PROBE_REGISTRATION_KEY"),
+			ServerURL:       GetEnv("PROBE_SERVER_URL", "https://stats.technicallabs.org"),
+			TLSCertFile:     os.Getenv("PROBE_TLS_CERT"),
+			TLSKeyFile:      os.Getenv("PROBE_TLS_KEY"),
+			CACertFile:      os.Getenv("PROBE_CA_CERT"),
+			// M23 of the 2026-07-01 audit: use parseBool so the documented
+			// `1`/`yes` forms work (the raw `== "true"` silently ignored them,
+			// leaving TLS verification ON for an operator who wrote `=1`).
+			InsecureSkipVerify: parseBool("PROBE_INSECURE_SKIP_VERIFY", false),
 
 			HeartbeatInterval:     parseDurationSeconds("PROBE_HEARTBEAT_INTERVAL", 60),
 			SyncInterval:          parseDurationSeconds("PROBE_SYNC_INTERVAL", 30),

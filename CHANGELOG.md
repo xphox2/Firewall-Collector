@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.158 - 2026-07-01
+
+### Fixed
+- **A collector upgraded ahead of the server no longer crash-loops on registration (audit 2026-07-01 finding M20).** `Register()` always advertised the newest schema version (v2) and hard-errored on the server's HTTP 426 rejection; `cmd/collector` then `log.Fatalf`'d, so under `restart: unless-stopped` the collector crash-looped and ALL telemetry from that site stopped — even though the collector speaks every version down to `SchemaVersionMin` (higher-version features like counter samples are already gated on the negotiated version). It now parses the `X-Probe-Schema-Version-Supported` header and re-registers once at the highest mutually-supported version, so a v2 collector against a v1 server negotiates v1 and works. This makes collector-first upgrades (live prod lags HEAD) safe.
+- **`PROBE_INSECURE_SKIP_VERIFY` now accepts the documented `1`/`yes` values (audit 2026-07-01 finding M23).** It was parsed with a raw `== "true"`, so `PROBE_INSECURE_SKIP_VERIFY=1` (per the docs) silently left TLS verification ON — a site with a self-signed server cert got persistent, unexplained TLS failures and dropped telemetry. It now routes through `parseBool` like every other collector bool.
+
+### Docs
+- **Corrected `docs/ENV-VARS.md` to match the code (audit 2026-07-01 finding M23).** `PROBE_SNMP_TRAP_COMMUNITY` is documented as an **optional allowlist filter** (empty = accept traps from any community with a startup warning, NOT rejected at startup as previously claimed), and `PROBE_QUEUE_DISK_PATH` is documented as **defaulting to `/queue` in the shipped Docker image/compose** (container deploys spill to disk out of the box), not empty/in-memory.
+
+
 ## 1.2.157 - 2026-07-01
 
 ### Fixed
