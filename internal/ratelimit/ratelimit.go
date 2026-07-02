@@ -153,15 +153,29 @@ func (l *Limiter) allowAt(ip string, now time.Time) bool {
 	return globalOK
 }
 
-// evictOneIdleLocked removes one bucket whose sender has gone quiet (fully
-// refilled and untouched past IdleTTL), freeing a slot. Bounded scan so the hot
-// path stays cheap under a spoof flood. Caller holds l.mu. Returns true if it
-// evicted one.
+// evictOneIdleLocked removes one bucket whose sender has gone quiet (would be
+// fully refilled and untouched past IdleTTL), freeing a slot. Bounded scan so
+// the hot path stays cheap under a spoof flood. Caller holds l.mu. Returns true
+// if it evicted one.
+//
+// H6 of the 2026-07-01 audit: refill happens only lazily inside take(), which
+// runs only when a packet arrives — so an idle bucket's STORED tokens is frozen
+// at its last post-take value, which is always < burst (take decrements after
+// capping at burst). The pre-fix predicate `b.tokens >= l.burst` was therefore
+// unsatisfiable: eviction never fired, a >MaxSources spoofed-source flood
+// permanently poisoned the map, every NEW source (including a legitimately
+// renumbered firewall) fell through to the global-bucket-only path forever, and
+// each such packet paid a futile 256-entry scan under the shared per-packet
+// mutex. Evict on the EFFECTIVE token count instead — what the bucket would
+// hold if take() ran now (with defaults, idleTTL alone implies a full refill:
+// 5 min at 500/s >> burst 1000; the token term matters only for unusual
+// low-rate configs).
 func (l *Limiter) evictOneIdleLocked(now time.Time) bool {
 	const scanCap = 256
 	scanned := 0
 	for ip, b := range l.sources {
-		if b.tokens >= l.burst && now.Sub(b.last) > l.idleTTL {
+		idle := now.Sub(b.last)
+		if idle > l.idleTTL && b.tokens+idle.Seconds()*l.rate >= l.burst {
 			delete(l.sources, ip)
 			return true
 		}

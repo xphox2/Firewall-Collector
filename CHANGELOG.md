@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.154 - 2026-07-01
+
+### Fixed
+- **Per-source rate-limiter idle eviction actually works now (audit 2026-07-01 finding H6).** Token refill happens only lazily inside `take()` (which runs only when a packet arrives), so an idle bucket's *stored* token count is frozen at its last post-take value — always below burst. The eviction predicate `tokens >= burst` was therefore unsatisfiable: eviction was dead code, `IdleTTL` a dead knob, and a flood of >8192 spoofed source IPs permanently poisoned the limiter map — every NEW source (including a legitimately renumbered firewall) fell through to the global-bucket-only path forever, paying a futile 256-entry scan under the shared per-packet mutex on the way. Eviction now computes the **effective** token count (stored + refill the idle time would have earned). `TestIdleEviction` was also strengthened — the old version couldn't distinguish "evicted and re-tracked" from "fell through to global" (the audit found it passed for the wrong reason); it now asserts the new source gets a real per-source bucket, plus a new `TestIdleEviction_EffectiveRefillPredicate_H6` covering the drained-then-idle worst case.
+- **Spillover-queue replay no longer loads the entire on-disk spool into RAM at startup (audit 2026-07-01 finding H7).** `replay()` copied every key+value in the BoltDB bucket into a heap slice before deciding which `MaxMem` items stay in memory — after the multi-day server outage the queue exists to survive, that meant allocating up to ~1 GiB (the disk cap) *per queue, times seven queues* on startup, OOM-killing the collector on memory-constrained probe hosts (e.g. the Synology NAS deployment) in a crash-loop that also prevented the drain that would have shrunk the spool. The cursor now walks backward (newest → oldest), copies only the newest `MaxMem` values into RAM, and counts everything older by key/value length only — peak replay heap is bounded by `MaxMem` items regardless of spool size. Semantics (FIFO across tiers, tier split, disk-size accounting, sequence-counter restore) are unchanged and pinned by the existing replay/FIFO tests.
+
 ## 1.2.153 - 2026-07-01
 
 ### Docs

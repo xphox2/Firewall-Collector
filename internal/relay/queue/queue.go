@@ -126,29 +126,42 @@ func Open(cfg Config) (*SpilloverQueue, error) {
 // the max sequence seen so subsequent appends don't collide with
 // replayed keys. Items promoted to memory are deleted from the bucket
 // to preserve the mutually-exclusive invariant (in-memory XOR on-disk).
+// H7 of the 2026-07-01 audit: the pre-fix replay copied EVERY key+value
+// in the bucket into a heap slice before deciding which MaxMem items
+// stay in memory — after the multi-day outage this queue exists to
+// survive, that meant allocating the entire spool (up to MaxBytes,
+// default 1 GiB, times 7 queues) at startup, OOM-killing the collector
+// on memory-constrained probe hosts and crash-looping it (each restart
+// re-replayed, and the crash prevented the drain that would shrink the
+// spool). Now the cursor walks BACKWARD (newest → oldest): only the
+// newest MaxMem values are copied into RAM; everything older is counted
+// by key/value LENGTH only, with no value copies — peak replay heap is
+// bounded by MaxMem items regardless of spool size.
 func (q *SpilloverQueue) replay() error {
-	type kv struct {
-		key, val []byte
-	}
-	var entries []kv
+	var memVals [][]byte // newest MaxMem values, collected newest-first
+	var memKeys [][]byte // their keys (delete order doesn't matter)
 	var maxSeq uint64
+	var diskBytes int64
 	err := q.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(q.bucket)
 		if b == nil {
 			return nil
 		}
 		c := b.Cursor()
-		for k, v := c.First(); k != nil; k, v = c.Next() {
+		for k, v := c.Last(); k != nil; k, v = c.Prev() {
 			if len(k) == 8 {
 				s := binary.BigEndian.Uint64(k)
 				if s > maxSeq {
 					maxSeq = s
 				}
 			}
-			val := make([]byte, len(v))
-			copy(val, v)
-			entries = append(entries, kv{key: append([]byte(nil), k...), val: val})
-			q.diskSize += int64(len(k)) + int64(len(v))
+			if len(memVals) < q.cfg.MaxMem {
+				memVals = append(memVals, append([]byte(nil), v...))
+				memKeys = append(memKeys, append([]byte(nil), k...))
+			} else {
+				// Disk tier: track live bytes only — no value copy.
+				diskBytes += int64(len(k)) + int64(len(v))
+			}
 		}
 		return nil
 	})
@@ -158,31 +171,17 @@ func (q *SpilloverQueue) replay() error {
 
 	q.seq = maxSeq
 
-	// Split entries into the in-memory tier (newest MaxMem) and the
-	// disk tier (older). Cursor order is by ascending sequence, so the
-	// newest entries sit at the end of the slice. Items bound for
-	// memory are deleted from disk below so the two tiers stay
-	// mutually exclusive.
-	memN := len(entries)
-	if memN > q.cfg.MaxMem {
-		memN = q.cfg.MaxMem
-	}
-	diskN := len(entries) - memN
-
-	q.inMem = make([][]byte, memN)
-	memKeys := make([][]byte, memN)
-	for i := 0; i < memN; i++ {
-		e := entries[diskN+i]
-		q.inMem[i] = e.val
-		memKeys[i] = e.key
+	// memVals was collected newest-first; the in-memory tier is
+	// oldest-first (FIFO tail), so reverse into place.
+	n := len(memVals)
+	q.inMem = make([][]byte, n)
+	for i := 0; i < n; i++ {
+		q.inMem[i] = memVals[n-1-i]
 	}
 
 	// Tracked size is the live bytes on disk only — items moved to RAM
 	// no longer count against the byte cap.
-	q.diskSize = 0
-	for i := 0; i < diskN; i++ {
-		q.diskSize += int64(len(entries[i].key)) + int64(len(entries[i].val))
-	}
+	q.diskSize = diskBytes
 
 	if len(memKeys) > 0 {
 		err := q.db.Update(func(tx *bolt.Tx) error {

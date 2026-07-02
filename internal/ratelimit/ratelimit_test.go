@@ -81,15 +81,63 @@ func TestIdleEviction(t *testing.T) {
 	t0 := time.Unix(4000, 0)
 	l.allowAt("10.0.0.1", t0) // fills the single slot; bucket now has 4 tokens (not full)
 
-	// Let 10.0.0.1 fully refill (idle) so it becomes evictable.
+	// Let 10.0.0.1 idle long enough that its EFFECTIVE tokens (stored + refill
+	// it would earn) reach burst. H6 of the 2026-07-01 audit: the stored token
+	// count alone NEVER reaches burst (take decrements after capping), so the
+	// pre-fix `b.tokens >= burst` predicate made eviction dead code.
 	idle := t0.Add(30 * time.Second)
-	// A new source at t=idle: map full (cap 1), but 10.0.0.1 is now full+idle → evicted.
+	// A new source at t=idle: map full (cap 1), but 10.0.0.1 is idle+refillable → evicted.
 	if !l.allowAt("10.0.0.2", idle) {
 		t.Fatal("new source should be admitted after evicting an idle bucket")
 	}
 	_, _, tracked := l.Stats()
 	if tracked != 1 {
 		t.Errorf("tracked = %d, want 1 (evict-then-insert keeps the bound)", tracked)
+	}
+
+	// The decisive check the pre-fix test lacked: the new source must have its
+	// OWN per-source bucket, not a global-only admission. Exhaust its burst —
+	// with a per-source bucket the 6th packet in the same instant is dropped
+	// (burst 5, one already spent above) even though the global bucket is
+	// effectively unlimited. On the pre-fix code (eviction dead, global-only
+	// fallback) every packet was allowed and this assertion fails.
+	for i := 0; i < 4; i++ {
+		if !l.allowAt("10.0.0.2", idle) {
+			t.Fatalf("packet %d within burst should be allowed", i+2)
+		}
+	}
+	if l.allowAt("10.0.0.2", idle) {
+		t.Fatal("burst-exhausted new source must be dropped per-source — it fell through to the global-only path, meaning eviction never happened")
+	}
+}
+
+// TestIdleEviction_EffectiveRefillPredicate_H6 pins the exact H6 defect shape:
+// a bucket whose sender went quiet mid-burst (stored tokens well below burst)
+// must still be evictable once idle past TTL, because the predicate now counts
+// the refill the bucket would have earned.
+func TestIdleEviction_EffectiveRefillPredicate_H6(t *testing.T) {
+	l := New(Config{PerSourceRate: 5, PerSourceBurst: 5, GlobalRate: 1e9, GlobalBurst: 1e9, MaxSources: 1, IdleTTL: 10 * time.Second})
+	t0 := time.Unix(5000, 0)
+	// Drain the bucket to 0 stored tokens — the worst case for the old
+	// stored-tokens predicate.
+	for i := 0; i < 5; i++ {
+		l.allowAt("10.9.9.9", t0)
+	}
+
+	// Idle past TTL and long enough to refill (5 tokens at 5/s = 1s << 30s).
+	idle := t0.Add(30 * time.Second)
+	if !l.allowAt("172.16.0.1", idle) {
+		t.Fatal("fully drained then long-idle bucket must be evictable")
+	}
+	l.mu.Lock()
+	_, oldStillTracked := l.sources["10.9.9.9"]
+	_, newTracked := l.sources["172.16.0.1"]
+	l.mu.Unlock()
+	if oldStillTracked {
+		t.Error("idle drained bucket was not evicted")
+	}
+	if !newTracked {
+		t.Error("new source did not get its own per-source bucket")
 	}
 }
 
