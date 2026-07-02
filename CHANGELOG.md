@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.163 - 2026-07-02
+
+### CI
+- **Added a gofmt gate to CI** (`.github/workflows/docker.yml`), matching the server repo. CI now fails if any tracked Go file is not gofmt-clean, before vet/test/staticcheck.
+
 ## 1.2.162 - 2026-07-02
 
 ### Security

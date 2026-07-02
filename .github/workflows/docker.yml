@@ -30,6 +30,17 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-
 
+      - name: gofmt
+        # Formatting gate (parity with the server repo). Fails if any tracked
+        # Go file is not gofmt-clean.
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::Files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
       - name: go vet
         env:
           CGO_ENABLED: '1'
