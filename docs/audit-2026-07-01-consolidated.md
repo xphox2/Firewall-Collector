@@ -263,12 +263,15 @@ Multi-agent consensus report: 15 finder dimensions + 8 critic-directed follow-up
 - **server** · `internal/report/svg_charts.go:198` — fall back to the placeholder when nPoints < 2.
 
 ### L9. sFlow sub-record parsers bound reads against the datagram, not recEnd — a lying record length bleeds adjacent-record bytes into BGP/counter telemetry
+> **✅ RESOLVED (collector v1.2.159)** — both flow-record and counter-record dispatch loops now hand each sub-parser a slice bounded to the record's own declared length (`data[off:recEnd]`) with a record-local offset, so a lying `recLen` can no longer let `parseRawPacketHeader`/`parseExtendedGateway`/`parseIfCounters` read past `recEnd` and fold the following record's bytes into `SrcAS`/next-hop/64-bit octet counters (the fake multi-exabyte spike). Regression test `TestParseSFlowDatagram_LyingRecLenNoBleed_L9`.
 - **collector** · `internal/sflow/sflow.go:462` — garbage SrcAS/ASPath persisted; fake multi-exabyte counter spikes from one malformed packet (no crash). Fix: slice the record first (`rec := data[off:recEnd]`) and parse with local offsets.
 
 ### L10. Lax syslog priority parsing turns garbage into severity 0 (emergency) or negative severity — server classifies as critical and retains 30 days
+> **✅ RESOLVED (collector v1.2.159)** — `parsePriority` now enforces the RFC 5424 PRIVAL grammar: a leading `<`, a closing `>`, and 1–3 all-digit bytes (0–191). `<abc>`, `<>`, a missing `>`, trailing non-digits, and overflowing digit runs are rejected instead of silently decoding to severity 0 (Emergency) or a negative severity that slipped past the `>191` check. Tests updated (`TestParsePriority_OutOfRange`, `TestParseRFC5424_MalformedPriority`).
 - **collector** · `internal/syslog/syslog.go:369` — `<abc>` → severity 0; overflowing digit runs go negative and pass the `>191` check. Fix: require closing `>`, 1–3 digits, reject otherwise.
 
 ### L11. sFlow readLoop worker exits on first non-timeout error but leaves its SO_REUSEPORT socket bound — kernel keeps hashing datagrams to a dead socket
+> **✅ RESOLVED (collector v1.2.159)** — both UDP receivers (sFlow and syslog) now supervise each worker socket: on a persistent non-timeout read error they close the dead fd (so the kernel drops it from the SO_REUSEPORT hash and rebalances to the live workers) and reopen a fresh listener after a growing backoff (200ms→30s), instead of the sFlow receiver returning and blackholing its share of agents or the syslog receiver spinning a tight hot-loop re-reading the errored socket. `Stop()` snapshots the conn slice under a new `connsMu` so it closes whichever fd a worker currently holds.
 - **collector** · `internal/sflow/sflow.go:142` — 1/N of agents silently blackholed until restart (all of them if single-worker); syslog's UDP loop picked the opposite (hot-loop) behavior. Fix: close the conn on exit (kernel rebalances) and/or respawn with backoff; align both receivers.
 
 ### L12. Schema-v2 shipped asymmetrically: collector transmits if_direction, server model lacks the field — silently dropped at ingest (invariant 3)

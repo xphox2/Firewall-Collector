@@ -26,6 +26,7 @@ type SFlowReceiver struct {
 	limiter        *ratelimit.Limiter
 	onRateDrop     func()
 	workers        int
+	connsMu        sync.Mutex // guards conns entries, which readLoop swaps on respawn
 	conns          []*net.UDPConn
 	wg             sync.WaitGroup
 	stopChan       chan struct{}
@@ -88,10 +89,10 @@ func (r *SFlowReceiver) Start(handler func(*relay.FlowSample)) error {
 	}
 
 	r.running.Store(true)
-	for _, conn := range r.conns {
-		c := conn
+	for i := range r.conns {
+		idx := i
 		r.wg.Add(1)
-		safego.Go("sflow:read", func() { r.readLoop(c) })
+		safego.Go("sflow:read", func() { r.readLoop(idx) })
 	}
 
 	log.Printf("[sFlow] Listening on %s (%d worker(s))", addr, workers)
@@ -114,7 +115,10 @@ func (r *SFlowReceiver) Stop() error {
 	r.stopOnce.Do(func() {
 		r.running.Store(false)
 		close(r.stopChan)
-		for _, c := range r.conns {
+		r.connsMu.Lock()
+		conns := r.conns
+		r.connsMu.Unlock()
+		for _, c := range conns {
 			if c != nil {
 				if err := c.Close(); err != nil {
 					closeErr = err
@@ -126,8 +130,71 @@ func (r *SFlowReceiver) Stop() error {
 	return closeErr
 }
 
-func (r *SFlowReceiver) readLoop(conn *net.UDPConn) {
+// sFlow socket respawn backoff bounds. A persistent read error kills a socket;
+// rather than returning (which leaves the dead SO_REUSEPORT fd bound so the
+// kernel keeps hashing datagrams to it — audit L11), the worker closes it and
+// reopens a fresh listener after a growing backoff.
+const (
+	sflowRespawnBackoff = 200 * time.Millisecond
+	sflowRespawnMax     = 30 * time.Second
+)
+
+// readLoop supervises worker idx's socket: it serves datagrams until a
+// persistent (non-timeout) read error, then closes the dead socket so the
+// kernel rebalances the SO_REUSEPORT group to the live workers, and reopens a
+// replacement after a backoff so this worker's share of agents isn't
+// blackholed until a process restart.
+func (r *SFlowReceiver) readLoop(idx int) {
 	defer r.wg.Done()
+	addr := fmt.Sprintf("%s:%d", r.ListenAddr, r.Port)
+	backoff := sflowRespawnBackoff
+	for r.running.Load() {
+		r.connsMu.Lock()
+		conn := r.conns[idx]
+		r.connsMu.Unlock()
+
+		if conn != nil {
+			err := r.serveConn(conn)
+			if !r.running.Load() {
+				return // clean stop
+			}
+			log.Printf("[sFlow] worker %d read error: %v; respawning socket", idx, err)
+			// Close the dead socket so the kernel drops it from the reuseport hash.
+			_ = conn.Close()
+			r.connsMu.Lock()
+			r.conns[idx] = nil
+			r.connsMu.Unlock()
+		}
+
+		select {
+		case <-time.After(backoff):
+		case <-r.stopChan:
+			return
+		}
+		newConn, err := reuseport.Listen("udp", addr)
+		if err != nil {
+			log.Printf("[sFlow] worker %d respawn listen failed: %v", idx, err)
+			backoff = minDuration(backoff*2, sflowRespawnMax)
+			continue
+		}
+		_ = newConn.SetReadBuffer(ratelimit.UDPReadBufferBytes)
+		r.connsMu.Lock()
+		r.conns[idx] = newConn
+		r.connsMu.Unlock()
+		backoff = sflowRespawnBackoff // healthy reopen resets the backoff
+	}
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// serveConn reads and dispatches datagrams on conn until running flips false or
+// a non-timeout read error occurs (returned so readLoop can respawn the socket).
+func (r *SFlowReceiver) serveConn(conn *net.UDPConn) error {
 	buf := make([]byte, 65536)
 	for r.running.Load() {
 		conn.SetReadDeadline(time.Now().Add(1 * time.Second))
@@ -136,10 +203,7 @@ func (r *SFlowReceiver) readLoop(conn *net.UDPConn) {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				continue
 			}
-			if r.running.Load() {
-				log.Printf("[sFlow] Read error: %v", err)
-			}
-			return
+			return err
 		}
 
 		// Per-source rate limit: shed datagrams from a flooding source before
@@ -155,6 +219,7 @@ func (r *SFlowReceiver) readLoop(conn *net.UDPConn) {
 			r.parseSFlowDatagram(buf[:n])
 		}
 	}
+	return nil
 }
 
 // readUint32 reads a big-endian uint32 from data at offset, advancing offset.
@@ -369,12 +434,19 @@ func (r *SFlowReceiver) parseFlowSample(data []byte, offset *int, format uint32,
 		recEnterprise := recEF >> 12
 		recFormat := recEF & 0xFFF
 
+		// Parse each record from a slice bounded to its OWN declared length. A
+		// record's readUint32/readUint64 helpers bound against len(their data), so
+		// handing them a rec limited to [*offset:recEnd] makes it impossible for a
+		// lying recLen to let a sub-parser read past recEnd into the following
+		// record's bytes and fold them into SrcAS/next-hop telemetry (audit L9).
+		rec := data[*offset:recEnd]
+		recOff := 0
 		if recEnterprise == 0 && recFormat == 1 {
 			// Raw packet header record
-			parseRawPacketHeader(data, offset, recEnd, sample)
+			parseRawPacketHeader(rec, &recOff, len(rec), sample)
 		} else if recEnterprise == 0 && recFormat == 1003 {
 			// Extended gateway (BGP) record — AS path / next hop.
-			parseExtendedGateway(data, offset, recEnd, sample)
+			parseExtendedGateway(rec, &recOff, len(rec), sample)
 		}
 
 		*offset = recEnd
@@ -564,8 +636,12 @@ func (r *SFlowReceiver) parseCountersSample(data []byte, offset *int, format uin
 		recEnterprise := recEF >> 12
 		recFormat := recEF & 0xFFF
 		if recEnterprise == 0 && recFormat == 1 {
-			// generic interface counters (if_counters)
-			parseIfCounters(data, offset, ifIndex, agentAddr, now, r.counterHandler)
+			// generic interface counters (if_counters). Parse from a record-local
+			// slice so a lying recLen can't bleed adjacent-record bytes into the
+			// 64-bit octet counters (fake multi-exabyte spikes) — audit L9.
+			rec := data[*offset:recEnd]
+			recOff := 0
+			parseIfCounters(rec, &recOff, ifIndex, agentAddr, now, r.counterHandler)
 		}
 		*offset = recEnd
 	}

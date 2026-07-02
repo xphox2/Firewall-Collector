@@ -145,23 +145,23 @@ func TestParseRFC5424_MalformedPriority(t *testing.T) {
 		wantErr      bool
 		wantPriority int
 	}{
+		// audit L10: these three used to decode to priority 0 (severity 0 =
+		// Emergency) instead of erroring — garbage classified as critical. Strict
+		// PRIVAL parsing now rejects them.
 		{
-			name:         "non-numeric priority value",
-			input:        `<abc> 1 2025-04-10T05:01:53.000000-07:00 h a p m - - msg`,
-			wantErr:      false,
-			wantPriority: 0,
+			name:    "non-numeric priority value",
+			input:   `<abc> 1 2025-04-10T05:01:53.000000-07:00 h a p m - - msg`,
+			wantErr: true,
 		},
 		{
-			name:         "empty priority value",
-			input:        `<> 1 2025-04-10T05:01:53.000000-07:00 h a p m - - msg`,
-			wantErr:      false,
-			wantPriority: 0,
+			name:    "empty priority value",
+			input:   `<> 1 2025-04-10T05:01:53.000000-07:00 h a p m - - msg`,
+			wantErr: true,
 		},
 		{
-			name:         "missing closing bracket",
-			input:        `<0 2025-04-10T05:01:53.000000-07:00 h a p m - - msg`,
-			wantErr:      false,
-			wantPriority: 0,
+			name:    "missing closing bracket",
+			input:   `<0 2025-04-10T05:01:53.000000-07:00 h a p m - - msg`,
+			wantErr: true,
 		},
 		{
 			name:    "priority above 191",
@@ -208,10 +208,16 @@ func TestParsePriority_OutOfRange(t *testing.T) {
 		{"<200>", true},
 		{"<999>", true},
 		{"<9999>", true},
-		{"<>", false},
-		{"<abc>", false},
+		// audit L10: strict PRIVAL parsing — an empty or non-numeric priority is
+		// now rejected rather than silently decoding to 0 (severity 0 = Emergency,
+		// which the server would classify critical and retain for 30 days).
+		{"<>", true},
+		{"<abc>", true},
+		{"<1a>", true}, // trailing non-digit
+		{"<01>", false},
 		{"no-bracket", true},
 		{"<", true},
+		{"<123", true}, // no closing '>'
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {

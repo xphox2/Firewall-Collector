@@ -233,6 +233,7 @@ type UDPSyslogReceiver struct {
 	limiter    *ratelimit.Limiter
 	onRateDrop func()
 	workers    int
+	connsMu    sync.Mutex // guards conns entries, which readLoop swaps on respawn
 	conns      []*net.UDPConn
 	running    atomic.Bool
 	stopCh     chan struct{}
@@ -285,10 +286,10 @@ func (u *UDPSyslogReceiver) Start(handler func(*relay.SyslogMessage)) error {
 	}
 
 	u.running.Store(true)
-	for _, conn := range u.conns {
-		c := conn
+	for i := range u.conns {
+		idx := i
 		u.wg.Add(1)
-		safego.Go("syslogUdp:read", func() { u.readLoop(c) })
+		safego.Go("syslogUdp:read", func() { u.readLoop(idx) })
 	}
 
 	log.Printf("[Syslog UDP] Listening on %s (%d worker(s))", addr, workers)
@@ -304,7 +305,10 @@ func (u *UDPSyslogReceiver) Stop() error {
 	u.stopOnce.Do(func() {
 		u.running.Store(false)
 		close(u.stopCh)
-		for _, c := range u.conns {
+		u.connsMu.Lock()
+		conns := u.conns
+		u.connsMu.Unlock()
+		for _, c := range conns {
 			if c != nil {
 				if err := c.Close(); err != nil {
 					closeErr = err
@@ -317,9 +321,68 @@ func (u *UDPSyslogReceiver) Stop() error {
 	return closeErr
 }
 
-func (u *UDPSyslogReceiver) readLoop(conn *net.UDPConn) {
-	defer u.wg.Done()
+// syslog UDP socket respawn backoff bounds, mirroring the sFlow receiver so both
+// UDP paths handle a persistent (non-timeout) read error the same way: close the
+// dead socket (kernel rebalances the SO_REUSEPORT group to the live workers) and
+// reopen a fresh listener after a growing backoff, rather than either blackholing
+// the fd or spinning a tight hot-loop re-reading the errored socket (audit L11).
+const (
+	syslogRespawnBackoff = 200 * time.Millisecond
+	syslogRespawnMax     = 30 * time.Second
+)
 
+// readLoop supervises worker idx's socket: serve datagrams until a persistent
+// read error, then close + respawn after a backoff.
+func (u *UDPSyslogReceiver) readLoop(idx int) {
+	defer u.wg.Done()
+	addr := fmt.Sprintf("%s:%d", u.ListenAddr, u.Port)
+	backoff := syslogRespawnBackoff
+	for u.running.Load() {
+		u.connsMu.Lock()
+		conn := u.conns[idx]
+		u.connsMu.Unlock()
+
+		if conn != nil {
+			err := u.serveConn(conn)
+			if !u.running.Load() {
+				return // clean stop
+			}
+			log.Printf("[Syslog UDP] worker %d read error: %v; respawning socket", idx, err)
+			_ = conn.Close()
+			u.connsMu.Lock()
+			u.conns[idx] = nil
+			u.connsMu.Unlock()
+		}
+
+		select {
+		case <-time.After(backoff):
+		case <-u.stopCh:
+			return
+		}
+		newConn, err := reuseport.Listen("udp", addr)
+		if err != nil {
+			log.Printf("[Syslog UDP] worker %d respawn listen failed: %v", idx, err)
+			backoff = minDuration(backoff*2, syslogRespawnMax)
+			continue
+		}
+		_ = newConn.SetReadBuffer(ratelimit.UDPReadBufferBytes)
+		u.connsMu.Lock()
+		u.conns[idx] = newConn
+		u.connsMu.Unlock()
+		backoff = syslogRespawnBackoff
+	}
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// serveConn reads and dispatches datagrams on conn until running flips false or
+// a non-timeout read error occurs (returned so readLoop can respawn the socket).
+func (u *UDPSyslogReceiver) serveConn(conn *net.UDPConn) error {
 	buf := make([]byte, MaxMessageSize)
 	for u.running.Load() {
 		conn.SetReadDeadline(time.Now().Add(1 * time.Second))
@@ -328,10 +391,7 @@ func (u *UDPSyslogReceiver) readLoop(conn *net.UDPConn) {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				continue
 			}
-			if u.running.Load() {
-				log.Printf("[Syslog UDP] Read error: %v", err)
-			}
-			continue
+			return err
 		}
 
 		// Per-source rate limit: shed datagrams from a flooding source before
@@ -359,6 +419,7 @@ func (u *UDPSyslogReceiver) readLoop(conn *net.UDPConn) {
 			u.handler(msg)
 		}
 	}
+	return nil
 }
 
 // --- RFC 5424 Parser ---
@@ -433,15 +494,30 @@ type priorityResult struct {
 }
 
 func parsePriority(b []byte) (priorityResult, error) {
-	if len(b) < 2 || b[0] != '<' {
+	// RFC 5424 PRIVAL: "<" DIGIT{1,3} ">", i.e. 1–3 decimal digits encoding
+	// 0..191. Parse strictly (audit L10): the old code found the '>' loosely and
+	// ran the digits through bytesToInt, which silently dropped non-digit bytes
+	// (so `<abc>` decoded to 0 → severity 0 = Emergency, retained as critical for
+	// 30 days) and could overflow int on a long digit run into a NEGATIVE value
+	// that slipped past the `>191` upper-bound check into a negative severity.
+	if len(b) < 3 || b[0] != '<' {
 		return priorityResult{}, fmt.Errorf("invalid priority format")
 	}
-	// Find closing >
 	end := bytes.IndexByte(b, '>')
-	if end < 0 {
-		end = len(b)
+	if end < 2 { // must have a closing '>' with at least one digit before it
+		return priorityResult{}, fmt.Errorf("invalid priority: no closing '>'")
 	}
-	val := bytesToInt(b[1:end])
+	digits := b[1:end]
+	if len(digits) > 3 {
+		return priorityResult{}, fmt.Errorf("invalid priority: want 1-3 digits, got %d", len(digits))
+	}
+	val := 0
+	for _, c := range digits {
+		if c < '0' || c > '9' {
+			return priorityResult{}, fmt.Errorf("invalid priority: non-digit byte in PRIVAL")
+		}
+		val = val*10 + int(c-'0') // ≤3 digits ⇒ ≤999, no overflow
+	}
 	if val > 191 {
 		return priorityResult{}, fmt.Errorf("priority value out of range: %d", val)
 	}

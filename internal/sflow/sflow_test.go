@@ -1423,3 +1423,43 @@ func containsField(jsonBytes []byte, fieldName string) bool {
 	needle := `"` + fieldName + `":`
 	return strings.Contains(string(jsonBytes), needle)
 }
+
+// TestParseSFlowDatagram_LyingRecLenNoBleed_L9 pins the 2026-07-01 audit L9 fix:
+// a record whose declared length is shorter than the fields it "contains" must
+// be parsed only within its own [off:recEnd] slice, so the parser cannot read
+// past recEnd and fold an adjacent record's bytes into the 64-bit octet
+// counters (the fake multi-exabyte spike). Here the if_counters payload
+// physically carries a poison OutOctets (all-ones) at offset 56, but recLen is
+// truncated to 56 so OutOctets falls outside the record — the fix must refuse
+// to emit rather than reading the poison bytes that are still present in the
+// datagram.
+func TestParseSFlowDatagram_LyingRecLenNoBleed_L9(t *testing.T) {
+	// Full 88-byte if_counters payload with a poison OutOctets = 0xFFFF…FFFF.
+	rec := buildIfCountersRecord(5, 1_000_000_000, 123, 0xFFFFFFFFFFFFFFFF, 0, 0, 0, 0)
+	// rec = [enterprise/format(4)][recLen(4)][payload(88)]. OutOctets sits at
+	// payload offset 56, i.e. it needs bytes [56:64]. Lie that the record is only
+	// 56 bytes long so [56:64] is past recEnd — the poison bytes remain physically
+	// present in the datagram, which is exactly the pre-fix bleed vector.
+	binary.BigEndian.PutUint32(rec[4:8], 56)
+
+	cs := buildCountersSample(99, (0<<24)|5, rec)
+	dg := buildCountersDatagram([4]byte{192, 168, 1, 10}, 7, cs)
+
+	r, _ := newTestReceiver()
+	var mu sync.Mutex
+	var got []*relay.InterfaceCounterSample
+	r.SetCounterHandler(func(c *relay.InterfaceCounterSample) {
+		mu.Lock()
+		got = append(got, c)
+		mu.Unlock()
+	})
+	r.parseSFlowDatagram(dg)
+
+	// Post-fix: OutOctets read falls outside the record slice, so parseIfCounters
+	// returns without emitting. The poison value must never surface.
+	for _, c := range got {
+		if c.OutOctets == 0xFFFFFFFFFFFFFFFF {
+			t.Fatalf("poison OutOctets bled through record boundary: %d", c.OutOctets)
+		}
+	}
+}
