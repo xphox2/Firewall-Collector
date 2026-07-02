@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.162 - 2026-07-02
+
+### Security
+Fixes for the confirmed collector-side findings of the 2026-07-02 engineering security audit (adversarially verified). See `docs/audit-2026-07-02-consolidated.md` in the server repo.
+
+- **HIGH — spoofed syslog config-change packets could trigger an SSH/TFTP config-fetch storm.** Syslog is unauthenticated UDP; a spoofed packet carrying a config-change logid and a monitored firewall's source IP was treated as a real commit, and because the debounce key included the attacker-controlled `cfgtid`, varying it defeated the 60s debounce and inserted an unbounded number of live timers — each firing a real SSH session + full-config TFTP fetch against the production firewall. The trigger now (1) resolves the device strictly from the packet's actual source IP, never a body-supplied DeviceID; (2) caps the pending-timer map at `4 × fleet size`; and (3) throttles actual fetches to one per device per 2 minutes regardless of `cfgtid`, so a forged-cfgtid flood cannot fan out.
+- **MEDIUM — sFlow samples were attributed by the spoofable agent_address in the datagram body.** The sFlow receiver never compared the datagram's `agent_address` to the packet's real UDP source, so any host on the segment could forge flow/counter samples for a monitored firewall and poison its analytics/threat pipeline. Added a source-IP allowlist to the sFlow receiver (`SetAllowedSourceIPs`) wired from the assigned-device fleet and refreshed on every device-list change — the sFlow analogue of the existing TFTP allowlist — defaulting to deny-all until devices are known. Regression test `TestSFlowSourceAllowlist`.
+- **MEDIUM — permanently-rejected batches were re-queued forever.** `sendBatchesSequential` and the config-revision send path re-queued a batch on *any* failure, so a payload the server permanently rejected (400/422/other non-retryable 4xx) was re-POSTed every sync cycle forever, wasting bandwidth and eventually evicting good telemetry at the byte cap. `sendBatch` and `sendOneRevisionWithRetry` now report permanent-vs-transient; permanent rejections are dropped (and logged), only transient failures (5xx/429/network/re-registration) are re-queued — matching the metric-queue path. Regression test `TestSendBatch_PermanentVsTransient`.
+
 ## 1.2.161 - 2026-07-02
 
 ### Docs

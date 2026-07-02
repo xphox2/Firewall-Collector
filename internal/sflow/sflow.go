@@ -25,6 +25,9 @@ type SFlowReceiver struct {
 	counterHandler func(*relay.InterfaceCounterSample)
 	limiter        *ratelimit.Limiter
 	onRateDrop     func()
+	onSrcDrop      func()
+	allowedMu      sync.RWMutex
+	allowedSrcIPs  map[string]bool // nil = allow any (back-compat); non-nil = allowlist
 	workers        int
 	connsMu        sync.Mutex // guards conns entries, which readLoop swaps on respawn
 	conns          []*net.UDPConn
@@ -47,6 +50,44 @@ func (r *SFlowReceiver) SetWorkers(n int) {
 func (r *SFlowReceiver) SetRateLimiter(l *ratelimit.Limiter, onDrop func()) {
 	r.limiter = l
 	r.onRateDrop = onDrop
+}
+
+// SetAllowedSourceIPs restricts which UDP source IPs the receiver accepts
+// datagrams from (2026-07-02 audit M2). sFlow attributes samples by the
+// agent_address field parsed from the datagram BODY, which is never checked
+// against the packet's real source — so any host on the segment could forge
+// samples for a monitored firewall and poison its analytics/threat pipeline.
+// Restricting to the assigned-device fleet (and refreshing on device-list
+// changes) is the sFlow analogue of the TFTP source-IP allowlist.
+//
+//	nil -> accept any source (back-compat).
+//	[]  -> non-nil empty; deny every source.
+//	[…] -> accept only listed IPs. Entries normalized via net.ParseIP.String().
+func (r *SFlowReceiver) SetAllowedSourceIPs(ips []string, onDrop func()) {
+	var set map[string]bool
+	if ips != nil {
+		set = make(map[string]bool, len(ips))
+		for _, ip := range ips {
+			if parsed := net.ParseIP(ip); parsed != nil {
+				set[parsed.String()] = true
+			}
+		}
+	}
+	r.allowedMu.Lock()
+	r.allowedSrcIPs = set
+	r.onSrcDrop = onDrop
+	r.allowedMu.Unlock()
+}
+
+// isSourceAllowed reports whether a datagram from ip should be processed. With
+// no policy set (nil), every source is allowed.
+func (r *SFlowReceiver) isSourceAllowed(ip net.IP) bool {
+	r.allowedMu.RLock()
+	defer r.allowedMu.RUnlock()
+	if r.allowedSrcIPs == nil {
+		return true
+	}
+	return ip != nil && r.allowedSrcIPs[ip.String()]
 }
 
 func NewSFlowReceiver(listenAddr string, port int) *SFlowReceiver {
@@ -204,6 +245,19 @@ func (r *SFlowReceiver) serveConn(conn *net.UDPConn) error {
 				continue
 			}
 			return err
+		}
+
+		// Source-IP allowlist: drop datagrams from any host not in the assigned
+		// device fleet before parsing, so a spoofed agent_address can't forge
+		// samples for a monitored device (audit M2). nil policy = allow any.
+		if remoteAddr != nil && !r.isSourceAllowed(remoteAddr.IP) {
+			r.allowedMu.RLock()
+			onDrop := r.onSrcDrop
+			r.allowedMu.RUnlock()
+			if onDrop != nil {
+				onDrop()
+			}
+			continue
 		}
 
 		// Per-source rate limit: shed datagrams from a flooding source before

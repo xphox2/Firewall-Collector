@@ -1514,12 +1514,21 @@ func sendBatchesSequential[T any](c *Client, url, name string, items []*T, reque
 		if i > 0 {
 			time.Sleep(200 * time.Millisecond)
 		}
-		if !c.sendBatch(url, name, chunk) {
-			requeue(chunk)
-			log.Printf("[Relay] Failed to send %s batch chunk %d/%d", name, i+1, totalChunks)
-			return
+		delivered, permanent := c.sendBatch(url, name, chunk)
+		if delivered {
+			log.Printf("[Relay] Sent %s batch chunk %d/%d (%d items)", name, i+1, totalChunks, len(chunk))
+			continue
 		}
-		log.Printf("[Relay] Sent %s batch chunk %d/%d (%d items)", name, i+1, totalChunks, len(chunk))
+		if permanent {
+			// Drop the poison chunk (a requeue would retry it forever and evict
+			// good data at the byte cap) and keep going — later chunks may deliver.
+			log.Printf("[Relay] Dropping %s batch chunk %d/%d (%d items): permanent server rejection", name, i+1, totalChunks, len(chunk))
+			continue
+		}
+		// Transient failure: requeue this chunk and leave the rest for next sync.
+		requeue(chunk)
+		log.Printf("[Relay] Failed to send %s batch chunk %d/%d (transient); requeued", name, i+1, totalChunks)
+		return
 	}
 }
 
@@ -1636,11 +1645,21 @@ func isRetryableStatus(statusCode int) bool {
 	}
 }
 
-func (c *Client) sendBatch(url, name string, data interface{}) bool {
+// sendBatch delivers one batch and reports (delivered, permanent):
+//   - delivered=true            -> consumed by the server (or safely dropped);
+//     the caller must NOT requeue.
+//   - delivered=false, permanent=true  -> a permanent rejection (400/422/other
+//     non-retryable 4xx, or unmarshalable payload); the caller must DROP it, not
+//     requeue — otherwise the poison batch is retried every sync cycle forever
+//     and eventually evicts good telemetry at the byte cap (audit M3).
+//   - delivered=false, permanent=false -> a transient failure (network error,
+//     5xx, 429, or a re-registration in progress); the caller should requeue.
+func (c *Client) sendBatch(url, name string, data interface{}) (delivered bool, permanent bool) {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
-		log.Printf("[Relay] Failed to marshal %s batch: %v", name, err)
-		return false
+		// Re-marshaling identical data will fail again — dropping is correct.
+		log.Printf("[Relay] Failed to marshal %s batch (dropping, permanent): %v", name, err)
+		return false, true
 	}
 
 	// AUDIT-042 + M19: content-derived idempotency key — identical across
@@ -1663,7 +1682,7 @@ func (c *Client) sendBatch(url, name string, data interface{}) bool {
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			log.Printf("[Relay] Sent %s batch to server", name)
-			return true
+			return true, false
 		}
 
 		// A 404 on the schema-v2-only /flow-counters endpoint means the endpoint
@@ -1675,7 +1694,7 @@ func (c *Client) sendBatch(url, name string, data interface{}) bool {
 		if resp.StatusCode == 404 && name == "flow-counters" {
 			log.Printf("[Relay] /flow-counters unsupported by server (404); dropping batch and disabling counter sync until re-negotiation")
 			c.negotiatedSchema.Store(1)
-			return true // treat as consumed so the batch is not requeued
+			return true, false // treat as consumed so the batch is not requeued
 		}
 
 		if resp.StatusCode == 404 || resp.StatusCode == 401 || resp.StatusCode == 403 {
@@ -1684,23 +1703,26 @@ func (c *Client) sendBatch(url, name string, data interface{}) bool {
 			if c.tryReregister() {
 				continue
 			}
-			return false
+			// Re-registration is in progress / pending approval — transient, so
+			// requeue and retry next cycle rather than dropping the data.
+			return false, false
 		}
 
 		if resp.StatusCode == 400 {
-			log.Printf("[Relay] Bad request (400) for %s batch: %s - not retrying", name, string(bodyBytes))
-			return false
+			log.Printf("[Relay] Bad request (400) for %s batch (dropping, permanent): %s", name, string(bodyBytes))
+			return false, true
 		}
 
 		if !isRetryableStatus(resp.StatusCode) {
-			log.Printf("[Relay] Non-retryable status %d for %s batch: %s", resp.StatusCode, name, string(bodyBytes))
-			return false
+			log.Printf("[Relay] Non-retryable status %d for %s batch (dropping, permanent): %s", resp.StatusCode, name, string(bodyBytes))
+			return false, true
 		}
 
 		log.Printf("[Relay] Failed to send %s batch: status %d (attempt %d/3): %s", name, resp.StatusCode, attempt+1, string(bodyBytes))
 		time.Sleep(expBackoff(attempt))
 	}
-	return false
+	// Exhausted retries on a transient condition — requeue for the next cycle.
+	return false, false
 }
 
 // --- Shutdown ---
@@ -1886,8 +1908,14 @@ func (c *Client) sendRevisionBatch(url string, raw [][]byte) {
 			log.Printf("[Relay] Failed to unmarshal config revision (dropping): %v", err)
 			continue
 		}
-		if !c.sendOneRevisionWithRetry(url, rev) {
+		delivered, permanent := c.sendOneRevisionWithRetry(url, rev)
+		if !delivered && !permanent {
+			// Only requeue transient failures. A permanent rejection (400/422/…)
+			// is dropped — requeuing it would retry the same poison payload every
+			// sync cycle forever and evict good revisions at the byte cap (M3).
 			failed = append(failed, data)
+		} else if !delivered {
+			log.Printf("[Relay] Dropping config revision for device %d: permanent server rejection", rev.DeviceID)
 		}
 	}
 	if len(failed) > 0 {
@@ -1923,11 +1951,11 @@ func unmarshalConfigRevision(data []byte) (*ConfigRevision, error) {
 // a permanent client error (don't retry, don't re-queue — the
 // revision is malformed and will fail the same way next time). 5xx
 // and transport errors are transient and worth retrying.
-func (c *Client) sendOneRevisionWithRetry(url string, rev *ConfigRevision) bool {
+func (c *Client) sendOneRevisionWithRetry(url string, rev *ConfigRevision) (delivered bool, permanent bool) {
 	jsonData, err := json.Marshal(rev)
 	if err != nil {
-		log.Printf("[Relay] Failed to marshal config revision: %v", err)
-		return false
+		log.Printf("[Relay] Failed to marshal config revision (dropping, permanent): %v", err)
+		return false, true
 	}
 
 	for attempt := 0; attempt < 3; attempt++ {
@@ -1944,7 +1972,7 @@ func (c *Client) sendOneRevisionWithRetry(url string, rev *ConfigRevision) bool 
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			log.Printf("[Relay] SendConfigRevision success for device %d: %s", rev.DeviceID, string(bodyBytes))
-			return true
+			return true, false
 		}
 
 		if resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 404 {
@@ -1953,12 +1981,18 @@ func (c *Client) sendOneRevisionWithRetry(url string, rev *ConfigRevision) bool 
 			if c.tryReregister() {
 				continue
 			}
-			return false
+			// Re-registration pending — transient, requeue.
+			return false, false
 		}
 
 		if resp.StatusCode == 400 {
-			log.Printf("[Relay] SendConfigRevision 400 (bad request) for device %d, not retrying: %s", rev.DeviceID, string(bodyBytes))
-			return false
+			log.Printf("[Relay] SendConfigRevision 400 (bad request) for device %d (dropping, permanent): %s", rev.DeviceID, string(bodyBytes))
+			return false, true
+		}
+
+		if !isRetryableStatus(resp.StatusCode) {
+			log.Printf("[Relay] SendConfigRevision non-retryable status %d for device %d (dropping, permanent): %s", resp.StatusCode, rev.DeviceID, string(bodyBytes))
+			return false, true
 		}
 
 		// 5xx or other transient server error.
@@ -1967,7 +2001,8 @@ func (c *Client) sendOneRevisionWithRetry(url string, rev *ConfigRevision) bool 
 			time.Sleep(expBackoff(attempt))
 		}
 	}
-	return false
+	// Exhausted retries on a transient condition — requeue.
+	return false, false
 }
 
 func (c *Client) SendProcessSnapshot(snap *ProcessSnapshot) error {

@@ -43,7 +43,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.2.161"
+const version = "1.2.162"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -104,7 +104,15 @@ type Collector struct {
 	// Config-backup debouncer for syslog-triggered backups. Key = "<deviceID>:<cfgtid>".
 	// One CLI commit emits N log lines sharing a cfgtid; we collapse them to one
 	// backup attempt. Per plan: 60s debounce.
+	//
+	// Security (2026-07-02 audit H1): syslog is unauthenticated UDP, so a spoofed
+	// packet can forge a config-change event. cfgtid is attacker-controlled, so
+	// varying it would otherwise defeat the debounce and fan out into unbounded
+	// timers + one SSH/TFTP fetch each against the real firewall. cfgBackupTimers
+	// is capped, and lastBackupAt throttles actual fetches to one per device per
+	// minBackupInterval regardless of cfgtid.
 	cfgBackupTimers map[string]*time.Timer
+	lastBackupAt    map[uint]time.Time
 	cfgBackupMu     sync.Mutex
 	deviceMu        sync.RWMutex
 	ifaceIPMap      map[string]uint // interface IP → device ID cache
@@ -466,6 +474,11 @@ func main() {
 			markListenerBound("sflow", true)
 			c.metrics.SetListenerBound("sflow", true)
 			fmt.Printf("  -> sFlow on %s:%d\n", probeCfg.ListenAddr, probeCfg.SFlowPort)
+			// Apply the fleet source-IP allowlist now (audit M2). The earlier
+			// applyTFTPAllowlist() ran before this receiver existed, so without
+			// this the receiver would accept any source until the first device
+			// refresh. Deny-all until devices are known.
+			c.applyTFTPAllowlist()
 		}
 	}
 
@@ -1013,6 +1026,15 @@ func (c *Collector) applyTFTPAllowlist() {
 	c.tftpServer.SetAllowedSourceIPs(ips)
 	c.tftpServer.SetMinWRQInterval(tftpMinWRQInterval)
 	log.Printf("[TFTP] Source-IP allowlist applied: %d device IP(s), min WRQ interval %v", len(ips), tftpMinWRQInterval)
+
+	// Apply the same fleet source-IP allowlist to the sFlow receiver (audit M2):
+	// sFlow attributes samples by the datagram's agent_address, which is not the
+	// UDP source, so without this a spoofed datagram could forge samples for a
+	// monitored device. Deny-all (non-nil empty) while no device has an IP.
+	if c.sflowReceiver != nil {
+		c.sflowReceiver.SetAllowedSourceIPs(ips, func() { c.metrics.IncRateLimitedDrop("sflow_srcip") })
+		log.Printf("[sFlow] Source-IP allowlist applied: %d device IP(s)", len(ips))
+	}
 }
 
 // deviceSourceIPs returns the non-empty management IPs of the given devices —
@@ -1601,10 +1623,14 @@ func (c *Collector) handleSyslogMessage(msg *relay.SyslogMessage, probeID uint) 
 		return
 	}
 
-	deviceID := msg.DeviceID
-	if deviceID == 0 && msg.SourceIP != "" {
-		deviceID = c.resolveDeviceByIP(msg.SourceIP)
+	// SECURITY (audit H1): the config-backup trigger drives an outbound SSH/TFTP
+	// fetch against the real firewall, so it must key off the packet's actual
+	// source IP — never a body-supplied DeviceID, which an attacker sending
+	// crafted syslog could set to any device. Resolve strictly by SourceIP.
+	if msg.SourceIP == "" {
+		return
 	}
+	deviceID := c.resolveDeviceByIP(msg.SourceIP)
 	if deviceID == 0 {
 		log.Printf("[Syslog→Backup] config-change event from %s but no matching device (logid=%s cfgtid=%s cfgpath=%s)",
 			msg.SourceIP, ev.Logid, ev.Cfgtid, ev.Cfgpath)
@@ -1625,11 +1651,35 @@ func (c *Collector) handleSyslogMessage(msg *relay.SyslogMessage, probeID uint) 
 // per-attribute log lines (typically all within ~1s) collapses to one backup.
 const configBackupDebounce = 60 * time.Second
 
+// minBackupInterval throttles actual syslog-triggered config fetches to at most
+// one per device per window, regardless of how many distinct (attacker-varied)
+// cfgtids arrive. A legitimate operator committing repeatedly still gets the
+// next backup after the window; a flood of forged cfgtids cannot fan out.
+const minBackupInterval = 2 * time.Minute
+
+// maxPendingConfigBackupsPerDevice bounds the live-timer map so a spoofed
+// cfgtid flood can't grow it without limit. The cap scales with the fleet size.
+const maxPendingConfigBackupsPerDevice = 4
+
 // scheduleConfigBackup runs `fetchConfigViaTFTP` on the given device after the
 // configBackupDebounce window, keyed on (deviceID, cfgtid). Production entry
 // point — wraps scheduleConfigBackupWith to inject the actual TFTP fetch.
 func (c *Collector) scheduleConfigBackup(dev relay.DeviceInfo, ev *syslog.FortiEvent) {
 	c.scheduleConfigBackupWith(dev, ev, configBackupDebounce, func() {
+		// Per-device throttle: collapse cfgtid variance into one fetch per window.
+		c.cfgBackupMu.Lock()
+		if c.lastBackupAt == nil {
+			c.lastBackupAt = map[uint]time.Time{}
+		}
+		if last, ok := c.lastBackupAt[dev.ID]; ok && time.Since(last) < minBackupInterval {
+			c.cfgBackupMu.Unlock()
+			log.Printf("[Syslog→Backup] throttled backup for %s (last fetch %v ago < %v)",
+				dev.Name, time.Since(last).Round(time.Second), minBackupInterval)
+			return
+		}
+		c.lastBackupAt[dev.ID] = time.Now()
+		c.cfgBackupMu.Unlock()
+
 		log.Printf("[Syslog→Backup] firing TFTP backup for %s (logid=%s cfgtid=%s cfgpath=%s)",
 			dev.Name, ev.Logid, ev.Cfgtid, ev.Cfgpath)
 		c.fetchConfigViaTFTP(dev, "", "syslog")
@@ -1652,8 +1702,25 @@ func (c *Collector) scheduleConfigBackupWith(dev relay.DeviceInfo, ev *syslog.Fo
 	if c.cfgBackupTimers == nil {
 		c.cfgBackupTimers = map[string]*time.Timer{}
 	}
-	if existing, ok := c.cfgBackupTimers[key]; ok {
+	existing, replacing := c.cfgBackupTimers[key]
+	if replacing {
 		existing.Stop()
+	} else {
+		// Bound the live-timer map so a spoofed-cfgtid flood can't grow it
+		// without limit. Cap scales with the fleet; a legitimate device rarely
+		// has more than one pending backup.
+		c.deviceMu.RLock()
+		limit := maxPendingConfigBackupsPerDevice * len(c.devices)
+		c.deviceMu.RUnlock()
+		if limit < maxPendingConfigBackupsPerDevice {
+			limit = maxPendingConfigBackupsPerDevice
+		}
+		if len(c.cfgBackupTimers) >= limit {
+			c.cfgBackupMu.Unlock()
+			log.Printf("[Syslog→Backup] dropping backup for %s: pending-timer cap %d reached (possible spoofed-cfgtid flood)",
+				dev.Name, limit)
+			return
+		}
 	}
 	c.cfgBackupTimers[key] = safego.AfterFunc(debounce, "cfgBackup:debounce:"+key, func() {
 		c.cfgBackupMu.Lock()

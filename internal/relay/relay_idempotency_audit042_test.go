@@ -51,7 +51,7 @@ func TestSendBatch_StableBatchIDAcrossRetries_AUDIT042(t *testing.T) {
 	defer srv.Close()
 
 	c := &Client{Config: Config{RegistrationKey: "test"}, httpClient: srv.Client()}
-	if ok := c.sendBatch(srv.URL, "syslog", []map[string]string{{"m": "x"}}); !ok {
+	if ok, _ := c.sendBatch(srv.URL, "syslog", []map[string]string{{"m": "x"}}); !ok {
 		t.Fatal("sendBatch returned false (expected success on retry)")
 	}
 

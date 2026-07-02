@@ -31,7 +31,7 @@ func TestSendBatch_FlowCounters404DropsNotDeapprove_L13(t *testing.T) {
 	c.approved.Store(true)
 	c.negotiatedSchema.Store(2)
 
-	ok := c.sendBatch(srv.URL+"/flow-counters", "flow-counters", []map[string]any{{"if_index": 1}})
+	ok, _ := c.sendBatch(srv.URL+"/flow-counters", "flow-counters", []map[string]any{{"if_index": 1}})
 
 	if !ok {
 		t.Error("sendBatch returned false — the batch would be requeued and 404 forever; want true (dropped)")
@@ -68,7 +68,7 @@ func TestSendBatch_CoreEndpoint404StillReregisters_L13(t *testing.T) {
 
 	// tryReregister will hit the same 404 server and fail, so sendBatch returns
 	// false — but the point is it took the deapprove path, not the drop path.
-	_ = c.sendBatch(srv.URL+"/flows", "flows", []map[string]any{{"src": "1.1.1.1"}})
+	_, _ = c.sendBatch(srv.URL+"/flows", "flows", []map[string]any{{"src": "1.1.1.1"}})
 
 	if c.approved.Load() {
 		t.Error("a /flows 404 must still deapprove the probe (real probe-deleted signal)")
