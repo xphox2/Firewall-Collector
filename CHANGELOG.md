@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.161 - 2026-07-02
+
+### Docs
+- **Brought this repo's copy of `docs/audit-2026-07-01-consolidated.md` fully in sync with the authoritative (server-repo) copy.** Both repos carry the same consolidated cross-repo report; the collector copy had only accumulated the resolved-markers for collector-side findings. It now carries the resolved markers for all 64 findings (10 HIGH + 30 MEDIUM + 24 LOW), matching the server copy exactly. No code change.
+
 ## 1.2.160 - 2026-07-02
 
 ### Fixed
