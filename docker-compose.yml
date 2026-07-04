@@ -15,13 +15,15 @@ services:
     # the host — but it CAN bind to any local port. If you don't need raw
     # host networking (e.g. the probe is on a dedicated VLAN and you only
     # use the default listeners), you can switch to bridged mode and map
-    # the four UDP/TCP ports explicitly:
+    # the listener ports explicitly:
     #   network_mode: <unset, default bridge>
     #   ports:
     #     - "162:162/udp"   # SNMP traps
     #     - "514:514/tcp"   # syslog (TCP)
     #     - "514:514/udp"   # syslog (UDP)
     #     - "6343:6343/udp" # sFlow
+    #     - "2055:2055/udp" # NetFlow
+    #     - "4739:4739/udp" # IPFIX
     #     - "69:69/udp"     # TFTP config backup
     # When bridged, ICMP via the fork-exec `ping` still works (NET_RAW cap
     # covers it) but you lose the host-IP source address for outbound
@@ -63,6 +65,8 @@ services:
       PROBE_SNMP_TRAP_PORT: "162"
       PROBE_SYSLOG_PORT: "514"
       PROBE_SFLOW_PORT: "6343"
+      PROBE_NETFLOW_PORT: "2055"  # NetFlow v5/v9 (0 disables); version dispatch is content-based
+      PROBE_IPFIX_PORT: "4739"    # IPFIX (0 disables)
       PROBE_SNMP_TRAP_COMMUNITY: ""   # OPTIONAL allowlist filter; empty = accept traps from any community (per-device communities live on the server)
 
       # Disk-spillover queue (AUDIT-058): buffers telemetry to /queue when the
@@ -75,7 +79,13 @@ services:
       PROBE_SNMP_TRAP_ENABLED: "true"
       PROBE_SYSLOG_ENABLED: "true"
       PROBE_SFLOW_ENABLED: "true"
+      PROBE_NETFLOW_ENABLED: "true"
       PROBE_PING_ENABLED: "true"
+
+      # Dual-export dedup: when a device sends BOTH sFlow and NetFlow, drop
+      # the non-preferred family's flow samples (prefer-netflow | prefer-sflow
+      # | off) so server aggregates aren't double-counted.
+      PROBE_FLOW_DEDUP: "prefer-netflow"
 
     volumes:
       # AUDIT-058 disk-spillover: durable telemetry buffer across container

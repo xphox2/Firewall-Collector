@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"firewall-collector/internal/config"
+	"firewall-collector/internal/flowdedup"
+	"firewall-collector/internal/netflow"
 	"firewall-collector/internal/observability"
 	"firewall-collector/internal/ping"
 	"firewall-collector/internal/ratelimit"
@@ -43,7 +45,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.2.163"
+const version = "1.3.0"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -82,12 +84,19 @@ type metricSink interface {
 type snmpDialer func(host string, port int, community, version string, v3 *snmp.SNMPv3Config) (deviceSNMP, error)
 
 type Collector struct {
-	cfg            *config.ProbeConfig
-	relayClient    *relay.Client
-	trapReceiver   *snmp.TrapReceiver
-	syslogTCP      *syslog.SyslogReceiver
-	syslogUDP      *syslog.UDPSyslogReceiver
-	sflowReceiver  *sflow.SFlowReceiver
+	cfg           *config.ProbeConfig
+	relayClient   *relay.Client
+	trapReceiver  *snmp.TrapReceiver
+	syslogTCP     *syslog.SyslogReceiver
+	syslogUDP     *syslog.UDPSyslogReceiver
+	sflowReceiver *sflow.SFlowReceiver
+	// netflowReceiver serves NetFlow v5/v9 + IPFIX on up to two UDP ports
+	// (content-based version dispatch, shared template/sampler caches).
+	netflowReceiver *netflow.NetFlowReceiver
+	// flowDedup is the dual-export tracker (PROBE_FLOW_DEDUP): when a device
+	// sends BOTH sFlow and NetFlow for the same interfaces, one family's FLOW
+	// samples are suppressed so server-side aggregates aren't double-counted.
+	flowDedup      *flowdedup.Tracker
 	pingCollector  *ping.PingCollector
 	tftpServer     *tftp.Server
 	tftpListenIP   string
@@ -177,6 +186,7 @@ func main() {
 	fmt.Printf("  SNMP Trap:       %v (port %d)\n", probeCfg.SNMPTrapEnabled, probeCfg.SNMPTrapPort)
 	fmt.Printf("  Syslog:          %v (port %d)\n", probeCfg.SyslogEnabled, probeCfg.SyslogPort)
 	fmt.Printf("  sFlow:           %v (port %d)\n", probeCfg.SFlowEnabled, probeCfg.SFlowPort)
+	fmt.Printf("  NetFlow/IPFIX:   %v (ports %d/%d, dedup %s)\n", probeCfg.NetFlowEnabled, probeCfg.NetFlowPort, probeCfg.IPFIXPort, probeCfg.FlowDedupPolicy)
 	fmt.Printf("  Ping:            %v (interval %v)\n", probeCfg.PingEnabled, probeCfg.PingInterval)
 	fmt.Println("========================================")
 	fmt.Println()
@@ -217,7 +227,7 @@ func main() {
 		EnabledListenersFn: func() []string {
 			// Order is significant only for /readyz's "X-Ready-Reason"
 			// header value; the actual check iterates the whole slice.
-			names := make([]string, 0, 5)
+			names := make([]string, 0, 6)
 			if probeCfg.SNMPTrapEnabled {
 				names = append(names, "snmp_trap")
 			}
@@ -226,6 +236,12 @@ func main() {
 			}
 			if probeCfg.SFlowEnabled {
 				names = append(names, "sflow")
+			}
+			// NetFlow counts as enabled only with at least one non-zero port —
+			// enabled-with-both-ports-0 is warned at startup and never binds,
+			// and it must not hold /readyz at 503 forever.
+			if probeCfg.NetFlowEnabled && (probeCfg.NetFlowPort != 0 || probeCfg.IPFIXPort != 0) {
+				names = append(names, "netflow")
 			}
 			if probeCfg.TFTPConfigEnabled {
 				names = append(names, "tftp")
@@ -303,6 +319,23 @@ func main() {
 	if c.metrics != nil {
 		c.relayClient.SetMetricSendFailedHook(c.metrics.IncMetricSendFailed)
 	}
+	// Dual-export dedup (Tranche 3): one tracker shared by the sFlow and
+	// NetFlow flow-sample callbacks below. The onChange hook fires once per
+	// suppression-state CHANGE per (exporter, family) — the per-sample
+	// suppressed counter is bumped at the drop sites, not here.
+	c.flowDedup = flowdedup.NewTracker(probeCfg.FlowDedupPolicy, func(exporter, family string, active bool) {
+		other := "netflow"
+		if family == "netflow" {
+			other = "sflow"
+		}
+		if active {
+			log.Printf("[FlowDedup] exporter %s: %s active, suppressing %s flow samples (policy %s)",
+				exporter, other, family, c.flowDedup.Policy())
+		} else {
+			log.Printf("[FlowDedup] exporter %s: %s quiet, %s flow samples resumed (policy %s)",
+				exporter, other, family, c.flowDedup.Policy())
+		}
+	})
 
 	// Start TFTP server for config fetch if enabled
 	if probeCfg.TFTPConfigEnabled {
@@ -391,8 +424,9 @@ func main() {
 		})
 	}
 	if probeCfg.RateLimitEnabled {
-		log.Printf("UDP rate limiting enabled (per-source/global pps): sflow %d/%d, syslog %d/%d, trap %d/%d; max %d sources/listener",
+		log.Printf("UDP rate limiting enabled (per-source/global pps): sflow %d/%d, netflow %d/%d, syslog %d/%d, trap %d/%d; max %d sources/listener",
 			probeCfg.SFlowRateLimitPPS, probeCfg.SFlowRateLimitGlobalPPS,
+			probeCfg.NetFlowRateLimitPPS, probeCfg.NetFlowRateLimitGlobalPPS,
 			probeCfg.SyslogRateLimitPPS, probeCfg.SyslogRateLimitGlobalPPS,
 			probeCfg.TrapRateLimitPPS, probeCfg.TrapRateLimitGlobalPPS,
 			probeCfg.RateLimitMaxSources)
@@ -453,7 +487,11 @@ func main() {
 		sflowReceiver.SetWorkers(probeCfg.UDPWorkers)
 		// Counter samples (schema v2): resolve device the same way as flows; the
 		// relay client drops these when the server negotiated v1, so it's safe to
-		// always register the handler.
+		// always register the handler. The dedup tracker is deliberately NOT
+		// consulted here: counter samples are interface counters (the
+		// SNMP-fallback bandwidth source), not flow records — NetFlow carries
+		// nothing equivalent, so there is no double-count to prevent and
+		// suppressing them would silently drop bandwidth telemetry.
 		sflowReceiver.SetCounterHandler(func(cs *relay.InterfaceCounterSample) {
 			cs.ProbeID = probeID
 			if cs.DeviceID == 0 {
@@ -462,6 +500,12 @@ func main() {
 			relayClient.SendInterfaceCounterSample(cs)
 		})
 		if err := sflowReceiver.Start(func(sample *relay.FlowSample) {
+			// Dual-export dedup: drop this FLOW sample if NetFlow/IPFIX is
+			// actively exporting from the same device and the policy prefers it.
+			if c.flowDedup.SuppressSFlowFlow(sample.SamplerAddress, time.Now()) {
+				c.metrics.IncFlowDedupSuppressed("sflow")
+				return
+			}
 			sample.ProbeID = probeID
 			if sample.DeviceID == 0 {
 				sample.DeviceID = c.resolveDeviceByIP(sample.SamplerAddress)
@@ -479,6 +523,51 @@ func main() {
 			// this the receiver would accept any source until the first device
 			// refresh. Deny-all until devices are known.
 			c.applyTFTPAllowlist()
+		}
+	}
+
+	if probeCfg.NetFlowEnabled {
+		if probeCfg.NetFlowPort == 0 && probeCfg.IPFIXPort == 0 {
+			log.Printf("  -> NetFlow enabled but PROBE_NETFLOW_PORT and PROBE_IPFIX_PORT are both 0 — nothing to bind, skipping")
+		} else {
+			netflowReceiver := netflow.New(probeCfg.ListenAddr, probeCfg.NetFlowPort, probeCfg.IPFIXPort)
+			netflowReceiver.SetWorkers(probeCfg.UDPWorkers)
+			netflowReceiver.SetRateLimiter(newLimiter(probeCfg.NetFlowRateLimitPPS, probeCfg.NetFlowRateLimitGlobalPPS), func() { c.metrics.IncRateLimitedDrop("netflow") })
+			netflowReceiver.SetParseEventCallback(func(event string) { c.metrics.IncNetFlowEvent(event) })
+			// Template/sampler cache persistence rides in the disk-spillover
+			// directory: without it a restart blinds v9/IPFIX decoding for up
+			// to one template-refresh cycle (30 min) per exporter. No disk
+			// path = no persistence (in-memory-only deployments re-learn from
+			// the wire, same as a first start).
+			if probeCfg.QueueDiskPath != "" {
+				netflowReceiver.SetTemplatePersistPath(probeCfg.QueueDiskPath + "/netflow-templates.json")
+			}
+			if err := netflowReceiver.Start(func(sample *relay.FlowSample) {
+				// Dual-export dedup, mirror of the sFlow gate above (only
+				// suppresses under prefer-sflow; it also records NetFlow
+				// activity so the sFlow gate knows this exporter is live).
+				if c.flowDedup.SuppressNetFlow(sample.SamplerAddress, time.Now()) {
+					c.metrics.IncFlowDedupSuppressed("netflow")
+					return
+				}
+				sample.ProbeID = probeID
+				if sample.DeviceID == 0 {
+					sample.DeviceID = c.resolveDeviceByIP(sample.SamplerAddress)
+				}
+				relayClient.SendFlowSample(sample)
+			}); err != nil {
+				log.Printf("  -> NetFlow failed to start: %v", err)
+			} else {
+				c.netflowReceiver = netflowReceiver
+				markListenerBound("netflow", true)
+				c.metrics.SetListenerBound("netflow", true)
+				fmt.Printf("  -> NetFlow/IPFIX on %s (NetFlow port %d, IPFIX port %d; 0 = disabled)\n",
+					probeCfg.ListenAddr, probeCfg.NetFlowPort, probeCfg.IPFIXPort)
+				// Apply the fleet source-IP allowlist now — same reason as the
+				// sFlow block above: the earlier applyTFTPAllowlist() ran
+				// before this receiver existed. Deny-all until devices are known.
+				c.applyTFTPAllowlist()
+			}
 		}
 	}
 
@@ -1034,6 +1123,17 @@ func (c *Collector) applyTFTPAllowlist() {
 	if c.sflowReceiver != nil {
 		c.sflowReceiver.SetAllowedSourceIPs(ips, func() { c.metrics.IncRateLimitedDrop("sflow_srcip") })
 		log.Printf("[sFlow] Source-IP allowlist applied: %d device IP(s)", len(ips))
+	}
+
+	// Same policy for the NetFlow/IPFIX receiver: v5/v9/IPFIX attribute flows
+	// to the UDP source address, so any host that can reach the port could
+	// forge flow records for a monitored firewall unless the fleet list is
+	// enforced. (The function keeps its historical name — it is the single
+	// "push the fleet allowlist to every receiver" hook, called at startup and
+	// on every device-list refresh.)
+	if c.netflowReceiver != nil {
+		c.netflowReceiver.SetAllowedSourceIPs(ips, func() { c.metrics.IncRateLimitedDrop("netflow_srcip") })
+		log.Printf("[NetFlow] Source-IP allowlist applied: %d device IP(s)", len(ips))
 	}
 }
 
@@ -1816,6 +1916,15 @@ func (c *Collector) stop() {
 			c.sflowReceiver.Stop()
 			markListenerBound("sflow", false)
 			c.metrics.SetListenerBound("sflow", false)
+		}
+		if c.netflowReceiver != nil {
+			// Stop also persists the template/sampler caches (when a persist
+			// path is set) so the next start decodes v9/IPFIX immediately.
+			if err := c.netflowReceiver.Stop(); err != nil {
+				log.Printf("[Collector] NetFlow shutdown error: %v", err)
+			}
+			markListenerBound("netflow", false)
+			c.metrics.SetListenerBound("netflow", false)
 		}
 		if c.pingCollector != nil {
 			c.pingCollector.Stop()

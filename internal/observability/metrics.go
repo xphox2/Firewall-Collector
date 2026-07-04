@@ -71,7 +71,8 @@ type Config struct {
 	LastHeartbeatFn func() time.Time
 
 	// ListenerBoundFn returns whether a given named listener is bound.
-	// Names are "snmp_trap", "syslog_tcp", "syslog_udp", "sflow", "tftp".
+	// Names are "snmp_trap", "syslog_tcp", "syslog_udp", "sflow",
+	// "netflow", "tftp".
 	// /readyz fails when a listener is enabled in config but not bound.
 	// Required.
 	ListenerBoundFn func(name string) bool
@@ -105,6 +106,9 @@ type Metrics struct {
 	queueDropped *prometheus.CounterVec
 
 	rateLimitedDrops *prometheus.CounterVec
+
+	netflowEvents       *prometheus.CounterVec
+	flowDedupSuppressed *prometheus.CounterVec
 
 	metricSendFailed *prometheus.CounterVec
 
@@ -212,6 +216,25 @@ func New(cfg Config) *Metrics {
 		Help: "Datagrams dropped by the per-source-IP rate limiter, by listener.",
 	}, []string{"listener"})
 
+	// Labeled by parse-event class (malformed|unknown_version|
+	// data_before_template|template_quarantined|seq_gap|…) — a small fixed set
+	// emitted by internal/netflow, NOT per-exporter (same cardinality rule as
+	// rateLimitedDrops above). seq_gap growth means export datagrams are being
+	// lost between an exporter and the collector; data_before_template is
+	// normal for a short window after a restart or exporter reboot.
+	m.netflowEvents = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "firewall_collector_netflow_events_total",
+		Help: "NetFlow/IPFIX parse events by class (malformed, data_before_template, template_quarantined, seq_gap, ...).",
+	}, []string{"event"})
+
+	// Labeled by suppressed family (sflow|netflow). Counts flow samples
+	// dropped by the dual-export dedup policy (PROBE_FLOW_DEDUP) because the
+	// preferred source is actively exporting from the same device.
+	m.flowDedupSuppressed = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "firewall_collector_flowdedup_suppressed_total",
+		Help: "Flow samples suppressed by the dual-export dedup policy, by family (sflow|netflow).",
+	}, []string{"family"})
+
 	m.pollDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name: "firewall_collector_poll_duration_seconds",
 		Help: "Histogram of SNMP poll cycle durations per device.",
@@ -259,6 +282,8 @@ func New(cfg Config) *Metrics {
 		m.queueDepth,
 		m.queueDropped,
 		m.rateLimitedDrops,
+		m.netflowEvents,
+		m.flowDedupSuppressed,
 		m.pollDuration,
 		m.pollFailures,
 		m.lastPollPublished,
@@ -328,6 +353,27 @@ func (m *Metrics) IncRateLimitedDrop(listener string) {
 		return
 	}
 	m.rateLimitedDrops.WithLabelValues(listener).Inc()
+}
+
+// IncNetFlowEvent increments firewall_collector_netflow_events_total for the
+// given parse-event class. Wired to the NetFlow receiver's
+// SetParseEventCallback. Nil-safe so tests/wiring without metrics don't panic.
+func (m *Metrics) IncNetFlowEvent(event string) {
+	if m == nil {
+		return
+	}
+	m.netflowEvents.WithLabelValues(event).Inc()
+}
+
+// IncFlowDedupSuppressed increments
+// firewall_collector_flowdedup_suppressed_total for the given suppressed
+// family ("sflow" or "netflow"). Called once per flow sample the dedup
+// tracker drops. Nil-safe like IncRateLimitedDrop.
+func (m *Metrics) IncFlowDedupSuppressed(family string) {
+	if m == nil {
+		return
+	}
+	m.flowDedupSuppressed.WithLabelValues(family).Inc()
 }
 
 // IncMetricSendFailed increments firewall_collector_metric_send_failed_total for

@@ -333,7 +333,12 @@ func (r *SFlowReceiver) parseSFlowDatagram(data []byte) {
 		return
 	}
 
-	// sub_agent_id, sequence_number, uptime, num_samples
+	// sub_agent_id, sequence_number, uptime, num_samples.
+	// sub_agent_id is sFlow's analogue of the NetFlow/IPFIX observation
+	// domain: one agent IP can host several independent sampling instances,
+	// each with its own sequence space. We read-and-skip it today; it becomes
+	// load-bearing the moment sFlow-side sequence-gap tracking lands (the
+	// NetFlow receiver already keys its tracker by (exporter, domain)).
 	if _, ok = readUint32(data, &offset); !ok { // sub_agent_id
 		return
 	}
@@ -385,11 +390,12 @@ func (r *SFlowReceiver) parseSFlowDatagram(data []byte) {
 }
 
 func (r *SFlowReceiver) parseFlowSample(data []byte, offset *int, format uint32, sampleEnd int, agentAddr string, dgSequence uint32, now time.Time) {
-	// Flow sample header
-	seqNum, ok := readUint32(data, offset)
-	if !ok {
+	// Flow sample header: per-source sample sequence number (read to advance
+	// the offset; per-datagram dgSequence is what we relay).
+	if _, ok := readUint32(data, offset); !ok {
 		return
 	}
+	var ok bool
 
 	if format == 1 {
 		// Standard flow sample: source_id(4)
@@ -506,8 +512,13 @@ func (r *SFlowReceiver) parseFlowSample(data []byte, offset *int, format uint32,
 		*offset = recEnd
 	}
 
-	// Only emit if we extracted meaningful flow data
-	if sample.SrcAddr != "" || sample.DstAddr != "" || seqNum > 0 {
+	// Only emit if we extracted meaningful flow data. The gate is addresses
+	// ONLY: the previous `|| seqNum > 0` clause emitted address-less garbage
+	// rows for agents sending record types we don't parse (every sample has a
+	// sequence number, so that clause was effectively always true) — found by
+	// the 2026-07-03 flow-protocol research (server repo,
+	// docs/flow-protocol-research-2026-07-03.md §3.6).
+	if sample.SrcAddr != "" || sample.DstAddr != "" {
 		// Estimate bytes/packets from sampling
 		if sample.Bytes > 0 && samplingRate > 1 {
 			sample.Bytes *= uint64(samplingRate)

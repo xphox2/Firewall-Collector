@@ -26,7 +26,7 @@ alert engine, and exposes the admin UI. You need both: this repo
 |---|---|---|
 | Role | Listen at the edge, relay to HQ | Store, alert, visualize, configure |
 | Binaries | `firewall-collector`, `firewall-collector-diag-backup`, `firewall-collector-tftp-test` | `fwmon-api`, `fwmon-poller`, `fwmon-trap`, `fwmon-probe` |
-| Listens on | 162/udp, 514/tcp+udp, 6343/udp, 69/udp | 8080/tcp, 162/udp, 514/udp+tcp, 6343/udp, 8089/tcp |
+| Listens on | 162/udp, 514/tcp+udp, 6343/udp, 2055/udp, 4739/udp, 69/udp | 8080/tcp, 162/udp, 514/udp+tcp, 6343/udp, 8089/tcp |
 | Talks to | The server (HTTPS, mTLS) | The probe (HTTPS), the device (SNMP/SSH/TFTP) |
 | Docs | this README + [docs/](docs/STRUCTURE.md) | [README](https://github.com/xphox2/Firewall-Monitoring/blob/master/README.md) + [docs/](https://github.com/xphox2/Firewall-Monitoring/blob/master/docs/STRUCTURE.md) |
 
@@ -64,8 +64,15 @@ AUDIT-NNN row exists.
   passwords (FortiOS 7.2.1+).
 - **[Probe] Syslog-triggered debounced config backup** (60s debounce on
   `logid=0100044546`/`447`).
-- **[Planned] NetFlow v5/v9/IPFIX ingest** — tracked but not yet
-  scheduled.
+- **[Both] NetFlow v5/v9 + IPFIX receiver** (UDP/2055 + UDP/4739, either
+  optional, content-based version dispatch). Template engine with disk
+  persistence, nfdump-style sampling-rate resolution (counters
+  pre-multiplied), biflow reverse emission, sequence-gap metrics, and
+  dual-export dedup against sFlow (`PROBE_FLOW_DEDUP`). Vendor
+  conformance: FortiGate (sampled-scale counters + OUT_BYTES biflow),
+  Palo Alto (App-ID), Cisco ASA/NSEL (byte-only counters, denied-flow
+  events), SonicWall (PEN-8741 extensions), pfSense/OPNsense, MikroTik
+  (in-data IE 34), RFC-clean generic. `FuzzParseNetFlowDatagram` target.
 
 ### Relay (probe → server)
 
@@ -134,6 +141,8 @@ The full **website-ready** feature inventory (with status, role, and
    SNMP trap ───162───▶│  internal/snmp/trap.go  ──┐              │
    syslog    ───514───▶│  internal/syslog         ─┤              │
    sFlow     ──6343───▶│  internal/sflow          ─┤              │
+   NetFlow   ──2055───▶│  internal/netflow        ─┤              │
+   IPFIX     ──4739───▶│  (one receiver, both)    ─┤              │
    ICMP      ───────▶  │  internal/ping           ─┤              │
    SSH poll  ────────▶  │  internal/ssh            ─┼─▶ Spillover  │
    TFTP recv ───69────▶  │  internal/tftp           ─┘  Queue      │
@@ -163,7 +172,7 @@ data flow) is in
 - A **registration key** generated in the server's admin UI
   (Admin → Probes → Generate key).
 - The collector listens on UDP `162`, UDP/TCP `514`, UDP `6343`, UDP
-  `69`. If you use the default `network_mode: host`, those ports are
+  `2055`, UDP `4739`, UDP `69`. If you use the default `network_mode: host`, those ports are
   bound on the host. If you switch to bridged mode, you publish them.
 - The collector needs **outbound HTTPS** to the server. No inbound
   ports are required at the site.
@@ -261,7 +270,9 @@ The most-frequently-set variables:
 | `PROBE_LISTEN_ADDR` | No | `0.0.0.0` | Bind for all listeners |
 | `PROBE_METRICS_ADDR` | No | `127.0.0.1:9090` | Bind for `/healthz` `/readyz` `/metrics` |
 | `PROBE_LOG_LEVEL` / `PROBE_LOG_FORMAT` | No | `info` / `text` | `slog` config |
-| `PROBE_SNMP_TRAP_ENABLED` / `PROBE_SYSLOG_ENABLED` / `PROBE_SFLOW_ENABLED` / `PROBE_PING_ENABLED` / `PROBE_TFTP_CONFIG_ENABLED` | No | `true` | Feature toggles |
+| `PROBE_SNMP_TRAP_ENABLED` / `PROBE_SYSLOG_ENABLED` / `PROBE_SFLOW_ENABLED` / `PROBE_NETFLOW_ENABLED` / `PROBE_PING_ENABLED` / `PROBE_TFTP_CONFIG_ENABLED` | No | `true` | Feature toggles |
+| `PROBE_NETFLOW_PORT` / `PROBE_IPFIX_PORT` | No | `2055` / `4739` | NetFlow/IPFIX UDP ports (`0` disables a socket) |
+| `PROBE_FLOW_DEDUP` | No | `prefer-netflow` | Dual-export dedup: `prefer-netflow` / `prefer-sflow` / `off` |
 
 ## Upgrading
 

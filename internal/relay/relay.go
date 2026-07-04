@@ -185,13 +185,17 @@ type FlowSample struct {
 	InputIfIndex   uint32    `json:"input_if_index"`
 	OutputIfIndex  uint32    `json:"output_if_index"`
 	TCPFlags       uint8     `json:"tcp_flags"`
-	// Drops is the sFlow v5 sample-pool drops counter for this sample
-	// (RFC 3176 §3.1.1). It counts the number of packets the agent
-	// had to drop between this sample and the previous one because it
-	// could not keep up with the sampled packet rate. Non-zero values
-	// indicate agent-side congestion. The field is omitempty so a
-	// pre-adopting server (which doesn't know about Drops) sees no
-	// wire field at all and continues to function unchanged.
+	// Drops is the sFlow v5 sample-pool drops counter (RFC 3176 §3.1.1,
+	// sflow_version_5.txt): the CUMULATIVE number of times the agent
+	// dropped a sample since it (re)started — NOT a per-sample delta.
+	// The server's flow_agent_drops pipeline correctly baselines the
+	// first sighting and records increases as deltas; this comment was
+	// previously wrong about the semantics (fixed per the 2026-07-03
+	// flow-protocol research) even though the code was right. Non-zero
+	// growth indicates agent-side congestion. omitempty: a pre-adopting
+	// server sees no wire field at all. NetFlow/IPFIX rows always carry
+	// 0 here — export loss for those protocols is a collector metric
+	// (sequence gaps), never this field.
 	Drops uint64 `json:"drops,omitempty"`
 	// BGP/AS enrichment from the sFlow extended_gateway record (RFC 3176
 	// data format 1003), present only when the sampling router is BGP-speaking
@@ -205,7 +209,63 @@ type FlowSample struct {
 	DstAS   uint32 `json:"dst_as,omitempty"`
 	ASPath  string `json:"as_path,omitempty"`
 	NextHop string `json:"next_hop,omitempty"`
+	// ---- Tranche 3 (NetFlow v5/v9 + IPFIX) wire fields. All omitempty, same
+	// backward-compatible pattern as Drops above: the sFlow parser never sets
+	// them (zero values marshal absent), a pre-adopting server drops the
+	// unknown JSON keys, and a pre-adopting collector sends nothing. JSON names
+	// MUST match the server's models.FlowSample exactly. Full field rationale:
+	// Firewall-Mon docs/flow-protocol-research-2026-07-03.md §2.1.
+
+	// FlowSource labels the exporting protocol (FlowSource* constants below):
+	// 0/absent = sFlow, 1 = NetFlow v5, 2 = NetFlow v9, 3 = IPFIX. The server
+	// clamps unknown values to 0 at ingest.
+	FlowSource uint8 `json:"flow_source,omitempty"`
+	// FlowStart/FlowEnd bound the interval a NetFlow/IPFIX record aggregates
+	// (active timeouts run to 30 min — a flow record is NOT an instant, unlike
+	// an sFlow point sample). Pointers so nil marshals absent — a non-pointer
+	// time.Time zero value would serialize as "0001-01-01T00:00:00Z" and leak
+	// onto the wire for every sFlow row; the server uses *time.Time too. The
+	// legacy Timestamp field stays = flow end for server chart compatibility.
+	FlowStart *time.Time `json:"flow_start,omitempty"`
+	FlowEnd   *time.Time `json:"flow_end,omitempty"`
+	// FirewallEvent is IPFIX IE 233 (NSEL/FortiGate): 0 none, 1 created,
+	// 2 deleted, 3 denied, 4 alert, 5 update. Denied-flow visibility is the
+	// headline NetFlow-over-sFlow win; denied/create records legally carry
+	// zero byte counters.
+	FirewallEvent uint8 `json:"firewall_event,omitempty"`
+	// FlowEndReason is IE 136; 2 = active timeout (the flow CONTINUES in a
+	// later record) — the key input for future flow stitching.
+	FlowEndReason uint8 `json:"flow_end_reason,omitempty"`
+	// Post-NAT tuple (IEs 225-228, 281/282 for v6, ASA legacy 40001-40004):
+	// what the flow looked like AFTER translation. Empty/0 when the exporter
+	// is not NATing or doesn't report it.
+	PostNATSrcAddr string `json:"post_nat_src_addr,omitempty"`
+	PostNATDstAddr string `json:"post_nat_dst_addr,omitempty"`
+	PostNATSrcPort uint16 `json:"post_nat_src_port,omitempty"`
+	PostNATDstPort uint16 `json:"post_nat_dst_port,omitempty"`
+	// ICMPTypeCode is IE 32/139 (type*256+code) for protocol 1/58 rows; by
+	// convention the port fields are zeroed for ICMP (NetFlow v5 encodes the
+	// type/code in dst_port — the parser moves it here and clears the ports).
+	ICMPTypeCode uint16 `json:"icmp_type_code,omitempty"`
+	// TOS is IE 5 (or the NetFlow v5 tos byte).
+	TOS uint8 `json:"tos,omitempty"`
+	// SrcVLAN/DstVLAN are IEs 58/59 (sFlow extended_switch to follow later).
+	SrcVLAN uint16 `json:"src_vlan,omitempty"`
+	DstVLAN uint16 `json:"dst_vlan,omitempty"`
+	// AppName is the EXPORTER's application identification (PAN App-ID 56701,
+	// FortiGate app options) — vendor truth that outranks the server's port
+	// heuristic when present.
+	AppName string `json:"app_name,omitempty"`
 }
+
+// Flow source labels (FlowSample.FlowSource). Must stay in lockstep with the
+// server's models.FlowSource* constants.
+const (
+	FlowSourceSFlow     = 0
+	FlowSourceNetFlowV5 = 1
+	FlowSourceNetFlowV9 = 2
+	FlowSourceIPFIX     = 3
+)
 
 // InterfaceCounterSample is one sFlow counters_sample (RFC 3176 data format 2/4)
 // carrying the generic interface counters (if_counters record, format 1): the

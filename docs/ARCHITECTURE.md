@@ -23,6 +23,8 @@ as a long-lived process. On startup it:
    SNMP trap ───162───▶│  internal/snmp/trap.go  ──┐              │
    syslog    ───514───▶│  internal/syslog         ─┤              │
    sFlow     ──6343───▶│  internal/sflow          ─┤              │
+   NetFlow   ──2055───▶│  internal/netflow        ─┤              │
+   IPFIX     ──4739───▶│  (one receiver, both)    ─┤              │
    ICMP      ───────▶  │  internal/ping           ─┤              │
    SSH poll  ────────▶  │  internal/ssh            ─┼─▶ Spillover  │
    TFTP recv ───69────▶  │  internal/tftp           ─┘  Queue      │
@@ -49,12 +51,30 @@ as a long-lived process. On startup it:
 | `internal/snmp` | `SNMPClient` (v1/v2c/v3), `TrapReceiver`, the `VendorProfile` registry with 6 registered profiles (FortiGate, Palo Alto, SonicWall, pfSense, OPNsense, Firewalla; `vendor_linux_vpn.go`/`vendor_bsd_vpn.go` are shared VPN-parsing helpers, not standalone profiles). |
 | `internal/syslog` | RFC 5424 parser + FortiGate hostname/SD device-ID extraction. |
 | `internal/sflow` | sFlow v5 datagram parser. |
+| `internal/netflow` | NetFlow v5/v9 + IPFIX receiver: two UDP sockets (2055 + 4739, either optional), **content-based version dispatch** (a v9 exporter on the IPFIX port still decodes), shared template/sampler caches persisted to disk, sequence-loss tracker, source-IP allowlist + rate limit. Emits the same normalized `relay.FlowSample` as sFlow, labelled `flow_source` (1=v5, 2=v9, 3=IPFIX). |
+| `internal/flowdedup` | Dual-export tracker (`PROBE_FLOW_DEDUP`): per-exporter source preference with automatic failover when a device sends BOTH sFlow and NetFlow — flow samples of the non-preferred family are suppressed while the preferred one is live; sFlow counter samples always pass. |
 | `internal/ssh` | `FortiGateClient` (password or public key, optional PTY for TFTP-backup channels). |
 | `internal/sshtool` | The `ssh-test` subcommand. Wraps `internal/ssh` (no duplicated code). |
 | `internal/tftp` | RFC 1350 TFTP server. AUDIT-050: 2 MB cap, per-source-IP allowlist + rate limit, panic-recovery. |
 | `internal/ping` | `PingCollector` — fork-execs `/bin/ping`. Requires `NET_RAW`. |
 | `internal/observability` | `/healthz`, `/readyz`, `/metrics` HTTP server. The readyz gate is approval + heartbeat-fresh + listeners-bound. |
 | `internal/safego` | `safego.Go(name, fn)` and `safego.AfterFunc(d, name, fn)` — wrap long-lived goroutines so a panic logs and continues. |
+
+## Flow pipeline (sFlow + NetFlow/IPFIX)
+
+The sFlow (6343/udp) and NetFlow/IPFIX (2055/udp + 4739/udp) listeners
+normalize into the **same** `relay.FlowSample` stream and the same
+`/api/probes/:id/flows` relay endpoint — the server distinguishes records
+only by the `flow_source` label (0 = sFlow, 1 = v5, 2 = v9, 3 = IPFIX).
+Bytes/packets are pre-multiplied by the resolved sampling rate at the
+collector (operator override → per-sampler options → domain options /
+in-data IE 34 → 1). The v9/IPFIX template + sampler caches persist to
+`<PROBE_QUEUE_DISK_PATH>/netflow-templates.json` (shutdown + every 5 min)
+so a restart doesn't blind decoding for a template-refresh cycle. Export
+loss shows up as `seq_gap` events in
+`firewall_collector_netflow_events_total`, never as `FlowSample.Drops`
+(that field carries sFlow agent-drop semantics). Dual-export devices are
+de-duplicated per `PROBE_FLOW_DEDUP` before relay.
 
 ## Lifecycle (one poll cycle)
 

@@ -10,7 +10,7 @@ runtime (the collector talks HTTP to the server).
 
 | Repo | Role | GitHub |
 |---|---|---|
-| **Firewall-Collector** (this repo) | Lightweight probe that runs at a remote site, listens for syslog / SNMP-trap / sFlow / ICMP, SSH- and TFTP-polls FortiGates, and relays everything to the server. | [xphox2/Firewall-Collector](https://github.com/xphox2/Firewall-Collector) |
+| **Firewall-Collector** (this repo) | Lightweight probe that runs at a remote site, listens for syslog / SNMP-trap / sFlow / NetFlow-IPFIX / ICMP, SSH- and TFTP-polls FortiGates, and relays everything to the server. | [xphox2/Firewall-Collector](https://github.com/xphox2/Firewall-Collector) |
 | **Firewall-Monitoring** (server) | Central server: stores data, renders dashboards, runs the alert engine, sends notifications, exposes the admin UI. | [xphox2/Firewall-Monitoring](https://github.com/xphox2/Firewall-Monitoring) |
 
 ## Which doc lives where

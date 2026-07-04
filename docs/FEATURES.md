@@ -33,7 +33,7 @@
 | SSH config + telemetry polling (FortiGate: checksum, full config, process top, interface list, sensor list, performance, VPN phase-1/phase-2, HA) | Stable | [Probe] | 1.0.0 |
 | TFTP config backup receive (UDP/69, 2 MB cap, panic-recovery) | Stable | [Probe] | 1.0.0 |
 | Syslog-triggered debounced config backup (60 s debounce on `logid=0100044546`/`447`) | Stable | [Probe] | 1.2.93 |
-| NetFlow v5 / v9 / IPFIX ingest | Planned | [Both] | — |
+| NetFlow v5 / v9 / IPFIX ingest (UDP/2055 + UDP/4739, content-based version dispatch, template engine with disk persistence, sampler resolution chain, biflow, dual-export dedup; vendor conformance: FortiGate, Palo Alto, Cisco ASA/NSEL, SonicWall, pfSense, OPNsense, MikroTik, RFC-clean generic) | Stable | [Both] | 1.3.0 |
 
 ## Syslog/sFlow/sFlow-NetFlow security hardening
 
@@ -44,6 +44,8 @@
 | 2 MB hard cap on TFTP transfer | Stable | [Probe] | 1.2.103 |
 | TFTP server panic-recovery (handler goroutine) | Stable | [Probe] | 1.2.103 |
 | `safego.Go` panic-recovery on all long-lived goroutines | Stable | [Probe] | 1.2.88 (AUDIT-052) |
+| Per-source-IP allow-list + rate limit (NetFlow/IPFIX, deny-all until devices known) | Stable | [Probe] | 1.3.0 |
+| NetFlow template sanity quarantine (absurd field/record lengths rejected at registration) + per-exporter/global template caps | Stable | [Probe] | 1.3.0 |
 
 ## Relay (probe → server)
 
@@ -90,6 +92,7 @@
 | `collector ssh-test` subcommand (`all` / `checksum` / `config` / `process` / `interface` / `sensor` / `license` / `performance` / `vpn` / `ha`, JSON or text) | Stable | [Probe] | 1.2.100 (AUDIT-060) |
 | `firewall-collector-diag-backup` binary (end-to-end SSH+TFTP, `VERDICT:` line) | Stable | [Probe] | 1.0.0 |
 | `firewall-collector-tftp-test` binary (operator-side TFTP client test) | Stable | [Probe] | 1.0.0 |
+| `netflow-test` binary (crafted v5/v9/IPFIX conformance senders: generic, FortiGate sampled+biflow, PAN App-ID, ASA NSEL, SonicWall PEN-8741, MikroTik IE34) | Stable | [Probe] | 1.3.0 |
 
 ## Deployment
 
@@ -127,7 +130,6 @@ current audit) and surfaced here so customers don't plan around vaporware.
 
 | Feature | Tracking | Status |
 |---|---|---|
-| NetFlow v5/v9/IPFIX ingest | AUDIT-NNN not yet assigned | Planned |
 | Multi-arch container image (linux/arm64) | — | Planned |
 | Hot-reload of `internal/config` (no restart on env change) | AUDIT-NNN not yet assigned | Planned |
 | Server-side mTLS client-cert verification of probes | not in collector; server-side only | [Server] Planned ([CERT-ROTATION.md](https://github.com/xphox2/Firewall-Monitoring/blob/master/docs/CERT-ROTATION.md)) |
@@ -139,7 +141,7 @@ current audit) and surfaced here so customers don't plan around vaporware.
 |---|---|---|
 | Go source lines (collector, non-test) | ~7,500 | `find . -name '*.go' ! -name '*_test.go' -exec wc -l {} +` |
 | Go source lines (collector, with tests) | ~15,000 | same with `*_test.go` |
-| Internal packages | 12 | `internal/{config,relay,relay/queue,observability,syslog,sflow,snmp,ssh,sshtool,tftp,safego,ping}` |
-| Binaries built | 3 | `cmd/{collector,diag-backup,tftp-test}` |
+| Internal packages | 16 | `internal/{config,flowdedup,netflow,observability,ping,ratelimit,relay,relay/queue,reuseport,safego,sflow,snmp,ssh,sshtool,syslog,tftp}` |
+| Binaries built | 4 | `cmd/{collector,diag-backup,tftp-test,netflow-test}` |
 | Vendors with full VendorProfile | 3 | fortigate, paloalto, sonicwall |
-| Fuzz targets | 3 | `FuzzParseRFC5424`, `FuzzParseSFlowDatagram`, plus the relay round-trips |
+| Fuzz targets | 4 | `FuzzParseRFC5424`, `FuzzParseSFlowDatagram`, `FuzzParseNetFlowDatagram` (stateful — inputs fed twice), plus the relay round-trips |

@@ -42,6 +42,8 @@ The collector binds to `PROBE_LISTEN_ADDR` (default `0.0.0.0`).
 | `PROBE_SNMP_TRAP_PORT` | `162` | SNMP trap UDP. |
 | `PROBE_SYSLOG_PORT` | `514` | Syslog TCP + UDP. |
 | `PROBE_SFLOW_PORT` | `6343` | sFlow UDP. |
+| `PROBE_NETFLOW_PORT` | `2055` | NetFlow UDP. `0` disables this socket. Version dispatch is content-based, so v5/v9/IPFIX all decode on either flow port. |
+| `PROBE_IPFIX_PORT` | `4739` | IPFIX UDP. `0` disables this socket (both ports `0` = receiver skipped with a startup warning). |
 | `PROBE_TFTP_PORT` | `69` | TFTP UDP (WRQ-receive for FortiGate config backups). |
 | `PROBE_SNMP_TRAP_COMMUNITY` | _(empty)_ | Optional community allowlist filter. When set, only traps carrying this community are accepted; when **empty the collector accepts traps from ANY community** (a startup warning is logged, but it is NOT rejected). Set it to your devices' trap community to restrict the exposed 162/udp listener. |
 
@@ -54,6 +56,7 @@ All `true` by default. Set to `false` / `0` / `no` to disable.
 | `PROBE_SNMP_TRAP_ENABLED` | `true` | SNMP trap receiver. |
 | `PROBE_SYSLOG_ENABLED` | `true` | Syslog receiver. |
 | `PROBE_SFLOW_ENABLED` | `true` | sFlow receiver. |
+| `PROBE_NETFLOW_ENABLED` | `true` | NetFlow v5/v9 + IPFIX receiver (both flow ports). |
 | `PROBE_PING_ENABLED` | `true` | ICMP ping collector. |
 | `PROBE_TFTP_CONFIG_ENABLED` | `true` | TFTP WRQ-receive (FortiGate config push). |
 
@@ -71,6 +74,8 @@ with generous headroom; drops increment `firewall_collector_rate_limited_drops_t
 | `PROBE_RATE_LIMIT_MAX_SOURCES` | `8192` | Max distinct source IPs tracked per listener (memory bound). |
 | `PROBE_SFLOW_RATE_LIMIT_PPS` | `1000` | sFlow datagrams/sec per source. |
 | `PROBE_SFLOW_RATE_LIMIT_GLOBAL_PPS` | `30000` | sFlow aggregate ceiling across all sources. |
+| `PROBE_NETFLOW_RATE_LIMIT_PPS` | `1000` | NetFlow/IPFIX datagrams/sec per source (each datagram carries up to ~30 records). Shared by both flow ports. |
+| `PROBE_NETFLOW_RATE_LIMIT_GLOBAL_PPS` | `30000` | NetFlow/IPFIX aggregate ceiling across all sources. |
 | `PROBE_SYSLOG_RATE_LIMIT_PPS` | `5000` | Syslog msgs/sec per source (high — traffic logs). |
 | `PROBE_SYSLOG_RATE_LIMIT_GLOBAL_PPS` | `100000` | Syslog aggregate ceiling. |
 | `PROBE_TRAP_RATE_LIMIT_PPS` | `500` | SNMP traps/sec per source. |
@@ -81,6 +86,20 @@ with generous headroom; drops increment `firewall_collector_rate_limited_drops_t
 | Variable | Default | Description |
 |---|---|---|
 | `PROBE_UDP_WORKERS` | `1` | Parallel SO_REUSEPORT receive sockets/goroutines per high-volume UDP listener (sFlow, syslog). Set >1 to spread receive across cores when CPU-bound on receive (Linux only; clamped to 1 elsewhere). |
+
+## Dual-export flow dedup
+
+When a device exports **both** sFlow and NetFlow/IPFIX for the same
+interfaces (FortiGate/VyOS can), every byte would be double-counted in
+server-side aggregates. The collector applies a per-exporter source
+preference with automatic failover (5-minute activity window); sFlow
+**counter** samples always pass — they are interface counters, not flow
+records. Suppressed samples increment
+`firewall_collector_flowdedup_suppressed_total{family}`.
+
+| Variable | Default | Description |
+|---|---|---|
+| `PROBE_FLOW_DEDUP` | `prefer-netflow` | `prefer-netflow` (drop sFlow flow samples while NetFlow is live from that exporter) / `prefer-sflow` (the mirror image) / `off` (relay both — the server flags mixed-source devices). Unknown values behave as `off`. |
 
 ## Queue + batch sizing
 
@@ -97,6 +116,12 @@ compose set `PROBE_QUEUE_DISK_PATH=/queue`**, so container deployments
 spill to disk out of the box; only a non-container run with the var
 unset is in-memory-only. See `internal/relay/queue/queue.go` for the
 queue's `Path` / `Bucket` / `MaxMem` / `MaxBytes` fields.
+
+The NetFlow receiver also persists its v9/IPFIX template + sampler caches
+to `<PROBE_QUEUE_DISK_PATH>/netflow-templates.json` (saved on shutdown and
+every 5 minutes). With no disk path there is no persistence — a restart
+re-learns templates from the wire, a blind window of up to one exporter
+template-refresh cycle (~30 min).
 
 ## Observability
 

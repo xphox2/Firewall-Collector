@@ -76,6 +76,24 @@ type ProbeConfig struct {
 	SyslogRateLimitGlobalPPS int // aggregate ceiling across all syslog sources
 	TrapRateLimitPPS         int // per-source traps/sec
 	TrapRateLimitGlobalPPS   int // aggregate ceiling across all trap sources
+
+	// NetFlow v5/v9 + IPFIX ingestion (Tranche 3). One receiver listens on
+	// both conventional ports and dispatches by the datagram's version field,
+	// so an exporter pointed at the "wrong" port still works. Port 0 disables
+	// that socket; both 0 with enabled=true logs a warning and skips start.
+	NetFlowEnabled            bool
+	NetFlowPort               int // conventional NetFlow port (2055)
+	IPFIXPort                 int // conventional IPFIX port (4739)
+	NetFlowRateLimitPPS       int // per-source datagrams/sec (each carries up to ~30 records)
+	NetFlowRateLimitGlobalPPS int // aggregate ceiling across all NetFlow/IPFIX sources
+
+	// FlowDedupPolicy prevents dual-export double counting when a device
+	// sends BOTH sFlow and NetFlow (FortiGate/VyOS can): prefer-netflow
+	// (default — NetFlow is complete session accounting and Fortinet itself
+	// recommends it since sFlow disables NPU offload), prefer-sflow, or off.
+	// Suppression applies to FLOW samples only (sFlow counter samples always
+	// pass) and fails back automatically if the preferred source goes quiet.
+	FlowDedupPolicy string
 }
 
 func Load() (*Config, error) {
@@ -142,6 +160,17 @@ func Load() (*Config, error) {
 			// Traps: event-driven, low-rate.
 			TrapRateLimitPPS:       parseInt("PROBE_TRAP_RATE_LIMIT_PPS", 500),
 			TrapRateLimitGlobalPPS: parseInt("PROBE_TRAP_RATE_LIMIT_GLOBAL_PPS", 10000),
+
+			// NetFlow/IPFIX: like sFlow, per-exporter datagram rates are
+			// modest even on busy firewalls (each datagram batches up to
+			// ~30 records); a flood is abnormal.
+			NetFlowEnabled:            parseBool("PROBE_NETFLOW_ENABLED", true),
+			NetFlowPort:               parseInt("PROBE_NETFLOW_PORT", 2055),
+			IPFIXPort:                 parseInt("PROBE_IPFIX_PORT", 4739),
+			NetFlowRateLimitPPS:       parseInt("PROBE_NETFLOW_RATE_LIMIT_PPS", 1000),
+			NetFlowRateLimitGlobalPPS: parseInt("PROBE_NETFLOW_RATE_LIMIT_GLOBAL_PPS", 30000),
+
+			FlowDedupPolicy: GetEnv("PROBE_FLOW_DEDUP", "prefer-netflow"),
 		},
 	}
 
