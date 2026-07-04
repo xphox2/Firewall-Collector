@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.2 - 2026-07-04
+
+### Fixed
+- **Dual-export flow dedup now keys by resolved device, not raw sampler address** (audit LC-00). The v1.3.0 dedup tracker keyed sFlow flows by the datagram's in-band agent address but NetFlow/IPFIX flows by the UDP source IP; on FortiGate — the primary dedup vendor — those are independently configured and commonly differ, so the tracker saw two unrelated "exporters", suppression silently no-oped, and every byte was double-counted in server-side aggregates. Both flow callbacks now resolve the device (management-IP list + interface-IP cache) *before* the dedup gate and key the tracker with `dev:<id>` (falling back to `ip:<addr>` only for unresolved sources; the prefixes keep the namespaces from colliding). Wire payloads are unchanged — only the tracker key derivation moved. Tests: cross-address same-device suppression through the real resolution wiring, unresolved-fallback behavior, key namespace non-collision.
+
 ## 1.3.1 - 2026-07-04
 
 ### Docs

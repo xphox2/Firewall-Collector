@@ -99,6 +99,56 @@ func TestOnChangeFiresOncePerTransition(t *testing.T) {
 	}
 }
 
+// TestKey_DeviceIdentityUnifiesFamilies pins the LC-00 fix: on FortiGate the
+// sFlow SamplerAddress (in-band agent address) and the NetFlow SamplerAddress
+// (UDP source IP) commonly DIFFER, so the tracker must be keyed by the
+// resolved device identity — otherwise the two families never meet and
+// suppression silently no-ops.
+func TestKey_DeviceIdentityUnifiesFamilies(t *testing.T) {
+	tr := NewTracker(PolicyPreferNetFlow, nil)
+	t0 := time.Now()
+	const (
+		devID     = uint(7)
+		agentAddr = "10.255.1.1"  // sFlow in-band agent-address (loopback/mgmt)
+		exportIP  = "203.0.113.9" // NetFlow UDP source (egress interface)
+	)
+
+	// NetFlow arrives from the egress IP, sFlow from the agent address —
+	// both resolve to device 7, so the sFlow flow must be suppressed.
+	tr.SuppressNetFlow(Key(devID, exportIP), t0)
+	if !tr.SuppressSFlowFlow(Key(devID, agentAddr), t0.Add(time.Second)) {
+		t.Fatal("sFlow not suppressed despite NetFlow live from the same device (dedup keyed by address, not device)")
+	}
+
+	// Regression shape of the original bug: keyed by RAW addresses (device
+	// unresolved), the same traffic pattern must NOT cross-suppress — the
+	// fallback keeps unrelated exporters independent.
+	tr2 := NewTracker(PolicyPreferNetFlow, nil)
+	tr2.SuppressNetFlow(Key(0, exportIP), t0)
+	if tr2.SuppressSFlowFlow(Key(0, agentAddr), t0.Add(time.Second)) {
+		t.Fatal("unresolved exporters with different addresses must stay independent")
+	}
+	// Same unresolved address across families still dedups (fallback works).
+	if !tr2.SuppressSFlowFlow(Key(0, exportIP), t0.Add(2*time.Second)) {
+		t.Fatal("unresolved fallback: same sampler address must still dedup across families")
+	}
+}
+
+// TestKey pins the key derivation: device identity when resolved, prefixed
+// raw address otherwise, with namespaces that can never collide.
+func TestKey(t *testing.T) {
+	if got := Key(7, "10.0.0.1"); got != "dev:7" {
+		t.Errorf("Key(7, ...) = %q, want dev:7", got)
+	}
+	if got := Key(0, "10.0.0.1"); got != "ip:10.0.0.1" {
+		t.Errorf("Key(0, 10.0.0.1) = %q, want ip:10.0.0.1", got)
+	}
+	// A hostile sampler address can't forge its way into the device namespace.
+	if Key(0, "dev:7") == Key(7, "anything") {
+		t.Error("ip namespace collided with dev namespace")
+	}
+}
+
 // TestExporterCapFailsOpen: past the map cap with nothing prunable, unknown
 // exporters are untracked and never suppressed (losing dedup, never data).
 func TestExporterCapFailsOpen(t *testing.T) {

@@ -45,7 +45,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.3.1"
+const version = "1.3.2"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -500,16 +500,21 @@ func main() {
 			relayClient.SendInterfaceCounterSample(cs)
 		})
 		if err := sflowReceiver.Start(func(sample *relay.FlowSample) {
+			// Resolve the device BEFORE the dedup gate: sFlow's SamplerAddress
+			// is the in-band agent address while NetFlow's is the UDP source
+			// IP, and on FortiGate those commonly differ — the tracker must
+			// key on the resolved device identity for the two families to
+			// meet (flowdedup.Key falls back to the raw address if unknown).
+			if sample.DeviceID == 0 {
+				sample.DeviceID = c.resolveDeviceByIP(sample.SamplerAddress)
+			}
 			// Dual-export dedup: drop this FLOW sample if NetFlow/IPFIX is
 			// actively exporting from the same device and the policy prefers it.
-			if c.flowDedup.SuppressSFlowFlow(sample.SamplerAddress, time.Now()) {
+			if c.flowDedup.SuppressSFlowFlow(flowdedup.Key(sample.DeviceID, sample.SamplerAddress), time.Now()) {
 				c.metrics.IncFlowDedupSuppressed("sflow")
 				return
 			}
 			sample.ProbeID = probeID
-			if sample.DeviceID == 0 {
-				sample.DeviceID = c.resolveDeviceByIP(sample.SamplerAddress)
-			}
 			relayClient.SendFlowSample(sample)
 		}); err != nil {
 			log.Printf("  -> sFlow failed to start: %v", err)
@@ -543,17 +548,20 @@ func main() {
 				netflowReceiver.SetTemplatePersistPath(probeCfg.QueueDiskPath + "/netflow-templates.json")
 			}
 			if err := netflowReceiver.Start(func(sample *relay.FlowSample) {
+				// Resolve the device BEFORE the dedup gate — must mirror the
+				// sFlow path exactly so both families derive the SAME tracker
+				// key for one device (see the comment there).
+				if sample.DeviceID == 0 {
+					sample.DeviceID = c.resolveDeviceByIP(sample.SamplerAddress)
+				}
 				// Dual-export dedup, mirror of the sFlow gate above (only
 				// suppresses under prefer-sflow; it also records NetFlow
 				// activity so the sFlow gate knows this exporter is live).
-				if c.flowDedup.SuppressNetFlow(sample.SamplerAddress, time.Now()) {
+				if c.flowDedup.SuppressNetFlow(flowdedup.Key(sample.DeviceID, sample.SamplerAddress), time.Now()) {
 					c.metrics.IncFlowDedupSuppressed("netflow")
 					return
 				}
 				sample.ProbeID = probeID
-				if sample.DeviceID == 0 {
-					sample.DeviceID = c.resolveDeviceByIP(sample.SamplerAddress)
-				}
 				relayClient.SendFlowSample(sample)
 			}); err != nil {
 				log.Printf("  -> NetFlow failed to start: %v", err)

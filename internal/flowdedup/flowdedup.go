@@ -21,6 +21,7 @@
 package flowdedup
 
 import (
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -84,6 +85,22 @@ func NewTracker(policy string, onChange func(exporter, suppressedFamily string, 
 
 // Policy returns the normalized policy in effect.
 func (t *Tracker) Policy() string { return t.policy }
+
+// Key derives the tracker key for a flow sample. The two families carry
+// DIFFERENT addresses in SamplerAddress — sFlow the datagram's in-band
+// agent-address, NetFlow/IPFIX the UDP source IP — and on FortiGate (the
+// primary dedup vendor) those are independently configured and commonly
+// differ. Keying by raw address would then split one device into two
+// unrelated "exporters" and suppression would silently no-op, so both call
+// sites MUST key by the resolved device identity, falling back to the raw
+// sampler address only when the device is unknown. The prefixes keep the
+// two namespaces from ever colliding.
+func Key(deviceID uint, samplerAddr string) string {
+	if deviceID != 0 {
+		return "dev:" + strconv.FormatUint(uint64(deviceID), 10)
+	}
+	return "ip:" + samplerAddr
+}
 
 func (t *Tracker) state(exporter string, now time.Time) *exporterState {
 	st, ok := t.byIP[exporter]
