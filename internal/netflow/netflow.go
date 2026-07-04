@@ -28,6 +28,7 @@ const (
 	eventTotalCountersSkipped = "total_counters_skipped" // record carried only IE 85/86 running totals (never summed as deltas)
 	eventReverseOnlyDropped   = "reverse_only_dropped"   // record carried only reverse-direction counters, no forward flow
 	eventTemplateWithdrawal   = "template_withdrawal"    // IPFIX withdrawal record — parsed then ignored (RFC 7011 §8.1)
+	eventNSELUpdateSkipped    = "nsel_update_skipped"    // ASA flow-update (IE 233 = 5) — teardown carries the totals; relaying both double-counts
 
 	// Sequence-loss tracker events (seq.go).
 	eventSeqGap    = "seq_gap"    // export datagrams lost between the exporter and us (one event per gap)
@@ -285,8 +286,10 @@ func (r *NetFlowReceiver) Stop() error {
 	return closeErr
 }
 
-// maintenanceLoop sweeps expired templates and persists the caches every
-// cachePersistInterval until Stop.
+// maintenanceLoop sweeps expired templates (plus the sampler entries they
+// orphan — see cacheSet.sweep) and persists the caches every
+// cachePersistInterval until Stop. Sweep-then-save order matters: evicted
+// entries must not ride into the cache file.
 func (r *NetFlowReceiver) maintenanceLoop() {
 	defer r.wg.Done()
 	ticker := time.NewTicker(cachePersistInterval)
@@ -294,7 +297,7 @@ func (r *NetFlowReceiver) maintenanceLoop() {
 	for {
 		select {
 		case <-ticker.C:
-			r.caches.templates.sweep(time.Now())
+			r.caches.sweep(time.Now())
 			if r.persistPath != "" {
 				if err := r.caches.SaveTo(r.persistPath); err != nil {
 					log.Printf("[NetFlow] periodic template cache save failed: %v", err)

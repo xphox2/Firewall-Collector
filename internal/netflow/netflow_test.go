@@ -286,6 +286,47 @@ func TestStart_LoadsPersistedTemplates(t *testing.T) {
 	}
 }
 
+// TestSetSamplingOverride_RescalesParsedFlows drives the operator override
+// (the PROBE_NETFLOW_SAMPLING_OVERRIDES escape hatch for exporters that
+// self-report a wrong rate, e.g. MikroTik ROS6's byte-swap) through the wire
+// path: the pinned rate must outrank a learned domain rate on emitted samples,
+// and removal (rate 0) must restore the learned chain.
+func TestSetSamplingOverride_RescalesParsedFlows(t *testing.T) {
+	now := time.Now()
+	r, getSamples, _ := newTestReceiver()
+
+	// Learn a domain rate of 64, then pin 1000 over it.
+	r.caches.samplers.setDomainRate(exporterKey{"203.0.113.9", 0}, 64)
+	r.SetSamplingOverride("203.0.113.9", 1000)
+
+	hdr := v9HdrAt(now, 500000)
+	dg := buildV9(hdr,
+		fset(0, 0, stdV9Template(256)),
+		fset(256, 0, stdV9Record(100, 2, 490000, 440000)),
+	)
+	r.parseDatagram(dg, "203.0.113.9", now)
+
+	got := getSamples()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 sample, got %d", len(got))
+	}
+	if got[0].SamplingRate != 1000 || got[0].Bytes != 100*1000 || got[0].Packets != 2*1000 {
+		t.Errorf("override not applied: rate %d, %d/%d, want 1000, 100000/2000",
+			got[0].SamplingRate, got[0].Bytes, got[0].Packets)
+	}
+
+	// Removing the override falls back to the learned domain rate.
+	r.SetSamplingOverride("203.0.113.9", 0)
+	r.parseDatagram(dg, "203.0.113.9", now)
+	got = getSamples()
+	if len(got) != 2 {
+		t.Fatalf("expected 2 samples, got %d", len(got))
+	}
+	if got[1].SamplingRate != 64 {
+		t.Errorf("post-removal rate = %d, want learned 64", got[1].SamplingRate)
+	}
+}
+
 // TestStop_NoOpWhenNotRunning mirrors the sFlow receiver contract.
 func TestStop_NoOpWhenNotRunning(t *testing.T) {
 	r := New("127.0.0.1", 2055, 4739)

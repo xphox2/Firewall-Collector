@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.3 - 2026-07-04
+
+### Fixed — NetFlow pipeline (audit LC-06..08, LC-51)
+- **ASA NSEL flow-update records no longer double-count** (LC-51): IE 233 firewallEvent=5 ("Flow update") records were emitted as full flows on top of the eventual teardown totals, contradicting the documented teardown-only design. They now drop whole with a new `nsel_update_skipped` observability event; create/teardown/denied/alert records pass unchanged.
+- **Sampling-rate override is now reachable** (LC-06): `SetSamplingOverride` — documented precedence step 1, the MikroTik ROS6 escape hatch — had no config knob and no caller. New env `PROBE_NETFLOW_SAMPLING_OVERRIDES` (comma-separated `exporterIP=rate` pairs, e.g. `192.0.2.1=1000,2001:db8::1=512`; invalid entries logged and skipped) applied per exporter before the receiver starts, with a log line per pin.
+- **samplerCache gets the same memory-bounding discipline as its siblings** (LC-07): caps (8192 domains / 256 samplers per domain, matching the template-cache limits) plus an orphan sweep that evicts sampler state whose exporter domain has no live template (operator overrides exempt), run before every persist so evicted state never rides into `netflow-templates.json`.
+- **Flow-start plausibility clamp** (LC-08): `clampFlowTimes` validated only the flow end — a plausible end let epoch-1970 starts, inverted start>end, and 2^32-ms wrap artifacts through verbatim. The start now gets the same believability test (collapse onto the trusted end past the 24 h duration bound); believable spans preserved untouched.
+- Wire-level and table-driven regression tests for all four (v9 ASA update-drop conformance, override precedence over learned rates, cap/sweep/persist round-trip, start-clamp boundary cases).
+
 ## 1.3.2 - 2026-07-04
 
 ### Fixed

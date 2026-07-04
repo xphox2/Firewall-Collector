@@ -87,6 +87,24 @@ func TestEmitDataRecord_CounterFallbackChain(t *testing.T) {
 			wantBytes: 0, wantPkts: 0,
 		},
 		{
+			// NSEL flow-update (IE 233 = 5): its counters are an interim view
+			// of a flow whose teardown carries the totals — emitting both
+			// double-counts bytes AND sessions, so the whole record drops
+			// (research §2.8 teardown-only decision).
+			name:       "nsel-flow-update-dropped-whole",
+			build:      func(d *decodedRecord) { addr(d); d.fwEvent = set(nselEventFlowUpdate); d.initOctets = set(4096) },
+			wantN:      0,
+			wantEvents: []string{eventNSELUpdateSkipped},
+		},
+		{
+			// The teardown sibling of the case above passes with its counters —
+			// pinning that the gate keys on the EVENT value, not on NSEL shape.
+			name:      "nsel-teardown-kept-with-counters",
+			build:     func(d *decodedRecord) { addr(d); d.fwEvent = set(2); d.initOctets = set(4096) },
+			wantN:     1,
+			wantBytes: 4096, wantPkts: 0,
+		},
+		{
 			name:      "zero-counter-nat-event-emits",
 			build:     func(d *decodedRecord) { addr(d); d.natEvent = set(1) },
 			wantN:     1,
@@ -226,6 +244,41 @@ func TestResolveFlowTimes_SkewClampPreservesDuration(t *testing.T) {
 	start, end = resolveFlowTimes(&tf2, ctx)
 	if !end.Equal(now) || !start.Equal(now) {
 		t.Errorf("garbage duration: %v..%v, want point at receive time", start, end)
+	}
+}
+
+// TestClampFlowTimes_StartSideClamp: a PLAUSIBLE end must not launder an
+// absurd start — the start gets the same believability test as the clamped
+// branch. An epoch-1970 start (flowStartMilliseconds=0 with a sane end), an
+// inverted pair (start > end, negative duration), and a start one 2^32-ms
+// uptime wrap off (~49.7 extra days) all collapse onto the end; a believable
+// internal duration is preserved untouched.
+func TestClampFlowTimes_StartSideClamp(t *testing.T) {
+	now := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
+	endMs := now.Add(-5 * time.Second).UnixMilli() // plausible end, 5 s ago
+
+	cases := []struct {
+		name    string
+		startMs int64
+		wantDur time.Duration // expected end−start after the clamp
+	}{
+		{"epoch-1970-start-collapses", 0, 0},
+		{"inverted-start-after-end-collapses", endMs + 60_000, 0},
+		{"uptime-wrap-artifact-collapses", endMs - (int64(1) << 32), 0}, // ~49.7 days back
+		{"believable-duration-preserved", endMs - 50_000, 50 * time.Second},
+		{"max-plausible-duration-kept", endMs - maxPlausibleFlowDurationMs, 24 * time.Hour},
+		{"just-over-max-duration-collapses", endMs - maxPlausibleFlowDurationMs - 1, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			start, end := clampFlowTimes(tc.startMs, endMs, now)
+			if !end.Equal(time.UnixMilli(endMs)) {
+				t.Errorf("plausible end moved: %v, want %v", end, time.UnixMilli(endMs))
+			}
+			if got := end.Sub(start); got != tc.wantDur {
+				t.Errorf("duration = %v, want %v (start=%v)", got, tc.wantDur, start)
+			}
+		})
 	}
 }
 

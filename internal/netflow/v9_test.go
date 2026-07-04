@@ -639,6 +639,43 @@ func TestParseV9_ASADeniedZeroCounters(t *testing.T) {
 	}
 }
 
+// TestParseV9_ASAFlowUpdateDropped pins the teardown-only contract (research
+// §2.8) end-to-end: with `flow-export event-type all`, ASA sends periodic
+// flow-UPDATE records (IE 233 = 5) carrying interval byte counters PLUS a
+// final teardown carrying the flow totals. Only the teardown's bytes may
+// count — every update must drop whole (with the nsel_update_skipped event),
+// or long-lived sessions are multi-counted in bytes AND flow counts.
+func TestParseV9_ASAFlowUpdateDropped(t *testing.T) {
+	now := time.Now()
+	r, getSamples, getEvents := newTestReceiver()
+
+	obsMs := uint64(now.Add(-5 * time.Second).UnixMilli())
+	hdr := v9HdrAt(now, 100000)
+	// One session's export life: two updates, then the teardown.
+	r.parseDatagram(buildV9(hdr,
+		fset(0, 0, asaTemplate(263)),
+		fset(263, 1,
+			asaRecord(1000, 900, 5, obsMs, 30000),  // flow update — drop
+			asaRecord(2000, 1800, 5, obsMs, 60000), // flow update — drop
+			asaRecord(2500, 2200, 2, obsMs, 90000), // teardown — the totals
+		),
+	), "192.0.2.20", now)
+
+	got := getSamples()
+	if len(got) != 2 {
+		t.Fatalf("expected teardown forward+reverse only, got %d samples (events=%v)", len(got), getEvents())
+	}
+	fwd, rev := got[0], got[1]
+	if fwd.FirewallEvent != 2 || fwd.Bytes != 2500 || rev.Bytes != 2200 {
+		t.Errorf("teardown = event %d, %d/%d bytes, want event 2, 2500/2200 (totals only, no update bytes)",
+			fwd.FirewallEvent, fwd.Bytes, rev.Bytes)
+	}
+	ev := getEvents()
+	if len(ev) != 2 || ev[0] != eventNSELUpdateSkipped || ev[1] != eventNSELUpdateSkipped {
+		t.Errorf("events = %v, want two %q", ev, eventNSELUpdateSkipped)
+	}
+}
+
 // TestParseV9_MikroTikIE34InData: MikroTik ships the legacy sampling rate IE
 // 34 inside DATA records (goflow2 #113) — the rate must be learned from the
 // record AND applied to that very record.

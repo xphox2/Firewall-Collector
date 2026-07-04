@@ -35,6 +35,19 @@ const (
 	// varlenFieldLen is the IPFIX sentinel template length for a
 	// variable-length IE (RFC 7011 §7).
 	varlenFieldLen = 0xFFFF
+
+	// Sampler-cache caps — same memory-DoS rationale as the template caps
+	// above, at the same scale. Without them a rotating set of spoofed
+	// exporter IPs/ODIDs accumulates sampler entries indefinitely ACROSS
+	// template-cap generations (templates TTL out and free cap headroom every
+	// 30 min; learned rates would not), and every entry is serialized into the
+	// persisted cache file, growing it monotonically for the life of the
+	// install. Each rate family (per-domain, per-sampler) is capped
+	// independently; entries whose domain no longer has any live template are
+	// evicted by the maintenance sweep (see cacheSet.sweep). Operator
+	// overrides are exempt: they are configuration, bounded by config size.
+	maxSamplerDomains    = maxTemplatesTotal
+	maxSamplersPerDomain = maxTemplatesPerExporter
 )
 
 // exporterKey identifies one observation domain of one exporter: v9 sourceID /
@@ -246,6 +259,9 @@ func (s *samplerCache) SetSamplingOverride(exporterIP string, rate uint32) {
 }
 
 // setSamplerRate records a per-sampler-ID rate learned from options data.
+// At the caps, NEW domains/sampler IDs are dropped rather than grown
+// unbounded (existing entries still update) — the same posture as the
+// template cache and seqTracker.
 func (s *samplerCache) setSamplerRate(ek exporterKey, samplerID, rate uint32) {
 	if rate == 0 {
 		return
@@ -254,21 +270,57 @@ func (s *samplerCache) setSamplerRate(ek exporterKey, samplerID, rate uint32) {
 	defer s.mu.Unlock()
 	m := s.perSampler[ek]
 	if m == nil {
+		if len(s.perSampler) >= maxSamplerDomains {
+			return
+		}
 		m = make(map[uint32]uint32)
 		s.perSampler[ek] = m
+	}
+	if _, exists := m[samplerID]; !exists && len(m) >= maxSamplersPerDomain {
+		return
 	}
 	m[samplerID] = rate
 }
 
 // setDomainRate records a domain-wide rate learned from generic sampling
-// options (or an IE-34-in-data-records sighting).
+// options (or an IE-34-in-data-records sighting). Capped like setSamplerRate:
+// a new domain past maxSamplerDomains is dropped, existing ones still update.
 func (s *samplerCache) setDomainRate(ek exporterKey, rate uint32) {
 	if rate == 0 {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, exists := s.perDomain[ek]; !exists && len(s.perDomain) >= maxSamplerDomains {
+		return
+	}
 	s.perDomain[ek] = rate
+}
+
+// sweepOrphans evicts learned rates for every domain NOT in live (the set of
+// domains that still hold at least one cached template) and returns how many
+// map entries were removed. A domain with no template cannot decode a single
+// record, so its learned rates are dead weight — this ties sampler-entry
+// lifetime to the template TTL instead of keeping a second clock, and stops
+// long-gone exporters from riding in the persisted cache file forever.
+// Operator overrides are keyed by IP, are configuration, and are never swept.
+func (s *samplerCache) sweepOrphans(live map[exporterKey]bool) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	removed := 0
+	for ek := range s.perDomain {
+		if !live[ek] {
+			delete(s.perDomain, ek)
+			removed++
+		}
+	}
+	for ek := range s.perSampler {
+		if !live[ek] {
+			delete(s.perSampler, ek)
+			removed++
+		}
+	}
+	return removed
 }
 
 // rateFor resolves the effective sampling rate for one data record.
@@ -329,6 +381,21 @@ type persistedState struct {
 type cacheSet struct {
 	templates *templateCache
 	samplers  *samplerCache
+}
+
+// sweep expires idle templates, then evicts sampler entries for every domain
+// left with no live template. Run before each SaveTo (the maintenance ticker)
+// so evicted state never rides into the cache file. Returns (templates,
+// sampler entries) removed.
+func (c *cacheSet) sweep(now time.Time) (int, int) {
+	tRemoved := c.templates.sweep(now)
+	c.templates.mu.Lock()
+	live := make(map[exporterKey]bool, len(c.templates.perExporter))
+	for ek := range c.templates.perExporter {
+		live[ek] = true
+	}
+	c.templates.mu.Unlock()
+	return tRemoved, c.samplers.sweepOrphans(live)
 }
 
 // SaveTo atomically writes both caches to path (temp file + rename, so a crash

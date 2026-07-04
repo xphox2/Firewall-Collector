@@ -33,6 +33,7 @@ var envKeys = []string{
 	"PROBE_SYSLOG_ENABLED",
 	"PROBE_SFLOW_ENABLED",
 	"PROBE_PING_ENABLED",
+	"PROBE_NETFLOW_SAMPLING_OVERRIDES",
 }
 
 func withClearedEnv(t *testing.T) func() {
@@ -117,6 +118,58 @@ func TestConfigLoad_QueueDiskPath(t *testing.T) {
 	}
 	if cfg.Probe.QueueDiskPath != "/queue" {
 		t.Errorf("QueueDiskPath = %q, want %q", cfg.Probe.QueueDiskPath, "/queue")
+	}
+}
+
+// TestConfigLoad_NetFlowSamplingOverrides pins the PROBE_NETFLOW_SAMPLING_OVERRIDES
+// format: comma-separated exporterIP=rate pairs, IPs normalized through
+// net.ParseIP().String() (so they match the NetFlow receiver's exporter keys),
+// malformed entries skipped without discarding the valid ones.
+func TestConfigLoad_NetFlowSamplingOverrides(t *testing.T) {
+	defer withClearedEnv(t)()
+
+	// Default: unset → nil (no overrides).
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.Probe.NetFlowSamplingOverrides != nil {
+		t.Errorf("default NetFlowSamplingOverrides = %v, want nil", cfg.Probe.NetFlowSamplingOverrides)
+	}
+
+	// Valid pairs parse; whitespace tolerated; the IPv6 form normalizes
+	// (0::1 → ::1) so lookups by net.IP.String() hit.
+	os.Setenv("PROBE_NETFLOW_SAMPLING_OVERRIDES", "192.0.2.1=1000, 0::1 = 512")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	ov := cfg.Probe.NetFlowSamplingOverrides
+	if len(ov) != 2 || ov["192.0.2.1"] != 1000 || ov["::1"] != 512 {
+		t.Errorf("NetFlowSamplingOverrides = %v, want {192.0.2.1:1000 ::1:512}", ov)
+	}
+
+	// Malformed entries (bad IP, missing =, rate 0, rate overflow, junk) are
+	// skipped individually — the valid entry still lands.
+	os.Setenv("PROBE_NETFLOW_SAMPLING_OVERRIDES",
+		"not-an-ip=10,192.0.2.9,192.0.2.9=0,192.0.2.9=4294967296,garbage,192.0.2.7=64")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	ov = cfg.Probe.NetFlowSamplingOverrides
+	if len(ov) != 1 || ov["192.0.2.7"] != 64 {
+		t.Errorf("NetFlowSamplingOverrides = %v, want only {192.0.2.7:64}", ov)
+	}
+
+	// All-invalid input collapses to nil, not an empty map.
+	os.Setenv("PROBE_NETFLOW_SAMPLING_OVERRIDES", "bogus")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.Probe.NetFlowSamplingOverrides != nil {
+		t.Errorf("all-invalid NetFlowSamplingOverrides = %v, want nil", cfg.Probe.NetFlowSamplingOverrides)
 	}
 }
 

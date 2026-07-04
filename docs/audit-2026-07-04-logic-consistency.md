@@ -26,7 +26,7 @@ This copy lists the findings that touch the collector repo (`repo: collector` or
 
 ### LC-00 [MEDIUM] (collector) — Dual-export flow dedup keys sFlow by in-band agent address but NetFlow by UDP source IP — suppression silently no-ops when they differ, defeating the Tranche 3 double-count defense
 
-**Status:** OPEN
+**Status:** RESOLVED (collector v1.3.2)
 
 **Location:** `cmd/collector/main.go:505` · Dimension: cross-repo-contract
 
@@ -62,7 +62,7 @@ sendHeartbeatWithStatus checks only `resp.StatusCode == 401 || resp.StatusCode =
 
 ### LC-06 [MEDIUM] (collector) — Sampling-rate override (documented precedence step 1, the MikroTik ROS6 escape hatch) is unreachable dead code — no config knob, no caller
 
-**Status:** OPEN
+**Status:** RESOLVED (collector v1.3.3)
 
 **Location:** `internal/netflow/netflow.go:168` · Dimension: netflow-ipfix
 
@@ -110,7 +110,7 @@ The collector released v1.3.0 (NetFlow v5/v9 + IPFIX receiver) but the committed
 
 ### LC-51 [MEDIUM] (collector) — Collector NetFlow pipeline has no firewall-event gate: ASA NSEL flow-update records are emitted as full flows on top of teardown records, double/multi-counting every byte — contradicting the repo's own 'teardown-only' Tranche 3 design
 
-**Status:** OPEN
+**Status:** RESOLVED (collector v1.3.3)
 
 **Location:** `internal/netflow/record.go:400` · Dimension: gap-sweep
 
@@ -122,7 +122,7 @@ The project's own design record (docs/flow-protocol-research-2026-07-03.md, serv
 
 ### LC-07 [LOW] (collector) — samplerCache has no size cap and no sweep — the one flow cache exempt from the memory-bounding discipline its siblings document, and it grows the persisted cache file forever
 
-**Status:** OPEN
+**Status:** RESOLVED (collector v1.3.3)
 
 **Location:** `internal/netflow/template.go:220` · Dimension: netflow-ipfix
 
@@ -134,7 +134,7 @@ Every other network-fed map in the flow pipeline is explicitly capped with the s
 
 ### LC-08 [LOW] (collector) — clampFlowTimes validates only flow END — a plausible end lets an absurd or inverted flow_start (epoch-1970, negative duration, wrap-miscorrection) be stored verbatim
 
-**Status:** OPEN
+**Status:** RESOLVED (collector v1.3.3)
 
 **Location:** `internal/netflow/record.go:635` · Dimension: netflow-ipfix
 

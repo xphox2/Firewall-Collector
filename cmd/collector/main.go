@@ -45,7 +45,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.3.2"
+const version = "1.3.3"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -546,6 +546,18 @@ func main() {
 			// the wire, same as a first start).
 			if probeCfg.QueueDiskPath != "" {
 				netflowReceiver.SetTemplatePersistPath(probeCfg.QueueDiskPath + "/netflow-templates.json")
+			}
+			// Operator sampling-rate overrides (PROBE_NETFLOW_SAMPLING_OVERRIDES,
+			// "exporterIP=rate" pairs): step 1 of the sampler precedence chain,
+			// outranking anything the exporter reports — the escape hatch for
+			// exporters that self-report a wrong rate (MikroTik ROS6 exports it
+			// byte-swapped). Overrides are configuration, not learned state:
+			// they never persist to the template cache file and are re-applied
+			// here on every start. Applied before Start so the very first
+			// record already resolves against the pinned rate.
+			for ip, rate := range probeCfg.NetFlowSamplingOverrides {
+				netflowReceiver.SetSamplingOverride(ip, rate)
+				log.Printf("[NetFlow] Sampling override: exporter %s pinned to rate 1:%d", ip, rate)
 			}
 			if err := netflowReceiver.Start(func(sample *relay.FlowSample) {
 				// Resolve the device BEFORE the dedup gate — must mirror the

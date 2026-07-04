@@ -32,6 +32,15 @@ const (
 	// server column is varchar(64), and a hostile varlen field could otherwise
 	// relay a 64 KiB "app name" per flow.
 	maxAppNameLen = 64
+
+	// nselEventFlowUpdate is IE 233 (firewallEvent) value 5 — ASA's periodic
+	// per-flow refresh, sent when `flow-export event-type all` is configured.
+	// Updates carry interval byte counters for a flow whose eventual teardown
+	// (value 2) carries the SAME bytes as flow totals, so emitting both
+	// double-counts every long-lived session (Plixer's ASA refresh-interval
+	// trap). Tranche 3 is teardown-only ingestion by explicit decision
+	// (research §2.8); update-accumulate reconciliation is a Tranche 4 item.
+	nselEventFlowUpdate = 5
 )
 
 // recordContext carries the per-datagram state the shared record decoder
@@ -374,6 +383,20 @@ func (r *NetFlowReceiver) applyOptionsRecord(dec *decodedRecord, ctx recordConte
 // emitDataRecord turns one decoded data record into zero, one (forward), or
 // two (forward + biflow reverse) relay.FlowSamples.
 func (r *NetFlowReceiver) emitDataRecord(dec *decodedRecord, ctx recordContext) {
+	// NSEL flow-update gate (research §2.8 — the teardown-only Tranche 3
+	// decision): an update's counters are an interim view of a flow whose
+	// teardown record will carry the authoritative totals, so relaying both
+	// double-counts every byte in rollups/top-talkers/detectors. The whole
+	// record is dropped — not just its counters — because a zero-byte update
+	// row would still double-count the SESSION in every COUNT(*) aggregate.
+	// Create (1), teardown (2), denied (3), and alert (4) all pass: create
+	// and denied templates carry no counters at all (zero-byte event rows
+	// are the denied-flow headline win, see below).
+	if dec.fwEvent.ok && dec.fwEvent.v == nselEventFlowUpdate {
+		r.emitParseEvent(eventNSELUpdateSkipped)
+		return
+	}
+
 	// Family 4 guard (research §2.2): IEs 85/86 are running totals since
 	// metering-process init. Summing them as deltas would count every flow's
 	// whole history once per record — skip the record instead unless real
@@ -632,6 +655,15 @@ func ntpToMs(v uint64, micro bool, exportSecs int64) int64 {
 // the exporter's clock or uptime math is broken (softflowd header bugs,
 // Catalyst 1970 epochs, Nexus sysUptime/1000) — fall back to the receive time
 // for the end, keeping the flow's internal duration when it is believable.
+//
+// The START side gets the same believability test even when the end is fine:
+// a plausible end says nothing about the start, so an inverted pair
+// (start > end — negative duration), a flowStartMilliseconds=0 epoch-1970
+// start (~56-year implied duration), or a start one 2^32-ms uptime wrap off
+// (~49.7 extra days) would otherwise be stored verbatim and poison every
+// duration-aware consumer downstream. The end is the trustworthy side (it
+// just passed the skew check), so an unbelievable start collapses onto it —
+// the same posture as the clamped branch above.
 func clampFlowTimes(startMs, endMs int64, now time.Time) (time.Time, time.Time) {
 	durationMs := endMs - startMs
 	end := time.UnixMilli(endMs)
@@ -640,6 +672,9 @@ func clampFlowTimes(startMs, endMs int64, now time.Time) (time.Time, time.Time) 
 		if durationMs >= 0 && durationMs <= maxPlausibleFlowDurationMs {
 			return end.Add(-time.Duration(durationMs) * time.Millisecond), end
 		}
+		return end, end
+	}
+	if durationMs < 0 || durationMs > maxPlausibleFlowDurationMs {
 		return end, end
 	}
 	return time.UnixMilli(startMs), end

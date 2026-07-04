@@ -2,8 +2,10 @@ package config
 
 import (
 	"log"
+	"net"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -86,6 +88,15 @@ type ProbeConfig struct {
 	IPFIXPort                 int // conventional IPFIX port (4739)
 	NetFlowRateLimitPPS       int // per-source datagrams/sec (each carries up to ~30 records)
 	NetFlowRateLimitGlobalPPS int // aggregate ceiling across all NetFlow/IPFIX sources
+
+	// NetFlowSamplingOverrides pins the sampling rate per exporter IP,
+	// outranking anything the exporter reports (step 1 of the sampler
+	// precedence chain — the escape hatch for exporters whose self-reported
+	// rate is wrong, e.g. MikroTik ROS6 exports it byte-swapped and no
+	// collector will auto-guess the correction). Parsed from
+	// PROBE_NETFLOW_SAMPLING_OVERRIDES: comma-separated exporterIP=rate
+	// pairs, e.g. "192.0.2.1=1000,2001:db8::1=512". Default empty = none.
+	NetFlowSamplingOverrides map[string]uint32
 
 	// FlowDedupPolicy prevents dual-export double counting when a device
 	// sends BOTH sFlow and NetFlow (FortiGate/VyOS can): prefer-netflow
@@ -170,6 +181,8 @@ func Load() (*Config, error) {
 			NetFlowRateLimitPPS:       parseInt("PROBE_NETFLOW_RATE_LIMIT_PPS", 1000),
 			NetFlowRateLimitGlobalPPS: parseInt("PROBE_NETFLOW_RATE_LIMIT_GLOBAL_PPS", 30000),
 
+			NetFlowSamplingOverrides: parseSamplingOverrides("PROBE_NETFLOW_SAMPLING_OVERRIDES"),
+
 			FlowDedupPolicy: GetEnv("PROBE_FLOW_DEDUP", "prefer-netflow"),
 		},
 	}
@@ -216,6 +229,39 @@ func clampBatchSize(v int) int {
 		return serverMaxBatchItems
 	}
 	return v
+}
+
+// parseSamplingOverrides parses a comma-separated list of exporterIP=rate
+// pairs (e.g. "192.0.2.1=1000,2001:db8::1=512"). IPs are normalized through
+// net.ParseIP().String() so they match the NetFlow receiver's exporter keys
+// (which use the UDP source address in that form); rates must fit uint32 and
+// be >= 1 (0 means "remove the override" in the receiver API and has no place
+// in static config). Malformed entries are logged and skipped — one typo must
+// not take the whole collector down or silently discard the valid entries.
+func parseSamplingOverrides(envKey string) map[string]uint32 {
+	raw := os.Getenv(envKey)
+	if raw == "" {
+		return nil
+	}
+	out := make(map[string]uint32)
+	for _, pair := range strings.Split(raw, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		ipStr, rateStr, ok := strings.Cut(pair, "=")
+		ip := net.ParseIP(strings.TrimSpace(ipStr))
+		rate, err := strconv.ParseUint(strings.TrimSpace(rateStr), 10, 32)
+		if !ok || ip == nil || err != nil || rate == 0 {
+			log.Printf("%s: ignoring invalid entry %q (want exporterIP=rate, rate 1..4294967295)", envKey, pair)
+			continue
+		}
+		out[ip.String()] = uint32(rate)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func parseInt(envKey string, defaultVal int) int {

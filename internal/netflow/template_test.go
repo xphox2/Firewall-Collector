@@ -258,6 +258,110 @@ func TestSamplerCache_FallbackChain(t *testing.T) {
 	}
 }
 
+// TestSamplerCache_DomainAndSamplerCaps pins the memory bound: at
+// maxSamplerDomains, rates for NEW domains are dropped (a rotating set of
+// spoofed exporter IPs/ODIDs must not grow the cache — or the persisted file
+// — without limit) while EXISTING domains still update; the per-domain
+// sampler-ID map is capped the same way at maxSamplersPerDomain.
+func TestSamplerCache_DomainAndSamplerCaps(t *testing.T) {
+	s := newSamplerCache()
+
+	// Fill the per-domain family to its cap.
+	for i := 0; i < maxSamplerDomains; i++ {
+		s.setDomainRate(exporterKey{fmt.Sprintf("10.0.%d.%d", i/256, i%256), 0}, 64)
+	}
+	over := exporterKey{"192.0.2.99", 0}
+	s.setDomainRate(over, 128)
+	if r := s.rateFor(over, 0, false); r != 1 {
+		t.Errorf("over-cap domain learned a rate: %d, want 1 (dropped)", r)
+	}
+	// An existing domain still updates at cap (update, not add).
+	existing := exporterKey{"10.0.0.0", 0}
+	s.setDomainRate(existing, 500)
+	if r := s.rateFor(existing, 0, false); r != 500 {
+		t.Errorf("existing domain update at cap = %d, want 500", r)
+	}
+
+	// Per-sampler family: independent cap on domains, plus an inner cap on
+	// sampler IDs within one domain.
+	s2 := newSamplerCache()
+	ek := exporterKey{"192.0.2.1", 0}
+	for i := 0; i < maxSamplersPerDomain; i++ {
+		s2.setSamplerRate(ek, uint32(i), 32)
+	}
+	s2.setSamplerRate(ek, uint32(maxSamplersPerDomain), 64)
+	if r := s2.rateFor(ek, uint32(maxSamplersPerDomain), true); r != 1 {
+		t.Errorf("over-cap sampler ID learned a rate: %d, want 1 (dropped)", r)
+	}
+	// Existing sampler IDs still update at the inner cap.
+	s2.setSamplerRate(ek, 0, 999)
+	if r := s2.rateFor(ek, 0, true); r != 999 {
+		t.Errorf("existing sampler update at cap = %d, want 999", r)
+	}
+}
+
+// TestCacheSet_SweepEvictsOrphanedSamplerState ties sampler-entry lifetime to
+// the template TTL: once every template of a domain has expired, its learned
+// rates are dead weight (no record can decode without a template) and must be
+// evicted by the maintenance sweep — AND must no longer be persisted, or
+// netflow-templates.json grows monotonically for the life of the install.
+// Domains that still hold a live template keep their rates; operator
+// overrides are configuration and survive every sweep.
+func TestCacheSet_SweepEvictsOrphanedSamplerState(t *testing.T) {
+	t0 := time.Now()
+	c := &cacheSet{templates: newTemplateCache(), samplers: newSamplerCache()}
+
+	liveEK := exporterKey{"192.0.2.1", 3}
+	deadEK := exporterKey{"192.0.2.2", 0}
+	c.templates.put(templateKey{liveEK, 256}, stdFields(), 0, false, t0)
+	c.templates.put(templateKey{deadEK, 256}, stdFields(), 0, false, t0)
+	c.samplers.setDomainRate(liveEK, 64)
+	c.samplers.setSamplerRate(liveEK, 5, 100)
+	c.samplers.setDomainRate(deadEK, 512)
+	c.samplers.setSamplerRate(deadEK, 1, 256)
+	c.samplers.SetSamplingOverride("192.0.2.2", 2000)
+
+	// Keep only liveEK's template refreshed past the TTL window.
+	c.templates.get(templateKey{liveEK, 256}, t0.Add(20*time.Minute))
+	tRemoved, sRemoved := c.sweep(t0.Add(40 * time.Minute))
+	if tRemoved != 1 || sRemoved != 2 {
+		t.Fatalf("sweep removed %d templates / %d sampler entries, want 1/2", tRemoved, sRemoved)
+	}
+
+	if r := c.samplers.rateFor(liveEK, 5, true); r != 100 {
+		t.Errorf("live domain per-sampler rate = %d, want 100 (must survive)", r)
+	}
+	if r := c.samplers.rateFor(liveEK, 0, false); r != 64 {
+		t.Errorf("live domain rate = %d, want 64 (must survive)", r)
+	}
+	// The dead domain's LEARNED rates are gone — but the operator override
+	// for its IP still answers (configuration is never swept).
+	if r := c.samplers.rateFor(deadEK, 1, true); r != 2000 {
+		t.Errorf("dead domain rate = %d, want override 2000 (learned state swept, config kept)", r)
+	}
+	c.samplers.SetSamplingOverride("192.0.2.2", 0)
+	if r := c.samplers.rateFor(deadEK, 1, true); r != 1 {
+		t.Errorf("dead domain rate after override removal = %d, want 1 (learned state swept)", r)
+	}
+
+	// Persistence honors the sweep: a save/load round-trip must not resurrect
+	// the orphaned entries.
+	path := filepath.Join(t.TempDir(), "templates.json")
+	if err := c.SaveTo(path); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	dst := &cacheSet{templates: newTemplateCache(), samplers: newSamplerCache()}
+	if err := dst.LoadFrom(path, t0); err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if r := dst.samplers.rateFor(deadEK, 1, true); r != 1 {
+		t.Errorf("orphaned sampler state resurrected through persistence: rate %d, want 1", r)
+	}
+	if r := dst.samplers.rateFor(liveEK, 5, true); r != 100 {
+		t.Errorf("live sampler state lost through persistence: rate %d, want 100", r)
+	}
+}
+
 // TestCacheSet_PersistRoundTrip pins the disk persistence contract (goflow2
 // pattern): templates and LEARNED sampler rates survive a save/load cycle into
 // fresh caches, so a collector restart doesn't blind v9/IPFIX decoding for a
