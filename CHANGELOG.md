@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.1 - 2026-07-04
+
+### Docs
+- **2026-07-04 Logic & Consistency Audit — collector copy committed** (`docs/audit-2026-07-04-logic-consistency.md`): the 11 findings touching this repo (of 51 total; full report in the server repo). Dual-repo multi-agent sweep, adversarially verified. Fixes land in the following releases and are annotated per-finding in the report.
+
 ## 1.3.0 - 2026-07-04
 
 ### Added — NetFlow v5/v9 + IPFIX ingestion (Tranche 3, collector side)
