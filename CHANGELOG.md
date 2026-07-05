@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.4 - 2026-07-04
+
+### Fixed — vendor SNMP registry (audit LC-43, cross-repo with server v0.11.27)
+- **`cisco_asa` and `generic` devices no longer silently poll FortiGate enterprise OIDs**: `resolveVendor` fell through to the FortiGate default for both. New `generic` profile (standards-only MIB-II/HOST-RESOURCES; optional provider interfaces deliberately not implemented) and `cisco_asa` profile (MIB-II base + Cisco CPU/memory-pool/connection-count OIDs, failover via the `HAProvider` interface with table-walk fallback). Genuinely-unmapped vendor strings resolve to `generic`; the empty-vendor → fortigate default stays. Conformance fixture tests for both profiles.
+
 ## 1.3.3 - 2026-07-04
 
 ### Fixed — NetFlow pipeline (audit LC-06..08, LC-51)

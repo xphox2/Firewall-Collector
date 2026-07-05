@@ -86,7 +86,7 @@ applyTFTPAllowlist() is the single 'push the fleet allowlist to every receiver' 
 
 ### LC-43 [MEDIUM] (both) — Vendor registry drift: cisco_asa and generic are valid device vendors in the API/UI but have no SNMP profile in either repo — both silently poll FortiGate enterprise OIDs; roadmap doc asserts the server profile exists
 
-**Status:** OPEN
+**Status:** RESOLVED (server v0.11.27 + collector v1.3.4)
 
 **Location:** `internal/api/handlers/handlers.go:273` · Dimension: sibling-divergence
 

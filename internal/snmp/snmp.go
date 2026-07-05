@@ -240,9 +240,16 @@ func (s *SNMPClient) GetRaw(oids []string) (string, error) {
 
 func (s *SNMPClient) resolveVendor(vendor string) VendorProfile {
 	if vendor == "" {
+		// Legacy/empty vendor values have always meant FortiGate
+		// (server-side Device.Vendor defaults to "fortigate") — keep that mapping.
 		vendor = "fortigate"
 	}
 	profile := GetVendorProfile(vendor)
+	if profile == nil {
+		// Unknown vendor strings resolve to the standards-only generic
+		// profile rather than polling FortiGate enterprise OIDs.
+		profile = GetVendorProfile("generic")
+	}
 	if profile == nil {
 		profile = DefaultVendor()
 	}
