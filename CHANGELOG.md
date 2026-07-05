@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.5 - 2026-07-04
+
+### Fixed — relay/deploy coherence (audit LC-02, LC-41, LC-45, LC-48 + LC-01 collector side)
+- **Heartbeat status taxonomy is honest** (LC-02): every non-401/403 response — including the server's deliberate 410 Gone, 429, and 5xx — was counted as a healthy heartbeat, so /readyz and Prometheus reported success while the server marked the probe offline. Now: 2xx is the only success path; 410 quiesces heartbeats for 10 minutes (no re-register churn; a successful re-commission + register clears it immediately); 429 is retryable backpressure; other errors count as failed heartbeats. With the server's v0.11.29 change (data-plane 403→410 for decommissioned probes, non-retryable here), the LC-01 re-register/requeue loop is closed end-to-end.
+- **Receiver source-IP allowlists no longer depend on TFTP being enabled** (LC-41): an early return in `applyTFTPAllowlist` meant that with `PROBE_TFTP_CONFIG_ENABLED=false` the sFlow/NetFlow allowlists were never applied — allow-any forever. The nil guard now covers only the TFTP-specific statements; receiver allowlists always apply.
+- **docker-compose.yml deploys a collector that has the features it configures** (LC-45): image pin `:1.2` → `:1.3` (the compose file set 1.3-only NetFlow/dedup env vars against a frozen 1.2 image); also corrected the commented mTLS env names to the ones config.go actually reads (`PROBE_CA_CERT`/`PROBE_TLS_CERT`/`PROBE_TLS_KEY`).
+- **README stale claims fixed** (LC-48): removed the long-gone `fwmon-probe` server binary, updated "current release" 1.2.x → 1.3.x, version badge, and all tag examples.
+- Tests: heartbeat status matrix (2xx/400/410-quiesce-and-recover/429/5xx with register-attempt counting), receivers allowlisted with TFTP disabled.
+
 ## 1.3.4 - 2026-07-04
 
 ### Fixed — vendor SNMP registry (audit LC-43, cross-repo with server v0.11.27)

@@ -38,7 +38,7 @@ The v1.3.0 flowdedup tracker is supposed to be a per-device source preference (d
 
 ### LC-01 [MEDIUM] (both) — Decommissioned probe returns 410 on heartbeat/register but 403 on all 20 data-plane endpoints — collector taxonomy reads 403 as 're-register', producing a permanent re-register/requeue loop instead of the documented non-retryable quiesce
 
-**Status:** OPEN
+**Status:** RESOLVED (server v0.11.29 + collector v1.3.5)
 
 **Location:** `internal/api/handlers/handlers_probes.go:820` · Dimension: cross-repo-contract
 
@@ -50,7 +50,7 @@ The M7 fix (2026-07-01 audit) gated all three planes against decommissioned/disa
 
 ### LC-02 [MEDIUM] (both) — Collector heartbeat treats every non-401/403 response as success — server's 410 Gone, 429, 400 and 5xx are silently counted as healthy heartbeats, so /readyz and Prometheus report success while the server refuses to update last_seen and marks the probe offline
 
-**Status:** OPEN
+**Status:** RESOLVED (collector v1.3.5)
 
 **Location:** `internal/relay/relay.go:1049` · Dimension: cross-repo-contract
 
@@ -74,7 +74,7 @@ The sampler-resolution chain is documented as '1. operator override for the expo
 
 ### LC-41 [MEDIUM] (collector) — sFlow/NetFlow source-IP allowlist silently never applied when TFTP is disabled (early return couples all receiver allowlists to the TFTP server)
 
-**Status:** OPEN
+**Status:** RESOLVED (collector v1.3.5)
 
 **Location:** `cmd/collector/main.go:1109` · Dimension: sibling-divergence
 
@@ -98,7 +98,7 @@ The four parallel vendor lists have drifted. validVendors (server handlers.go:27
 
 ### LC-45 [MEDIUM] (collector) — Collector docker-compose.yml pins image :1.2 while configuring 1.3.0-only NetFlow features — documented deploy path silently ships a collector without the NetFlow receiver
 
-**Status:** OPEN
+**Status:** RESOLVED (collector v1.3.5)
 
 **Location:** `docker-compose.yml:3` · Dimension: dead-stale
 
@@ -146,7 +146,7 @@ clampFlowTimes checks the derived END against ±15 min of receive time and, only
 
 ### LC-48 [LOW] (collector) — Collector README tells users the sibling server ships a `fwmon-probe` binary (removed) and that 'the current release' is 1.2.x
 
-**Status:** OPEN
+**Status:** RESOLVED (collector v1.3.5)
 
 **Location:** `README.md:28` · Dimension: dead-stale
 

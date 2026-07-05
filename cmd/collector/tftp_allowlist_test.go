@@ -1,9 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"log"
+	"strings"
 	"testing"
 
+	"firewall-collector/internal/netflow"
 	"firewall-collector/internal/relay"
+	"firewall-collector/internal/sflow"
 )
 
 // TestDeviceSourceIPs is the regression for the 2026-06-23 audit H2 finding:
@@ -46,4 +51,43 @@ func TestDeviceSourceIPs_EmptyIsNonNil(t *testing.T) {
 func TestApplyTFTPAllowlist_NilServerNoPanic(t *testing.T) {
 	c := &Collector{} // tftpServer is nil
 	c.applyTFTPAllowlist()
+}
+
+// TestApplyTFTPAllowlist_ReceiversAllowlistedWithoutTFTP is the LC-41
+// regression (2026-07-04 audit): applyTFTPAllowlist began with an
+// `if c.tftpServer == nil { return }` guard from its TFTP-only days, so with
+// PROBE_TFTP_CONFIG_ENABLED=false (tftpServer never constructed) the sFlow and
+// NetFlow SetAllowedSourceIPs blocks appended later were silently skipped on
+// every call — both flow receivers stayed at their nil = allow-any default
+// forever, accepting spoofed flow datagrams from any source.
+//
+// The receivers' allowlist state is unexported outside their packages, so the
+// wiring is asserted via the log lines emitted from INSIDE each receiver's
+// apply block, immediately after its SetAllowedSourceIPs call — they can only
+// appear if the block executed.
+func TestApplyTFTPAllowlist_ReceiversAllowlistedWithoutTFTP(t *testing.T) {
+	c := &Collector{
+		// tftpServer deliberately nil = TFTP config backup disabled.
+		sflowReceiver:   sflow.NewSFlowReceiver("127.0.0.1", 6343),
+		netflowReceiver: netflow.New("127.0.0.1", 2055, 4739),
+		devices:         []relay.DeviceInfo{{ID: 1, IPAddress: "192.0.2.10"}},
+	}
+
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(prev)
+
+	c.applyTFTPAllowlist()
+
+	out := buf.String()
+	if !strings.Contains(out, "[sFlow] Source-IP allowlist applied: 1 device IP(s)") {
+		t.Errorf("sFlow allowlist not applied with TFTP disabled — receiver left at allow-any; log:\n%s", out)
+	}
+	if !strings.Contains(out, "[NetFlow] Source-IP allowlist applied: 1 device IP(s)") {
+		t.Errorf("NetFlow allowlist not applied with TFTP disabled — receiver left at allow-any; log:\n%s", out)
+	}
+	if strings.Contains(out, "[TFTP] Source-IP allowlist applied") {
+		t.Errorf("TFTP allowlist log emitted with no TFTP server; log:\n%s", out)
+	}
 }

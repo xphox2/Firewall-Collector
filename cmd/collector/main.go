@@ -45,7 +45,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.3.4"
+const version = "1.3.5"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -1125,16 +1125,25 @@ const tftpMinWRQInterval = 30 * time.Second
 // every device-list refresh so the allowlist tracks the assigned fleet. An empty
 // device list yields a non-nil empty allowlist (deny-all) — the secure default
 // while no devices are assigned.
+//
+// LC-41: the whole function used to early-return when c.tftpServer was nil —
+// correct back when TFTP was the only consumer, but after the sFlow (M2) and
+// NetFlow (Tranche 3) allowlist blocks were appended below, running with
+// PROBE_TFTP_CONFIG_ENABLED=false silently skipped them too, leaving both flow
+// receivers at their nil = allow-any default forever (the exact forgery
+// scenario the allowlists exist to prevent). The nil check now guards only the
+// TFTP-specific statements; every receiver's allowlist is applied regardless
+// of TFTP enablement.
 func (c *Collector) applyTFTPAllowlist() {
-	if c.tftpServer == nil {
-		return
-	}
 	c.deviceMu.RLock()
 	ips := deviceSourceIPs(c.devices)
 	c.deviceMu.RUnlock()
-	c.tftpServer.SetAllowedSourceIPs(ips)
-	c.tftpServer.SetMinWRQInterval(tftpMinWRQInterval)
-	log.Printf("[TFTP] Source-IP allowlist applied: %d device IP(s), min WRQ interval %v", len(ips), tftpMinWRQInterval)
+
+	if c.tftpServer != nil {
+		c.tftpServer.SetAllowedSourceIPs(ips)
+		c.tftpServer.SetMinWRQInterval(tftpMinWRQInterval)
+		log.Printf("[TFTP] Source-IP allowlist applied: %d device IP(s), min WRQ interval %v", len(ips), tftpMinWRQInterval)
+	}
 
 	// Apply the same fleet source-IP allowlist to the sFlow receiver (audit M2):
 	// sFlow attributes samples by the datagram's agent_address, which is not the

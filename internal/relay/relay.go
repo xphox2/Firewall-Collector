@@ -27,6 +27,13 @@ import (
 
 const maxReregisterAttempts = 5
 
+// heartbeatQuiesceCooldown is how long the heartbeat loop stays quiet after
+// the server refuses a heartbeat with 410 Gone (probe rejected /
+// decommissioned / disabled). Mirrors tryReregister's 10-minute cooldown: long
+// enough to stop hammering a deliberate refusal, short enough that an admin
+// re-commission is picked up without restarting the collector.
+const heartbeatQuiesceCooldown = 10 * time.Minute
+
 var (
 	maxQueueSize = 10000
 	maxBatchSize = 1000
@@ -476,6 +483,15 @@ type Client struct {
 	reregisterAttempts    int
 	lastReregisterAttempt time.Time
 
+	// heartbeatQuiescedUntil (LC-02): while now < this, sendHeartbeatWithStatus
+	// short-circuits without POSTing. Set when the server answers 410 Gone —
+	// the probe was rejected/decommissioned/disabled ON PURPOSE (server M7:
+	// "heartbeat refused", deliberately non-retryable) — so hammering at full
+	// cadence or churning re-registration is wrong. Rechecked after the
+	// cooldown so an admin re-commission recovers without a collector restart;
+	// also cleared by a successful registration. Guarded by mu.
+	heartbeatQuiescedUntil time.Time
+
 	// Data queues (AUDIT-058: SpilloverQueue wraps []byte + bbolt).
 	// Items pushed to these queues are JSON-marshaled; on overflow the
 	// oldest in-memory item is moved to the on-disk BoltDB file, where
@@ -775,6 +791,26 @@ func contentBatchID(payload []byte) string {
 	return hex.EncodeToString(sum[:16])
 }
 
+// httpErrorDetail extracts a human-readable error message from a non-2xx
+// response: the JSON `error`/`message` field the server's probeErr/response
+// helpers emit if present, otherwise the trimmed raw body (capped at 4 KiB),
+// otherwise "". Consumes the response body.
+func httpErrorDetail(resp *http.Response) string {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	var er struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+	_ = json.Unmarshal(body, &er)
+	if er.Error != "" {
+		return er.Error
+	}
+	if er.Message != "" {
+		return er.Message
+	}
+	return strings.TrimSpace(string(body))
+}
+
 // --- Registration ---
 
 // parseSchemaRange parses the server's "min-max" (or bare "N") schema-version
@@ -862,19 +898,7 @@ func (c *Client) finishRegister(resp *http.Response) error {
 		// (e.g. "Probe not found — it may have been deleted", "Invalid
 		// registration key") instead of a bare status code the operator has to
 		// go spelunking for.
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		var er struct {
-			Error   string `json:"error"`
-			Message string `json:"message"`
-		}
-		_ = json.Unmarshal(body, &er)
-		detail := er.Error
-		if detail == "" {
-			detail = er.Message
-		}
-		if detail == "" {
-			detail = strings.TrimSpace(string(body))
-		}
+		detail := httpErrorDetail(resp)
 		if detail == "" {
 			return fmt.Errorf("registration failed with HTTP status %d", resp.StatusCode)
 		}
@@ -897,6 +921,9 @@ func (c *Client) finishRegister(resp *http.Response) error {
 	c.probeID = result.ProbeID
 	c.probeName = result.ProbeName
 	c.reregisterAttempts = 0
+	// A successful (re-)registration proves the probe exists and is wanted
+	// again — lift any 410-Gone heartbeat quiesce immediately (LC-02).
+	c.heartbeatQuiescedUntil = time.Time{}
 	c.mu.Unlock()
 
 	c.approved.Store(result.Approved)
@@ -1002,10 +1029,34 @@ func (c *Client) SendHeartbeat() error {
 	return c.sendHeartbeatWithStatus("online")
 }
 
+// sendHeartbeatWithStatus POSTs one heartbeat and maps the server's response
+// onto the LC-02 status taxonomy. Pre-fix, every non-401/403 status —
+// including the server's deliberate 410 Gone for a decommissioned probe, 429
+// backpressure, 400, and 5xx — fell through to `return nil`, so
+// runHeartbeatLoop refreshed the /readyz timestamp and counted a Prometheus
+// success while the server refused to update last_seen and marked the probe
+// offline. Taxonomy now:
+//
+//	2xx      -> success (nil): the ONLY outcome that refreshes /readyz.
+//	401/403  -> auth lost: re-register with backoff (pre-existing behavior).
+//	410 Gone -> non-retryable refusal (server M7: probe rejected /
+//	            decommissioned / disabled): quiesce heartbeats for
+//	            heartbeatQuiesceCooldown instead of re-register churn or
+//	            full-cadence retries; error so the failure is counted.
+//	429      -> server backpressure: retryable (isRetryableStatus), no
+//	            re-registration; the next scheduled heartbeat IS the backoff,
+//	            so just report failure and let the cadence pace the retry.
+//	other    -> failed heartbeat (error): counted by /readyz + metrics,
+//	            retried on the normal cadence.
 func (c *Client) sendHeartbeatWithStatus(status string) error {
 	c.mu.Lock()
 	probeID := c.probeID
+	quiescedUntil := c.heartbeatQuiescedUntil
 	c.mu.Unlock()
+
+	if remaining := time.Until(quiescedUntil); remaining > 0 {
+		return fmt.Errorf("heartbeat quiesced for another %v — server answered 410 Gone (probe rejected/decommissioned/disabled); re-commission it in the admin UI", remaining.Round(time.Second))
+	}
 
 	data := map[string]interface{}{
 		"probe_id":  probeID,
@@ -1029,7 +1080,11 @@ func (c *Client) sendHeartbeatWithStatus(status string) error {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		return nil
+
+	case resp.StatusCode == 401 || resp.StatusCode == 403:
 		c.mu.Lock()
 		attempts := c.reregisterAttempts
 		c.reregisterAttempts++
@@ -1044,9 +1099,22 @@ func (c *Client) sendHeartbeatWithStatus(status string) error {
 			attempts+1, maxReregisterAttempts, backoff)
 		time.Sleep(backoff)
 		return c.Register()
-	}
 
-	return nil
+	case resp.StatusCode == http.StatusGone:
+		c.mu.Lock()
+		c.heartbeatQuiescedUntil = time.Now().Add(heartbeatQuiesceCooldown)
+		c.mu.Unlock()
+		detail := httpErrorDetail(resp)
+		log.Printf("[Relay] Heartbeat refused (HTTP 410): %s — probe rejected/decommissioned/disabled on the server; quiescing heartbeats for %v (re-commission it in the admin UI to recover)",
+			detail, heartbeatQuiesceCooldown)
+		return fmt.Errorf("heartbeat refused (HTTP 410): %s", detail)
+
+	case resp.StatusCode == http.StatusTooManyRequests:
+		return fmt.Errorf("heartbeat rate-limited (HTTP 429): %s — retrying on the normal heartbeat cadence", httpErrorDetail(resp))
+
+	default:
+		return fmt.Errorf("heartbeat failed (HTTP %d): %s", resp.StatusCode, httpErrorDetail(resp))
+	}
 }
 
 // --- Queue methods (append to queue for batch sending) ---

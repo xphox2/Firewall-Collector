@@ -10,7 +10,7 @@
 > admin UI, and runbook.
 
 [![CI](https://img.shields.io/badge/CI-passing-brightgreen)](https://github.com/xphox2/Firewall-Collector/actions)
-[![Version](https://img.shields.io/badge/version-1.2.143-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.3.4-blue)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.25.0+-00ADD8)](go.mod)
 
@@ -25,14 +25,14 @@ alert engine, and exposes the admin UI. You need both: this repo
 | | Probe (this repo) | Server (sibling) |
 |---|---|---|
 | Role | Listen at the edge, relay to HQ | Store, alert, visualize, configure |
-| Binaries | `firewall-collector`, `firewall-collector-diag-backup`, `firewall-collector-tftp-test` | `fwmon-api`, `fwmon-poller`, `fwmon-trap`, `fwmon-probe` |
+| Binaries | `firewall-collector`, `firewall-collector-diag-backup`, `firewall-collector-tftp-test` | `fwmon-api`, `fwmon-poller`, `fwmon-trap` |
 | Listens on | 162/udp, 514/tcp+udp, 6343/udp, 2055/udp, 4739/udp, 69/udp | 8080/tcp, 162/udp, 514/udp+tcp, 6343/udp, 8089/tcp |
 | Talks to | The server (HTTPS, mTLS) | The probe (HTTPS), the device (SNMP/SSH/TFTP) |
 | Docs | this README + [docs/](docs/STRUCTURE.md) | [README](https://github.com/xphox2/Firewall-Monitoring/blob/master/README.md) + [docs/](https://github.com/xphox2/Firewall-Monitoring/blob/master/docs/STRUCTURE.md) |
 
 ## Features
 
-Every feature below is shipped in the current `1.2.x` release. **Role
+Every feature below is shipped in the current `1.3.x` release. **Role
 tag** — `[Probe]` runs on the collector (this repo), `[Server]` runs on
 the central server, `[Both]` requires both sides. **Status** — Stable
 shipping, Beta shipping but with a known follow-up, Planned a public
@@ -125,7 +125,7 @@ AUDIT-NNN row exists.
 
 - **[Probe] Multi-stage rootless Docker image** (`alpine:3.21`,
   `nobody:65534`, `cap_drop: ALL`, `cap_add: NET_RAW`).
-- **[Probe] Auto-pushed image tags** (`:1.2.x` exact, `:1.2` moving,
+- **[Probe] Auto-pushed image tags** (`:1.3.x` exact, `:1.3` moving,
   `:stable`, `:latest`).
 
 The full **website-ready** feature inventory (with status, role, and
@@ -193,18 +193,18 @@ docker run -d \
   -e PROBE_REGISTRATION_KEY=your-registration-key \
   -e PROBE_SERVER_URL=https://your-server.example.com \
   -e PROBE_SNMP_TRAP_COMMUNITY=your-community-string \
-  xphox/firewall-collector:1.2
+  xphox/firewall-collector:1.3
 ```
 
-The pinned `:1.2` tag tracks the latest 1.2.x patch automatically. For
-reproducible builds, pin to `:1.2.108`.
+The pinned `:1.3` tag tracks the latest 1.3.x patch automatically. For
+reproducible builds, pin to an exact version, e.g. `:1.3.0`.
 
 **Docker Compose (copy to `docker-compose.yml`):**
 
 ```yaml
 services:
   firewall-collector:
-    image: xphox/firewall-collector:1.2
+    image: xphox/firewall-collector:1.3
     container_name: firewall-collector
     restart: unless-stopped
     network_mode: host
@@ -277,13 +277,13 @@ The most-frequently-set variables:
 ## Upgrading
 
 The collector's `docker-compose.yml` and Quick Start example pin to the
-moving `1.2` major.minor tag rather than `:latest`, so you always know
+moving `1.3` major.minor tag rather than `:latest`, so you always know
 what you have running and can roll back predictably.
 
 | Tag | Stability | Use it for |
 |---|---|---|
-| `:1.2.108` | exact version | production — pinned, reproducible builds |
-| `:1.2` | moving major.minor | gets every 1.2.x patch automatically (default in `docker-compose.yml`) |
+| `:1.3.0` | exact version | production — pinned, reproducible builds |
+| `:1.3` | moving major.minor | gets every 1.3.x patch automatically (default in `docker-compose.yml`) |
 | `:stable` | tracks the default branch | the most recent merge to `master` that passed CI |
 | `:latest` | tracks the default branch | alias for `:stable`; exists for tooling compatibility |
 
@@ -294,7 +294,7 @@ docker compose pull && docker compose up -d
 Roll back:
 
 ```bash
-docker compose pull xphox/firewall-collector:1.2.107
+docker compose pull xphox/firewall-collector:1.3.0
 docker compose up -d
 ```
 
@@ -313,7 +313,7 @@ the 1-pager version is [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
 
 | Collector | Talks to server | Notes |
 |---|---|---|
-| **1.2.108+** (current) | 0.10.382+ (recommended), 0.10.380+ (works, field ignored) | Advertises `schema_version` on register |
+| **1.2.108+** (incl. 1.3.x) | 0.10.382+ (recommended), 0.10.380+ (works, field ignored) | Advertises `schema_version` on register |
 | 1.2.78 – 1.2.107 | any 0.10.x | Pre-handshake; field omitted → server assumes v1 |
 | < 1.2.78 | unsupported | Missing disk-spillover and several hardening fixes |
 
