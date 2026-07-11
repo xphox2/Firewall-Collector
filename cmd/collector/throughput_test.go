@@ -232,6 +232,32 @@ func TestUpdateThroughput_WarmUpThenSteady(t *testing.T) {
 	}
 }
 
+// TestUpdateThroughput_OutOfOrderPoll: a slow same-device walk completing after a
+// newer cycle (its `now` predates the cached sample) must NOT roll the baseline
+// back or write a transient 0 — it returns the newer cached value, and the next
+// in-order poll still computes correctly.
+func TestUpdateThroughput_OutOfOrderPoll(t *testing.T) {
+	c := newTestCollector(&fakeSink{}, nil)
+	t0 := time.Now()
+	t60 := t0.Add(60 * time.Second)
+	t30 := t0.Add(30 * time.Second) // out-of-order completion
+
+	c.updateThroughput(7, []relay.InterfaceStats{eth(1, 1000, 2000, 1000)}, t0)
+	c.updateThroughput(7, []relay.InterfaceStats{eth(1, 1000+750_000, 2000+750_000, 1000)}, t60)
+
+	in, out := c.updateThroughput(7, []relay.InterfaceStats{eth(1, 9_999_999, 9_999_999, 1000)}, t30)
+	if !almostEqual(in, 100) || !almostEqual(out, 100) {
+		t.Fatalf("out-of-order poll = %v/%v kbps, want cached 100/100", in, out)
+	}
+
+	// Baseline preserved: the next in-order poll computes against the t60 sample.
+	t120 := t0.Add(120 * time.Second)
+	in, out = c.updateThroughput(7, []relay.InterfaceStats{eth(1, 1000+1_500_000, 2000+1_500_000, 1000)}, t120)
+	if !almostEqual(in, 100) || !almostEqual(out, 100) {
+		t.Fatalf("post-out-of-order poll = %v/%v kbps, want 100/100", in, out)
+	}
+}
+
 // TestCachedThroughput_FreshnessGate: a cache entry older than 3× the poll
 // interval (default 3 minutes when cfg is absent) must read as 0,0, and an
 // unknown device must read as 0,0.

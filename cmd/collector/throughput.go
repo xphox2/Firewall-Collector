@@ -109,6 +109,13 @@ func (c *Collector) updateThroughput(deviceID uint, ifaces []relay.InterfaceStat
 	if c.lastComputed == nil {
 		c.lastComputed = make(map[uint]throughputSample)
 	}
+	// Guard against an out-of-order overlapping poll: if a slow same-device SNMP
+	// walk completes after a newer cycle already recorded a sample, its stale
+	// `now` would roll the per-interface baseline back and write a transient 0.
+	// Skip it and keep the newer cached value.
+	if s, ok := c.lastComputed[deviceID]; ok && !now.After(s.ts) {
+		return s.inKbps, s.outKbps
+	}
 	inKbps, outKbps, next := computeThroughput(c.prevIface[deviceID], ifaces, now)
 	c.prevIface[deviceID] = next
 	c.lastComputed[deviceID] = throughputSample{inKbps: inKbps, outKbps: outKbps, ts: now}
