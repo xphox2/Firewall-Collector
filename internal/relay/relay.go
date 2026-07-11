@@ -316,6 +316,26 @@ type ProcessorStats struct {
 	Usage     float64   `json:"usage"`
 }
 
+// DiskUsage is one per-filesystem usage row (SNMP hrStorageTable). Field JSON
+// tags MUST match the server's models.DiskUsage. Schema v3.
+type DiskUsage struct {
+	Timestamp   time.Time `json:"timestamp"`
+	DeviceID    uint      `json:"device_id"`
+	Mount       string    `json:"mount"`
+	TotalBytes  uint64    `json:"total_bytes"`
+	UsedBytes   uint64    `json:"used_bytes"`
+	UsedPercent float64   `json:"used_percent"`
+}
+
+// LoadAverage is the 1/5/15-minute system load (UCD laLoad). Schema v3.
+type LoadAverage struct {
+	Timestamp time.Time `json:"timestamp"`
+	DeviceID  uint      `json:"device_id"`
+	Load1     float64   `json:"load1"`
+	Load5     float64   `json:"load5"`
+	Load15    float64   `json:"load15"`
+}
+
 type HAStatus struct {
 	Timestamp      time.Time `json:"timestamp"`
 	DeviceID       uint      `json:"device_id"`
@@ -446,7 +466,7 @@ type Config struct {
 // endpoint. v1 remains fully supported (Min stays 1) for mixed-version deploys.
 const (
 	SchemaVersionMin = 1
-	SchemaVersionMax = 2
+	SchemaVersionMax = 3
 )
 
 type RegisterRequest struct {
@@ -1418,6 +1438,23 @@ func (c *Client) SendHardwareSensors(sensors []HardwareSensor) error {
 
 func (c *Client) SendProcessorStats(stats []ProcessorStats) error {
 	return c.doDirectSend("processor-stats", "processor stats", stats)
+}
+
+// SendDiskUsage / SendLoadAverage are schema-v3 endpoints. They no-op against a
+// server that negotiated a lower schema (i.e. one without these routes), so a
+// lagging prod server is never 404-thrashed into a re-register loop.
+func (c *Client) SendDiskUsage(rows []DiskUsage) error {
+	if c.negotiatedSchema.Load() < 3 {
+		return nil
+	}
+	return c.doDirectSend("disk-usage", "disk usage", rows)
+}
+
+func (c *Client) SendLoadAverage(rows []LoadAverage) error {
+	if c.negotiatedSchema.Load() < 3 {
+		return nil
+	}
+	return c.doDirectSend("load-average", "load average", rows)
 }
 
 func (c *Client) SendHAStatuses(statuses []HAStatus) error {

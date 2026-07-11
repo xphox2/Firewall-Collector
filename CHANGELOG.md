@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.10 - 2026-07-11
+
+### Added — SNMP disk-usage & load-average telemetry (schema v3)
+- **Two new SNMP metrics** collected per poll and relayed to the server (0.11.73+): filesystem usage (HOST-RESOURCES `hrStorageTable`) and system load average (UCD `laLoad`). Both are optional vendor-provider interfaces, implemented for OPNsense; generic MIBs, so reusable by other vendors later.
+  - New `StorageProvider` / `LoadProvider` optional interfaces + `SNMPClient.GetDiskUsage`/`GetLoadAverage` wrappers (mirroring `LicenseProvider`); OPNsense implements both. Disk parsing keeps only `hrStorageFixedDisk` rows (RAM/virtual/network storage dropped), computes bytes as size/used × allocation-units, skips `size==0` (div-by-zero) and duplicate mounts, and clamps `used>total`.
+  - New `relay.DiskUsage` / `relay.LoadAverage` DTOs + `SendDiskUsage`/`SendLoadAverage`; `pollDevice` sends both after license info.
+  - **Schema bumped to v3.** The two new sends no-op unless the negotiated schema is ≥ 3, so a v1.3.10 collector against a pre-0.11.73 (schema-v2) server simply doesn't send them — no 404/re-register churn. Deploy the 0.11.73 server first; the collector follows at any time.
+- Live-validated on an NXP OPNsense: 13 filesystems with correct percentages and 1/5/15-minute load. Tests: fixed-disk filtering (RAM/NetworkDisk excluded), byte math + percent, `size==0`/nil guards, load-average parse.
+
 ## 1.3.9 - 2026-07-11
 
 ### Added — OPNsense hardware/environmental sensors over SSH

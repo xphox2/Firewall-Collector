@@ -45,7 +45,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.3.9"
+const version = "1.3.10"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -61,6 +61,8 @@ type deviceSNMP interface {
 	GetSecurityStats(vendor ...string) (*relay.SecurityStats, error)
 	GetSDWANHealth(vendor ...string) ([]relay.SDWANHealth, error)
 	GetLicenseInfo(vendor ...string) ([]relay.LicenseInfo, error)
+	GetDiskUsage(vendor ...string) ([]relay.DiskUsage, error)
+	GetLoadAverage(vendor ...string) ([]relay.LoadAverage, error)
 	Close() error
 }
 
@@ -77,6 +79,8 @@ type metricSink interface {
 	SendSecurityStats([]relay.SecurityStats) error
 	SendSDWANHealth([]relay.SDWANHealth) error
 	SendLicenseInfo([]relay.LicenseInfo) error
+	SendDiskUsage([]relay.DiskUsage) error
+	SendLoadAverage([]relay.LoadAverage) error
 }
 
 // snmpDialer constructs a deviceSNMP for a device. Defaults to a live SNMP
@@ -1706,6 +1710,19 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 		func() ([]relay.LicenseInfo, error) { return client.GetLicenseInfo(vendor) },
 		func(l *relay.LicenseInfo) { l.DeviceID = dev.ID; l.Timestamp = now },
 		c.sink.SendLicenseInfo, dev.Name, "license info")
+
+	// Collect filesystem usage (silently skip if unsupported). The relay gates
+	// the send on schema v3, so a lagging server just doesn't receive it.
+	sendMetric(
+		func() ([]relay.DiskUsage, error) { return client.GetDiskUsage(vendor) },
+		func(d *relay.DiskUsage) { d.DeviceID = dev.ID; d.Timestamp = now },
+		c.sink.SendDiskUsage, dev.Name, "disk usage")
+
+	// Collect system load average (silently skip if unsupported)
+	sendMetric(
+		func() ([]relay.LoadAverage, error) { return client.GetLoadAverage(vendor) },
+		func(l *relay.LoadAverage) { l.DeviceID = dev.ID; l.Timestamp = now },
+		c.sink.SendLoadAverage, dev.Name, "load average")
 }
 
 func (c *Collector) recordPollFailure(deviceID uint) {

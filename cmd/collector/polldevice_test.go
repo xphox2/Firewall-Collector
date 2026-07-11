@@ -44,6 +44,12 @@ func (fakeSNMP) GetSDWANHealth(...string) ([]relay.SDWANHealth, error) {
 func (fakeSNMP) GetLicenseInfo(...string) ([]relay.LicenseInfo, error) {
 	return []relay.LicenseInfo{{}}, nil
 }
+func (fakeSNMP) GetDiskUsage(...string) ([]relay.DiskUsage, error) {
+	return []relay.DiskUsage{{}}, nil
+}
+func (fakeSNMP) GetLoadAverage(...string) ([]relay.LoadAverage, error) {
+	return []relay.LoadAverage{{}}, nil
+}
 func (fakeSNMP) Close() error { return nil }
 
 // fakeSink is a metricSink that records everything pollDevice would send.
@@ -58,6 +64,8 @@ type fakeSink struct {
 	secStats       []relay.SecurityStats
 	sdwan          []relay.SDWANHealth
 	licenses       []relay.LicenseInfo
+	diskUsage      []relay.DiskUsage
+	loadAverage    []relay.LoadAverage
 }
 
 func (f *fakeSink) SendSystemStatuses(s []relay.SystemStatus) error {
@@ -98,6 +106,14 @@ func (f *fakeSink) SendSDWANHealth(s []relay.SDWANHealth) error {
 }
 func (f *fakeSink) SendLicenseInfo(s []relay.LicenseInfo) error {
 	f.licenses = append(f.licenses, s...)
+	return nil
+}
+func (f *fakeSink) SendDiskUsage(s []relay.DiskUsage) error {
+	f.diskUsage = append(f.diskUsage, s...)
+	return nil
+}
+func (f *fakeSink) SendLoadAverage(s []relay.LoadAverage) error {
+	f.loadAverage = append(f.loadAverage, s...)
 	return nil
 }
 
