@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.14 - 2026-07-11
+
+### Added — server→collector command channel (relay **schema v4**)
+- **The collector now negotiates relay schema v4 and can receive commands from the server on its heartbeat.** This is the first DOWNSTREAM channel beyond device sync — the foundation for later configuration-write automation whose payloads will carry credentials, so it is deliberately narrow and doubly gated:
+  - `SchemaVersionMax` 3 → **4**. The heartbeat response's `pending_commands` field is parsed ONLY when the negotiated schema is ≥ 4 (mirrors the disk/load v3 gate); against a ≤ 0.11.74 server nothing changes.
+  - New `commandExecutor` (registry keyed by command type; PR-1 implements only **`noop`**, which succeeds immediately) executes each delivered command off the heartbeat path and reports the outcome to `POST /api/probes/:id/command-result` — itself no-op'd below a negotiated v4 so an older server is never POSTed a route it doesn't have.
+  - **At-least-once safe:** the server re-delivers a command whose result it hasn't received; the executor dedupes by `command_id` — an in-flight command is skipped and a redelivered completed one re-POSTs its CACHED result, never re-executes. Unknown command types fail crisply; a command past its `expires_at` is refused, never executed.
+  - **Security:** command payloads are never logged (command_id + type only); the server stores them encrypted at rest; run the relay over HTTPS. Deploy order: server (0.11.75+) first — the schema gate protects the reverse.
+- Tests: heartbeat `pending_commands` parsing at v4 + gate below v4, `SendCommandResult` v4 gate + wire shape + non-2xx error, noop round-trip, unknown-type failure, redelivery dedup (cached-result re-POST, single execution), expired-command refusal.
+- docs/COMPATIBILITY.md: schema v4 row.
+
 ## 1.3.13 - 2026-07-11
 
 ### Fixed

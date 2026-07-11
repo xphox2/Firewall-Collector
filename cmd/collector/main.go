@@ -45,7 +45,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.3.13"
+const version = "1.3.14"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -331,6 +331,11 @@ func main() {
 	c.sink = c.relayClient
 	// Report observed SSH host-key fingerprints on each heartbeat.
 	c.relayClient.SetObservedHostKeysProvider(c.snapshotObservedHostKeys)
+	// Relay schema v4: execute heartbeat-delivered server commands and report
+	// results. Doubly gated on the negotiated schema ≥ 4 inside the relay
+	// (parse side and result-POST side), so nothing happens against a v3
+	// server. PR-1 ships only the `noop` command type.
+	c.relayClient.SetCommandHandler(newCommandExecutor(c.relayClient).HandleCommands)
 	// Count primary-metric send failures (M12).
 	if c.metrics != nil {
 		c.relayClient.SetMetricSendFailedHook(c.metrics.IncMetricSendFailed)
