@@ -41,6 +41,20 @@ type throughputSample struct {
 	ts      time.Time
 }
 
+// vitalsSample caches the latest SNMP-sourced system vitals for a device so the
+// SSH `diagnose sys performance` row can carry the SAME alert-relevant values.
+// Without this, the SSH row reports CPU/memory via a different methodology (and
+// no disk at all), which — now that the server evaluates the newest relayed
+// row — can flap a borderline threshold alert. Single, coherent source.
+type vitalsSample struct {
+	cpuUsage    float64
+	memoryUsage float64
+	diskUsage   float64
+	diskTotal   uint64
+	sessions    int
+	ts          time.Time
+}
+
 // computeThroughput derives device-total in/out kbps from per-interface
 // counter deltas. Pure: it never mutates prev; the caller stores the returned
 // next map for the following poll.
@@ -141,6 +155,42 @@ func (c *Collector) cachedThroughput(deviceID uint, now time.Time) (inKbps, outK
 	return s.inKbps, s.outKbps
 }
 
+// cacheVitals records the latest SNMP-sourced vitals for a device, for the SSH
+// performance row to relay (alert coherence).
+func (c *Collector) cacheVitals(deviceID uint, s *relay.SystemStatus, now time.Time) {
+	c.throughputMu.Lock()
+	defer c.throughputMu.Unlock()
+	if c.lastVitals == nil {
+		c.lastVitals = make(map[uint]vitalsSample)
+	}
+	c.lastVitals[deviceID] = vitalsSample{
+		cpuUsage:    s.CPUUsage,
+		memoryUsage: s.MemoryUsage,
+		diskUsage:   s.DiskUsage,
+		diskTotal:   s.DiskTotal,
+		sessions:    s.SessionCount,
+		ts:          now,
+	}
+}
+
+// cachedVitals returns the most recent SNMP vitals for the device if fresh
+// (within 3× the SNMP poll interval), else ok=false. A stale/missing cache
+// (SNMP broken) means the SSH row keeps its own parsed values — best effort;
+// the server's no-data guard covers a resulting disk_usage==0.
+func (c *Collector) cachedVitals(deviceID uint, now time.Time) (vitalsSample, bool) {
+	freshFor := 3 * time.Minute
+	if c.cfg != nil && c.cfg.PollInterval > 0 {
+		freshFor = 3 * c.cfg.PollInterval
+	}
+	c.throughputMu.Lock()
+	defer c.throughputMu.Unlock()
+	v, ok := c.lastVitals[deviceID]
+	if !ok || now.Sub(v.ts) > freshFor {
+		return vitalsSample{}, false
+	}
+	return v, true
+}
+
 // pruneThroughputCache drops cached counter samples and computed throughput
 // for devices no longer in the assigned list. Called on every device-list
 // refresh so unassigned devices don't leak cache entries.
@@ -159,6 +209,11 @@ func (c *Collector) pruneThroughputCache(devices []relay.DeviceInfo) {
 	for id := range c.lastComputed {
 		if !keep[id] {
 			delete(c.lastComputed, id)
+		}
+	}
+	for id := range c.lastVitals {
+		if !keep[id] {
+			delete(c.lastVitals, id)
 		}
 	}
 }
