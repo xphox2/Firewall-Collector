@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.3.8 - 2026-07-11
+
+### Fixed — review hardening of the vendor-aware SSH backup (1.3.6)
+- **Empty-vendor FortiGate devices no longer lose FortiGate behavior.** The SSH client factory maps an empty vendor to FortiGate (legacy default), but the backup path compared the literal `"fortigate"`, so a legacy device record with an empty vendor (common when a prod server lags the repo) was denied the TFTP capture path *and* stamped `backup_quality="full"` — which the server honors, defeating its FortiOS masked-backup detection. A shared `isFortiGateVendor` helper (empty **or** `"fortigate"`) now drives both decisions consistently.
+- **The syslog-triggered TFTP backup is now vendor-gated too.** Only the poll path was gated in 1.3.6; a config-change syslog spoofed with a non-FortiGate device's source IP could still reach the FortiGate-hardcoded `execute backup config tftp` and mis-drive that box with FortiOS CLI. The gate now lives at `fetchConfigViaTFTP`, the shared chokepoint for both the poll and syslog callers.
+- **OPNsense config capture is more robust and its checksum is coherent.** The config is fetched once and cached, so the checksum is derived from the exact bytes that get sent (the previous remote-`sha256`/local-hash split could disagree for the same config). Extraction now isolates the `<?xml>…</opnsense>` document from any shell/stderr noise (login banner, csh warning, trailing prompt) and requires a complete `<opnsense>…</opnsense>` pair, so a truncated capture is rejected rather than stored — the server has no OPNsense validator to catch it downstream. Added `extractOPNsenseConfig` unit coverage (noise-prefix/suffix, truncation, permission-denied).
+
+## 1.3.7 - 2026-07-11
+
+### Fixed — Go toolchain CVE gate
+- Bump the go.mod `go` directive `1.25.11` → `1.25.12` to clear **GO-2026-5856** (Encrypted Client Hello privacy leak in `crypto/tls`), which reddened govulncheck in CI (reached via TLS in the relay/observability HTTP paths). CI builds from the go-version-file, so the directive bump is the whole fix — matches the server's earlier v0.11.58 bump.
+
+## 1.3.6 - 2026-07-11
+
+### Added — vendor-aware SSH config backup (OPNsense)
+- **SSH config backup is no longer FortiGate-only.** The collector's SSH poll path hardcoded `FortiGateClient` and ran FortiOS commands (`diagnose sys csum`, `show`) against every SSH-polled device, so a non-FortiGate firewall could not be backed up. Config backup now dispatches by `device.vendor`:
+  - New `ssh.ConfigBackupClient` interface (Connect/Close/GetConfigChecksum/GetConfig/ObservedHostKey) with a `NewConfigBackupClient(vendor, …)` factory. `fortigate` (and empty, legacy default) → the existing FortiOS client; `opnsense` → a new client; unknown vendors are logged-and-skipped instead of mis-driven with the wrong CLI dialect.
+  - New `OPNsenseClient` reads the running config from `/conf/config.xml` over a plain FreeBSD shell (captured raw to preserve exact bytes) and validates the `<opnsense>` root so a permission error or console-menu login is reported rather than stored as a bogus revision. Checksums prefer a cheap remote `sha256 -q` and fall back to hashing the fetched config locally.
+  - `sshPollDevice` runs the FortiOS-only diagnostics (process/interface/sensor/license/performance/VPN) only after a type assertion to `*FortiGateClient`; OPNsense devices do config backup only and get their metrics via SNMP (already supported by the `opnsense` SNMP profile). The FortiGate-only TFTP backup branch is now gated on `vendor == "fortigate"`.
+  - Non-FortiGate SSH backups are marked `backup_quality = "full"` explicitly (the server has no vendor validator to infer quality for them); FortiGate quality is left to the server's FortiGate-aware validator, unchanged.
+- **Refactor (no behavior change for FortiGate):** the SSH dial + host-key capture and single-command exec were extracted into package-shared `dialSSH`/`runCommandRaw` helpers reused by both vendor clients; `FortiGateClient`'s public surface and semantics are preserved.
+
 ## 1.3.5 - 2026-07-04
 
 ### Fixed — relay/deploy coherence (audit LC-02, LC-41, LC-45, LC-48 + LC-01 collector side)

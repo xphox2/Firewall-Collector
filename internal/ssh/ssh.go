@@ -57,48 +57,62 @@ func NewFortiGateClientWithKey(host string, port int, username, password, keyFil
 }
 
 func (c *FortiGateClient) Connect() error {
-	auth, err := c.buildAuthMethods()
+	client, hostKey, err := dialSSH(c.host, c.port, c.username, c.password, c.keyFile, c.keyPassphrase)
+	// Capture the observed host key even on failure: the callback runs during
+	// the handshake, so a fingerprint may be recorded before a later dial step
+	// errors.
+	c.observedHostKey = hostKey
 	if err != nil {
 		return err
 	}
+	c.client = client
+	return nil
+}
 
+// dialSSH establishes an SSH connection and returns the client plus the SHA256
+// fingerprint of the host key the device presented. The host key is captured
+// but never enforced for the connection itself: server-side pinning/alerting is
+// authoritative (alert-only by design — see SSH host-key change detection).
+// Shared by every vendor SSH client in this package.
+func dialSSH(host string, port int, username, password, keyFile, keyPassphrase string) (*ssh.Client, string, error) {
+	if port == 0 {
+		port = 22
+	}
+	auth, err := sshAuthMethods(host, password, keyFile, keyPassphrase)
+	if err != nil {
+		return nil, "", err
+	}
+	var observedHostKey string
 	config := &ssh.ClientConfig{
-		User: c.username,
+		User: username,
 		Auth: auth,
-		// Capture the host-key fingerprint but never block: the server does the
-		// pinning/comparison and alerts on a change (alert-only by design — see
-		// SSH host-key change detection). Returning nil unconditionally preserves
-		// the previous InsecureIgnoreHostKey behavior for the connection itself.
 		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
-			c.observedHostKey = ssh.FingerprintSHA256(key)
+			observedHostKey = ssh.FingerprintSHA256(key)
 			return nil
 		},
 		Timeout: 30 * time.Second,
 	}
-
-	addr := fmt.Sprintf("%s:%d", c.host, c.port)
+	addr := fmt.Sprintf("%s:%d", host, port)
 	client, err := ssh.Dial("tcp", addr, config)
 	if err != nil {
-		return fmt.Errorf("ssh dial failed: %w", err)
+		return nil, observedHostKey, fmt.Errorf("ssh dial failed: %w", err)
 	}
-	c.client = client
-
-	return nil
+	return client, observedHostKey, nil
 }
 
-func (c *FortiGateClient) buildAuthMethods() ([]ssh.AuthMethod, error) {
-	if c.keyFile != "" {
-		signer, err := loadPrivateKey(c.keyFile, c.keyPassphrase)
+func sshAuthMethods(host, password, keyFile, keyPassphrase string) ([]ssh.AuthMethod, error) {
+	if keyFile != "" {
+		signer, err := loadPrivateKey(keyFile, keyPassphrase)
 		if err != nil {
-			return nil, fmt.Errorf("load ssh key %q: %w", c.keyFile, err)
+			return nil, fmt.Errorf("load ssh key %q: %w", keyFile, err)
 		}
 		return []ssh.AuthMethod{ssh.PublicKeys(signer)}, nil
 	}
-	if c.password != "" {
-		log.Printf("[SSH] WARNING: device %s using password auth (key file not configured) — password is sent plaintext during the SSH handshake before encryption (AUDIT-071)", c.host)
-		return []ssh.AuthMethod{ssh.Password(c.password)}, nil
+	if password != "" {
+		log.Printf("[SSH] WARNING: device %s using password auth (key file not configured) — password is sent plaintext during the SSH handshake before encryption (AUDIT-071)", host)
+		return []ssh.AuthMethod{ssh.Password(password)}, nil
 	}
-	return nil, fmt.Errorf("ssh: no auth method configured for %s (set SSHKeyFile or SSHPassword)", c.host)
+	return nil, fmt.Errorf("ssh: no auth method configured for %s (set SSHKeyFile or SSHPassword)", host)
 }
 
 func loadPrivateKey(path, passphrase string) (ssh.Signer, error) {
@@ -163,8 +177,14 @@ func (c *FortiGateClient) executeRaw(command string, requestPty bool, timeout ti
 	if c.client == nil {
 		return "", fmt.Errorf("not connected")
 	}
+	return runCommandRaw(c.client, command, requestPty, timeout)
+}
 
-	session, err := c.client.NewSession()
+// runCommandRaw runs a single command over a fresh SSH session and returns the
+// unfiltered combined output. A watchdog closes the session if the command
+// exceeds timeout. Shared by every vendor SSH client in this package.
+func runCommandRaw(client *ssh.Client, command string, requestPty bool, timeout time.Duration) (string, error) {
+	session, err := client.NewSession()
 	if err != nil {
 		return "", fmt.Errorf("new session failed: %w", err)
 	}

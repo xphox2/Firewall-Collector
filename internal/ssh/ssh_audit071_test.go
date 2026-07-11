@@ -198,9 +198,9 @@ func TestSSHClient_PasswordFallback(t *testing.T) {
 	}
 	defer client.Close()
 
-	auth, err := client.buildAuthMethods()
+	auth, err := sshAuthMethods(client.host, client.password, client.keyFile, client.keyPassphrase)
 	if err != nil {
-		t.Fatalf("buildAuthMethods returned error: %v", err)
+		t.Fatalf("sshAuthMethods returned error: %v", err)
 	}
 	if len(auth) != 1 {
 		t.Fatalf("expected exactly 1 auth method (public key), got %d", len(auth))
@@ -219,9 +219,9 @@ func TestSSHClient_NoAuth_RefusesToConnect(t *testing.T) {
 		t.Errorf("expected 'no auth method configured' error, got: %v", err)
 	}
 
-	_, err = client.buildAuthMethods()
+	_, err = sshAuthMethods(client.host, client.password, client.keyFile, client.keyPassphrase)
 	if err == nil {
-		t.Fatal("expected buildAuthMethods to error when both creds are empty")
+		t.Fatal("expected sshAuthMethods to error when both creds are empty")
 	}
 }
 
