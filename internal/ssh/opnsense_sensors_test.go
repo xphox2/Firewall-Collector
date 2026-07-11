@@ -77,6 +77,40 @@ func TestParseOPNsenseSensors_FanFault(t *testing.T) {
 	}
 }
 
+func TestParseOPNsenseSensors_FaultWithoutRPM(t *testing.T) {
+	// A fan reporting only a fault (no rpm line) must still surface as an alarm,
+	// not be silently dropped.
+	got := ParseOPNsenseSensors("dev.emc2302.0.fan0.fault: 1")
+	if len(got) != 1 || got[0].Type != "fan" || got[0].Status != "alarm" || got[0].Value != 0 {
+		t.Fatalf("expected one fan alarm with value 0, got %+v", got)
+	}
+}
+
+func TestParseOPNsenseSensors_MultipleControllers(t *testing.T) {
+	// Two 2-channel controllers → 4 distinct fans, numbered by (unit, channel),
+	// no collision between unit 0 and unit 1 fan0.
+	in := "dev.emc2302.0.fan0.rpm: 2700\n" +
+		"dev.emc2302.0.fan1.rpm: 2800\n" +
+		"dev.emc2302.1.fan0.rpm: 3100\n" +
+		"dev.emc2302.1.fan1.rpm: 3200"
+	got := ParseOPNsenseSensors(in)
+	if len(got) != 4 {
+		t.Fatalf("expected 4 fans across 2 controllers, got %d: %+v", len(got), got)
+	}
+	want := []struct {
+		name  string
+		value float64
+	}{
+		{"System Fan 1", 2700}, {"System Fan 2", 2800},
+		{"System Fan 3", 3100}, {"System Fan 4", 3200},
+	}
+	for i, w := range want {
+		if got[i].Name != w.name || got[i].Value != w.value {
+			t.Errorf("fan[%d] = %+v, want name=%s value=%v", i, got[i], w.name, w.value)
+		}
+	}
+}
+
 func TestParseOPNsenseSensors_PartialAndEmpty(t *testing.T) {
 	// x86 OPNsense: only hw.temperature exists (no INA/EMC drivers). `sysctl -iq`
 	// returns just that tree — must parse the temps and not choke.

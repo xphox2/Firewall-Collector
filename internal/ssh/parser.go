@@ -598,8 +598,10 @@ var (
 	opnTempPrefix = "hw.temperature."
 	// dev.ina2xx.<idx>.<field> — the INA2xx power monitors (one per PSU rail).
 	opnInaRe = regexp.MustCompile(`^dev\.ina2xx\.(\d+)\.(bus_voltage|current|power|label)$`)
-	// dev.emc2302.<unit>.fan<n>.<field> — the EMC230x fan controller.
-	opnFanRe = regexp.MustCompile(`^dev\.emc2302\.\d+\.fan(\d+)\.(rpm|fault)$`)
+	// dev.emc2302.<unit>.fan<n>.<field> — the EMC230x fan controller. Capture the
+	// controller unit too: an appliance with >2 fans has multiple 2-channel
+	// controllers, so keying by channel alone would collide their fans.
+	opnFanRe = regexp.MustCompile(`^dev\.emc2302\.(\d+)\.fan(\d+)\.(rpm|fault)$`)
 )
 
 // ParseOPNsenseSensors parses the output of
@@ -618,8 +620,9 @@ func ParseOPNsenseSensors(output string) []OPNsenseSensor {
 		rpm, fault       string
 		hasRPM, hasFault bool
 	}
+	type fanKey struct{ unit, ch int }
 	rails := map[int]*rail{}
-	fans := map[int]*fan{}
+	fans := map[fanKey]*fan{}
 	var sensors []OPNsenseSensor
 
 	scanner := bufio.NewScanner(strings.NewReader(output))
@@ -658,13 +661,15 @@ func ParseOPNsenseSensors(output string) []OPNsenseSensor {
 			continue
 		}
 		if m := opnFanRe.FindStringSubmatch(key); m != nil {
-			n, _ := strconv.Atoi(m[1])
-			fn := fans[n]
+			u, _ := strconv.Atoi(m[1])
+			ch, _ := strconv.Atoi(m[2])
+			k := fanKey{u, ch}
+			fn := fans[k]
 			if fn == nil {
 				fn = &fan{}
-				fans[n] = fn
+				fans[k] = fn
 			}
-			switch m[2] {
+			switch m[3] {
 			case "rpm":
 				fn.rpm, fn.hasRPM = val, true
 			case "fault":
@@ -698,21 +703,35 @@ func ParseOPNsenseSensors(output string) []OPNsenseSensor {
 		}
 	}
 
-	// Fans, in channel order. fault != 0 → alarm.
-	for _, n := range sortedIntKeys(fans) {
-		fn := fans[n]
-		if !fn.hasRPM {
-			continue
+	// Fans, ordered by controller then channel and numbered sequentially (stable
+	// per position). A fan is emitted if it reports rpm OR a fault, so a fault
+	// with no rpm still surfaces as an alarm (Value 0) rather than being dropped —
+	// the fault is the higher-value signal. fault != 0 → alarm.
+	fanKeys := make([]fanKey, 0, len(fans))
+	for k := range fans {
+		fanKeys = append(fanKeys, k)
+	}
+	sort.Slice(fanKeys, func(i, j int) bool {
+		if fanKeys[i].unit != fanKeys[j].unit {
+			return fanKeys[i].unit < fanKeys[j].unit
 		}
-		v, err := strconv.ParseFloat(fn.rpm, 64)
-		if err != nil {
-			continue
+		return fanKeys[i].ch < fanKeys[j].ch
+	})
+	for i, k := range fanKeys {
+		fn := fans[k]
+		var v float64
+		if fn.hasRPM {
+			if pv, err := strconv.ParseFloat(fn.rpm, 64); err == nil {
+				v = pv
+			} else if !fn.hasFault {
+				continue // unparseable rpm and no fault signal → nothing useful
+			}
 		}
 		status := "normal"
 		if fn.hasFault && fn.fault != "0" {
 			status = "alarm"
 		}
-		sensors = append(sensors, OPNsenseSensor{Name: fmt.Sprintf("System Fan %d", n+1), Type: "fan", Value: v, Unit: "RPM", Status: status})
+		sensors = append(sensors, OPNsenseSensor{Name: fmt.Sprintf("System Fan %d", i+1), Type: "fan", Value: v, Unit: "RPM", Status: status})
 	}
 
 	return sensors
