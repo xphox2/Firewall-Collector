@@ -128,6 +128,21 @@ func extractOPNsenseConfig(out string) (string, error) {
 	return out[start : end+len(closeTag)], nil
 }
 
+// GetHardwareSensors returns the raw output of a single sysctl read covering
+// temperature, per-rail power (INA2xx), and fan (EMC230x) trees. The `-i` flag
+// is essential: FreeBSD `sysctl a b c` exits non-zero if ANY listed OID is
+// unknown, which would make the caller discard the whole output — so on an x86
+// OPNsense (none of these drivers) or a partial-tree box, `-i` still returns the
+// trees that exist (exit 0) and a box with none simply yields empty output.
+// Parsing is done by ssh.ParseOPNsenseSensors. Requires only shell access — the
+// sysctls are world-readable (no root needed).
+func (c *OPNsenseClient) GetHardwareSensors() (string, error) {
+	if c.client == nil {
+		return "", fmt.Errorf("not connected")
+	}
+	return runCommandRaw(c.client, "sysctl -iq hw.temperature dev.ina2xx dev.emc2302", false, commandTimeout)
+}
+
 // GetConfigChecksum returns a change-detection token derived from the exact
 // config bytes GetConfig will send, so the stored checksum always corresponds
 // to the stored config. Backed by the same cached fetch as GetConfig.
