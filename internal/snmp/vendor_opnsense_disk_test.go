@@ -62,11 +62,18 @@ func TestOPNsense_ParseDiskUsage(t *testing.T) {
 		storagePDU(onsOIDStorageUnits, 32, gosnmp.Integer, 4096),
 		storagePDU(onsOIDStorageSize, 32, gosnmp.Integer, 100),
 		storagePDU(onsOIDStorageUsed, 32, gosnmp.Integer, 50),
+		// Unbound chroot bind-mount (index 40) — fixed disk, but must be excluded
+		// as noise (duplicates / usage).
+		storagePDU(onsOIDStorageType, 40, gosnmp.ObjectIdentifier, oidTypeFixedDisk),
+		storagePDU(onsOIDStorageDescr, 40, gosnmp.OctetString, "/var/unbound/lib"),
+		storagePDU(onsOIDStorageUnits, 40, gosnmp.Integer, 512),
+		storagePDU(onsOIDStorageSize, 40, gosnmp.Integer, 59927272),
+		storagePDU(onsOIDStorageUsed, 40, gosnmp.Integer, 2452560),
 	}
 
 	got := p.ParseDiskUsage(pdus)
 	if len(got) != 1 {
-		t.Fatalf("expected 1 fixed-disk row (RAM + NetworkDisk excluded), got %d: %+v", len(got), got)
+		t.Fatalf("expected 1 fixed-disk row (RAM + NetworkDisk + /var/unbound bind-mount excluded), got %d: %+v", len(got), got)
 	}
 	d := got[0]
 	if d.Mount != "/" {
