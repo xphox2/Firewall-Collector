@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.9 - 2026-07-11
+
+### Added — OPNsense hardware/environmental sensors over SSH
+- **OPNsense devices now report hardware sensors** (temperature, per-rail voltage/current/power, fan speed) that are invisible to SNMP (net-snmp exposes no LM-SENSORS MIB). The SSH poll reads them in one `sysctl -iq hw.temperature dev.ina2xx dev.emc2302` and relays them through the existing `HardwareSensor` pipeline (server-side unchanged). Live-validated on an NXP Layerscape appliance: 34 sensors — 8 temps, 8 PSU rails ×(V/A/W), 2 fans.
+  - New `ssh.OPNsenseClient.GetHardwareSensors()` + `ssh.ParseOPNsenseSensors`. Values keep native FreeBSD units (°C/mV/mA/mW/RPM); fan `fault≠0` → `alarm` status.
+  - `sshPollDevice` now dispatches the post-config-backup diagnostics by concrete client type (FortiOS CLI for `*FortiGateClient`, sysctl sensors for `*OPNsenseClient`); the FortiGate path was extracted verbatim into `fortiGateSSHDiagnostics` (unchanged behavior).
+  - Robustness: `sysctl -i` ignores unknown OIDs so a partial-tree or x86 OPNsense (which has none of these drivers) degrades to fewer/zero sensors instead of discarding the whole read on a non-zero exit; unlabeled rails and `%`/`shunt_voltage`/`pwm` noise lines are skipped; sensors are stamped with a single client-side timestamp so the server's content-hash batch dedup can't silently drop an idle-appliance poll.
+- Tests: full-fixture parse (counts + native units + fan-fault), x86/partial/empty/garbage degradation, unlabeled-rail skip.
+
 ## 1.3.8 - 2026-07-11
 
 ### Fixed — review hardening of the vendor-aware SSH backup (1.3.6)

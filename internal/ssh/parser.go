@@ -2,8 +2,10 @@ package ssh
 
 import (
 	"bufio"
+	"fmt"
 	"log"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -29,6 +31,17 @@ type SensorDetailInfo struct {
 	Value  float64
 	Unit   string
 	Status string
+}
+
+// OPNsenseSensor is one hardware/environmental reading parsed from a FreeBSD
+// `sysctl` dump (temperature, per-rail voltage/current/power, fan speed).
+// Values keep native FreeBSD units (°C / mV / mA / mW / RPM) — no conversion.
+type OPNsenseSensor struct {
+	Name   string
+	Type   string // temperature | voltage | current | power | fan
+	Value  float64
+	Unit   string
+	Status string // normal | alarm
 }
 
 type LicenseDetailInfo struct {
@@ -579,4 +592,142 @@ func ParseVPNPhase2(output string) []VPNPhase2Info {
 	}
 
 	return tunnels
+}
+
+var (
+	opnTempPrefix = "hw.temperature."
+	// dev.ina2xx.<idx>.<field> — the INA2xx power monitors (one per PSU rail).
+	opnInaRe = regexp.MustCompile(`^dev\.ina2xx\.(\d+)\.(bus_voltage|current|power|label)$`)
+	// dev.emc2302.<unit>.fan<n>.<field> — the EMC230x fan controller.
+	opnFanRe = regexp.MustCompile(`^dev\.emc2302\.\d+\.fan(\d+)\.(rpm|fault)$`)
+)
+
+// ParseOPNsenseSensors parses the output of
+// `sysctl -iq hw.temperature dev.ina2xx dev.emc2302` into hardware sensors.
+// Absent sysctl trees (e.g. on x86 OPNsense, which has none of these drivers)
+// simply yield fewer sensors — the parser never errors. Values are kept in the
+// device's native units (°C / mV / mA / mW / RPM); the device-detail UI renders
+// the Unit string generically.
+func ParseOPNsenseSensors(output string) []OPNsenseSensor {
+	type rail struct {
+		label            string
+		volt, curr, powr string
+		hasV, hasC, hasP bool
+	}
+	type fan struct {
+		rpm, fault       string
+		hasRPM, hasFault bool
+	}
+	rails := map[int]*rail{}
+	fans := map[int]*fan{}
+	var sensors []OPNsenseSensor
+
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		key, val, ok := strings.Cut(scanner.Text(), ":")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		val = strings.TrimSpace(val)
+
+		if name, found := strings.CutPrefix(key, opnTempPrefix); found {
+			if f, err := parseTempC(val); err == nil {
+				sensors = append(sensors, OPNsenseSensor{Name: name, Type: "temperature", Value: f, Unit: "°C", Status: "normal"})
+			}
+			continue
+		}
+		if m := opnInaRe.FindStringSubmatch(key); m != nil {
+			idx, _ := strconv.Atoi(m[1])
+			r := rails[idx]
+			if r == nil {
+				r = &rail{}
+				rails[idx] = r
+			}
+			switch m[2] {
+			case "label":
+				r.label = val
+			case "bus_voltage":
+				r.volt, r.hasV = val, true
+			case "current":
+				r.curr, r.hasC = val, true
+			case "power":
+				r.powr, r.hasP = val, true
+			}
+			continue
+		}
+		if m := opnFanRe.FindStringSubmatch(key); m != nil {
+			n, _ := strconv.Atoi(m[1])
+			fn := fans[n]
+			if fn == nil {
+				fn = &fan{}
+				fans[n] = fn
+			}
+			switch m[2] {
+			case "rpm":
+				fn.rpm, fn.hasRPM = val, true
+			case "fault":
+				fn.fault, fn.hasFault = val, true
+			}
+			continue
+		}
+	}
+
+	// Power rails, in index order. Skip rails with no label (can't name them);
+	// emit only the electrical values actually present.
+	for _, idx := range sortedIntKeys(rails) {
+		r := rails[idx]
+		if r.label == "" {
+			continue
+		}
+		if r.hasV {
+			if v, err := strconv.ParseFloat(r.volt, 64); err == nil {
+				sensors = append(sensors, OPNsenseSensor{Name: r.label + " voltage", Type: "voltage", Value: v, Unit: "mV", Status: "normal"})
+			}
+		}
+		if r.hasC {
+			if v, err := strconv.ParseFloat(r.curr, 64); err == nil {
+				sensors = append(sensors, OPNsenseSensor{Name: r.label + " current", Type: "current", Value: v, Unit: "mA", Status: "normal"})
+			}
+		}
+		if r.hasP {
+			if v, err := strconv.ParseFloat(r.powr, 64); err == nil {
+				sensors = append(sensors, OPNsenseSensor{Name: r.label + " power", Type: "power", Value: v, Unit: "mW", Status: "normal"})
+			}
+		}
+	}
+
+	// Fans, in channel order. fault != 0 → alarm.
+	for _, n := range sortedIntKeys(fans) {
+		fn := fans[n]
+		if !fn.hasRPM {
+			continue
+		}
+		v, err := strconv.ParseFloat(fn.rpm, 64)
+		if err != nil {
+			continue
+		}
+		status := "normal"
+		if fn.hasFault && fn.fault != "0" {
+			status = "alarm"
+		}
+		sensors = append(sensors, OPNsenseSensor{Name: fmt.Sprintf("System Fan %d", n+1), Type: "fan", Value: v, Unit: "RPM", Status: status})
+	}
+
+	return sensors
+}
+
+// parseTempC parses a FreeBSD temperature string like "46.0C" into 46.0.
+func parseTempC(s string) (float64, error) {
+	return strconv.ParseFloat(strings.TrimSuffix(strings.TrimSpace(s), "C"), 64)
+}
+
+func sortedIntKeys[V any](m map[int]V) []int {
+	keys := make([]int, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Ints(keys)
+	return keys
 }

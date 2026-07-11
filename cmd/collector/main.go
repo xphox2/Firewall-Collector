@@ -45,7 +45,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.3.8"
+const version = "1.3.9"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -944,15 +944,26 @@ func (c *Collector) sshPollDevice(dev relay.DeviceInfo) {
 		c.checkAndSendConfigRevision(dev, checksum, sshClient)
 	}
 
-	// The remaining diagnostics are FortiOS-specific (`diagnose`/`get`/`execute`
-	// CLI). Non-FortiGate vendors (OPNsense) only do config backup above; their
-	// metrics are collected via SNMP, so skip the FortiGate-only commands rather
-	// than mis-driving the device.
-	fgt, ok := sshClient.(*ssh.FortiGateClient)
-	if !ok {
+	// The remaining SSH diagnostics are vendor-specific. FortiGate runs the
+	// FortiOS `diagnose`/`get`/`execute` CLI; OPNsense reads hardware sensors via
+	// sysctl. Dispatch by concrete client type so we never mis-drive a device
+	// with another vendor's commands.
+	switch client := sshClient.(type) {
+	case *ssh.OPNsenseClient:
+		if out, err := client.GetHardwareSensors(); err == nil {
+			c.sendOPNsenseSensors(dev, out)
+		} else {
+			log.Printf("[SSH] Hardware sensors failed for %s: %v", dev.Name, err)
+		}
 		return
+	case *ssh.FortiGateClient:
+		c.fortiGateSSHDiagnostics(dev, client)
 	}
+}
 
+// fortiGateSSHDiagnostics runs the FortiOS-only SSH telemetry commands (process
+// top, interface errors, sensors, license, performance, VPN status).
+func (c *Collector) fortiGateSSHDiagnostics(dev relay.DeviceInfo, fgt *ssh.FortiGateClient) {
 	processOutput, err := fgt.GetProcessTop()
 	if err == nil {
 		c.sendProcessSnapshot(dev, processOutput)
@@ -1382,6 +1393,36 @@ func (c *Collector) sendSensorDetails(dev relay.DeviceInfo, output string) {
 	}
 	if err := c.relayClient.SendSensorDetails(details); err != nil {
 		log.Printf("[SSH] Failed to send sensor details for %s: %v", dev.Name, err)
+	}
+}
+
+// sendOPNsenseSensors parses a sysctl hardware-sensor dump and relays it as
+// hardware sensors (temperature / voltage / current / power / fan). All rows are
+// stamped with a single client-side timestamp: the server dedups batches by a
+// content hash of the body, so identical zero-timestamp polls on an idle
+// appliance would collide and be dropped as replays — and a client timestamp
+// also survives spillover-queue replay with the correct time.
+func (c *Collector) sendOPNsenseSensors(dev relay.DeviceInfo, output string) {
+	parsed := ssh.ParseOPNsenseSensors(output)
+	if len(parsed) == 0 {
+		return
+	}
+	now := time.Now()
+	sensors := make([]relay.HardwareSensor, 0, len(parsed))
+	for _, s := range parsed {
+		sensors = append(sensors, relay.HardwareSensor{
+			DeviceID:  dev.ID,
+			Timestamp: now,
+			Name:      s.Name,
+			Type:      s.Type,
+			Value:     s.Value,
+			Status:    s.Status,
+			Unit:      s.Unit,
+		})
+	}
+	log.Printf("[SSH] Sending %d hardware sensors for %s", len(sensors), dev.Name)
+	if err := c.relayClient.SendHardwareSensors(sensors); err != nil {
+		log.Printf("[SSH] Failed to send hardware sensors for %s: %v", dev.Name, err)
 	}
 }
 
