@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.7 - 2026-07-11
+
+### Fixed — Go toolchain CVE gate
+- Bump the go.mod `go` directive `1.25.11` → `1.25.12` to clear **GO-2026-5856** (Encrypted Client Hello privacy leak in `crypto/tls`), which reddened govulncheck in CI (reached via TLS in the relay/observability HTTP paths). CI builds from the go-version-file, so the directive bump is the whole fix — matches the server's earlier v0.11.58 bump.
+
 ## 1.3.6 - 2026-07-11
 
 ### Added — vendor-aware SSH config backup (OPNsense)
