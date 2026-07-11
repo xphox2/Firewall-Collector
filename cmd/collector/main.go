@@ -45,7 +45,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.3.5"
+const version = "1.3.6"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -925,7 +925,11 @@ func (c *Collector) runSSHPollCycle() {
 }
 
 func (c *Collector) sshPollDevice(dev relay.DeviceInfo) {
-	sshClient := ssh.NewFortiGateClient(dev.IPAddress, dev.SSHPort, dev.SSHUsername, dev.SSHPassword)
+	sshClient, err := ssh.NewConfigBackupClient(dev.Vendor, dev.IPAddress, dev.SSHPort, dev.SSHUsername, dev.SSHPassword)
+	if err != nil {
+		log.Printf("[SSH] Skipping %s (%s): %v", dev.Name, dev.IPAddress, err)
+		return
+	}
 	if err := sshClient.Connect(); err != nil {
 		log.Printf("[SSH] Connect failed for %s (%s): %v", dev.Name, dev.IPAddress, err)
 		return
@@ -940,39 +944,50 @@ func (c *Collector) sshPollDevice(dev relay.DeviceInfo) {
 		c.checkAndSendConfigRevision(dev, checksum, sshClient)
 	}
 
-	processOutput, err := sshClient.GetProcessTop()
+	// The remaining diagnostics are FortiOS-specific (`diagnose`/`get`/`execute`
+	// CLI). Non-FortiGate vendors (OPNsense) only do config backup above; their
+	// metrics are collected via SNMP, so skip the FortiGate-only commands rather
+	// than mis-driving the device.
+	fgt, ok := sshClient.(*ssh.FortiGateClient)
+	if !ok {
+		return
+	}
+
+	processOutput, err := fgt.GetProcessTop()
 	if err == nil {
 		c.sendProcessSnapshot(dev, processOutput)
 	}
 
-	interfaceOutput, err := sshClient.GetInterfaceList()
+	interfaceOutput, err := fgt.GetInterfaceList()
 	if err == nil {
 		c.sendInterfaceErrors(dev, interfaceOutput)
 	}
 
-	sensorOutput, err := sshClient.GetSensorInfo()
+	sensorOutput, err := fgt.GetSensorInfo()
 	if err == nil {
 		c.sendSensorDetails(dev, sensorOutput)
 	}
 
-	licenseOutput, err := sshClient.GetLicenseStatus()
+	licenseOutput, err := fgt.GetLicenseStatus()
 	if err == nil {
 		c.sendLicenseDetails(dev, licenseOutput)
 	}
 
-	perfOutput, err := sshClient.GetPerformanceStatus()
+	perfOutput, err := fgt.GetPerformanceStatus()
 	if err == nil {
 		c.sendPerformanceStatus(dev, perfOutput)
 	}
 
-	phase1Output, phase2Output, err := sshClient.GetVPNStatus()
+	phase1Output, phase2Output, err := fgt.GetVPNStatus()
 	if err == nil {
 		c.sendVPNStatuses(dev, phase1Output, phase2Output)
 	}
 }
 
-func (c *Collector) checkAndSendConfigRevision(dev relay.DeviceInfo, checksum string, client *ssh.FortiGateClient) {
-	if c.cfg.TFTPConfigEnabled && c.tftpServer != nil {
+func (c *Collector) checkAndSendConfigRevision(dev relay.DeviceInfo, checksum string, client ssh.ConfigBackupClient) {
+	// TFTP backup is a FortiGate-only path (`execute backup config tftp`); other
+	// vendors always use the direct SSH config read below.
+	if dev.Vendor == "fortigate" && c.cfg.TFTPConfigEnabled && c.tftpServer != nil {
 		c.fetchConfigViaTFTP(dev, checksum, "poll")
 		return
 	}
@@ -990,13 +1005,17 @@ func (c *Collector) checkAndSendConfigRevision(dev relay.DeviceInfo, checksum st
 		ConfigText: config,
 		Length:     len(config),
 	}
+	// SSH-driven backups return the running config in cleartext (no masked
+	// passwords), so the quality is "full". FortiGate is left empty so the
+	// server's FortiGate-aware validator can still classify the backup; other
+	// vendors have no such validator, so mark it explicitly.
+	if dev.Vendor != "fortigate" {
+		rev.BackupQuality = "full"
+	}
 	if err := c.relayClient.SendConfigRevision(&rev); err != nil {
 		log.Printf("[SSH] Failed to send config revision for %s: %v", dev.Name, err)
 		return
 	}
-	// SSH-driven backups have no masked-password risk (the device
-	// returns the running config in cleartext), so the quality is
-	// always "full" here.
 	c.metrics.OnConfigRevisionSent("poll", "full")
 }
 
