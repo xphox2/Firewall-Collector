@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.3.12 - 2026-07-11
+
+### Added — SNMP-derived device throughput (all vendors)
+- **`pollDevice` now computes device-total network throughput (kbps in/out) from per-interface SNMP counter deltas** and sends it on every system-status row, for ALL vendors — this fills the `network_in_kbps`/`network_out_kbps` fields the server's device-detail throughput chart reads, which were previously written only by the FortiGate SSH `diagnose sys performance` path (so OPNsense/other vendors charted empty). Metric = per-interface **delta-then-sum** over physical Ethernet interfaces (ifType 6, ethernetCsmacd): transit bytes hit the entry NIC's ifIn once and the exit NIC's ifOut once (no double-count); LAGG members counted once, lagg/VLAN/bridge parents excluded.
+  - Per-device, per-ifIndex counter samples cached on the `Collector` (mutex-guarded, pruned on device-list refresh). Guards: first poll (or a newly appeared interface) warms up at 0; a per-interface counter reset (`curr < prev`) skips that interface only; samples ≤5s apart are skipped (overlapping polls); a plausibility cap clamps a direction to 0 when it exceeds Σ ifHighSpeed×1000 kbps (absorbs the silent 32↔64-bit counter-source flap), skipped when the device reports no ifHighSpeed.
+  - **Compute-then-send:** interface stats are fetched before the status row so the throughput can ride on it, but an interface-poll failure still sends the status (with 0 kbps) — CPU/mem/session data is never dropped because the interface walk failed.
+  - Live-validated against a 1 Gbps appliance (two reads through the helper → non-zero, plausible kbps on `dtsec1`); table-driven unit tests cover warm-up, steady-state math, per-interface reset clamping, interface appear/disappear churn, the plausibility cap and its no-ifHighSpeed escape, non-Ethernet exclusion, and the dt floor.
+
+### Changed — single throughput source for the SSH performance row
+- **`sendPerformanceStatus` (FortiGate SSH) no longer writes its own throughput**: the row now relays the cached SNMP-derived value (freshness-gated to 3× the SNMP poll interval; 0/0 when stale or missing) instead of the coarser SSH-reported 1-minute average, so the chart has exactly one throughput origin and a 15-minute SSH row can't dilute the average with an independent stale-window number. All other fields on the row (CPU breakdown, memory incl. freeable, sessions, uptime, session-rate/max-session processor stats) are unchanged, and `ParsePerformanceStatus` itself is untouched.
+- **Behavior change:** a FortiGate with working SSH but broken SNMP now shows **no throughput** (0) until SNMP is fixed — previously it showed the SSH-reported average. CPU/memory/session data via SSH is unaffected.
+
 ## 1.3.11 - 2026-07-11
 
 ### Fixed

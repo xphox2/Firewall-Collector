@@ -45,7 +45,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.3.11"
+const version = "1.3.12"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -66,8 +66,9 @@ type deviceSNMP interface {
 	Close() error
 }
 
-// metricSink is the subset of *relay.Client's send methods that pollDevice uses.
-// Lets tests capture what would be sent to the server. *relay.Client satisfies it.
+// metricSink is the subset of *relay.Client's send methods that pollDevice and
+// sendPerformanceStatus use. Lets tests capture what would be sent to the
+// server. *relay.Client satisfies it.
 type metricSink interface {
 	SendSystemStatuses([]relay.SystemStatus) error
 	SendInterfaceStats([]relay.InterfaceStats) error
@@ -144,6 +145,14 @@ type Collector struct {
 	// SSH polling: last poll time per device ID
 	sshLastPoll   map[uint]time.Time
 	sshLastPollMu sync.Mutex
+
+	// SNMP-derived device throughput (see throughput.go). prevIface caches
+	// per-device, per-ifIndex counter samples between polls; lastComputed
+	// caches the latest computed device totals for the SSH performance row.
+	// Both guarded by throughputMu and pruned together on device-list refresh.
+	prevIface    map[uint]map[int]ifSample
+	lastComputed map[uint]throughputSample
+	throughputMu sync.Mutex
 
 	// Observability (AUDIT-057). metrics is created at startup and
 	// shared with the metricsServer. lastSuccessfulPollMu guards the
@@ -303,6 +312,8 @@ func main() {
 		relayClient:        relayClient,
 		stopChan:           make(chan struct{}),
 		failCount:          make(map[uint]int),
+		prevIface:          make(map[uint]map[int]ifSample),
+		lastComputed:       make(map[uint]throughputSample),
 		metrics:            metrics,
 		metricsServer:      metricsServer,
 		lastSuccessfulPoll: make(map[uint]time.Time),
@@ -1458,6 +1469,15 @@ func (c *Collector) sendPerformanceStatus(dev relay.DeviceInfo, output string) {
 		return
 	}
 
+	// Single throughput source: the SNMP interface-delta computation (see
+	// throughput.go) is the sole origin of network_in_kbps/out_kbps. This row
+	// relays the cached value instead of the coarser SSH-reported average so
+	// a 15-minute SSH row can't dilute the chart's AVG with an independent
+	// (often stale-window) number. Stale/missing cache → 0,0: a FortiGate
+	// with working SSH but broken SNMP shows no throughput until SNMP is
+	// fixed.
+	inKbps, outKbps := c.cachedThroughput(dev.ID, time.Now())
+
 	activeCPU := perf.CPUUser + perf.CPUSystem + perf.CPUNice + perf.CPUIowait + perf.CPUIrq + perf.CPUSoftirq
 	status := relay.SystemStatus{
 		DeviceID:       dev.ID,
@@ -1469,8 +1489,8 @@ func (c *Collector) sendPerformanceStatus(dev relay.DeviceInfo, output string) {
 		MemoryFreeable: perf.MemoryFreeable,
 		SessionCount:   perf.SessionCount,
 		Uptime:         perf.Uptime,
-		NetworkInKbps:  perf.NetworkIn,
-		NetworkOutKbps: perf.NetworkOut,
+		NetworkInKbps:  inKbps,
+		NetworkOutKbps: outKbps,
 		CPUUser:        perf.CPUUser,
 		CPUSystem:      perf.CPUSystem,
 		CPUNice:        perf.CPUNice,
@@ -1479,7 +1499,7 @@ func (c *Collector) sendPerformanceStatus(dev relay.DeviceInfo, output string) {
 		CPUIrq:         perf.CPUIrq,
 		CPUSoftirq:     perf.CPUSoftirq,
 	}
-	if err := c.relayClient.SendSystemStatuses([]relay.SystemStatus{status}); err != nil {
+	if err := c.sink.SendSystemStatuses([]relay.SystemStatus{status}); err != nil {
 		log.Printf("[SSH] Failed to send performance status for %s: %v", dev.Name, err)
 	}
 
@@ -1501,7 +1521,7 @@ func (c *Collector) sendPerformanceStatus(dev relay.DeviceInfo, output string) {
 				Usage:     float64(perf.MaxSessions),
 			})
 		}
-		if err := c.relayClient.SendProcessorStats(procStats); err != nil {
+		if err := c.sink.SendProcessorStats(procStats); err != nil {
 			log.Printf("[SSH] Failed to send processor stats for %s: %v", dev.Name, err)
 		}
 	}
@@ -1629,16 +1649,27 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 	c.recordPollSuccess(dev.ID)
 	status.DeviceID = dev.ID
 	status.Timestamp = time.Now()
-	log.Printf("[SNMP] %s (%s) [device_id=%d]: CPU=%.1f%% Mem=%.1f%% Disk=%.1f%%/%dMB Sessions=%d",
-		dev.Name, dev.IPAddress, dev.ID, status.CPUUsage, status.MemoryUsage, status.DiskUsage, status.DiskTotal, status.SessionCount)
+
+	// Compute-then-send: fetch interface stats BEFORE sending the status so
+	// the device-total throughput (derived from per-interface counter deltas,
+	// all vendors — see throughput.go) rides on this status row. On an
+	// interface-poll error the status still goes out with 0 kbps — never drop
+	// CPU/mem/status because the interface walk failed.
+	ifaces, ifErr := client.GetInterfaceStats()
+	if ifErr == nil {
+		inKbps, outKbps := c.updateThroughput(dev.ID, ifaces, time.Now())
+		status.NetworkInKbps = inKbps
+		status.NetworkOutKbps = outKbps
+	}
+
+	log.Printf("[SNMP] %s (%s) [device_id=%d]: CPU=%.1f%% Mem=%.1f%% Disk=%.1f%%/%dMB Sessions=%d Net=%.1f/%.1f kbps",
+		dev.Name, dev.IPAddress, dev.ID, status.CPUUsage, status.MemoryUsage, status.DiskUsage, status.DiskTotal, status.SessionCount, status.NetworkInKbps, status.NetworkOutKbps)
 	if err := c.sink.SendSystemStatuses([]relay.SystemStatus{*status}); err != nil {
 		log.Printf("[SNMP] Failed to send system status for %s (device_id=%d): %v", dev.Name, dev.ID, err)
 	}
 
-	// Poll interface stats
-	ifaces, err := client.GetInterfaceStats()
-	if err != nil {
-		log.Printf("[SNMP] Interface poll failed for %s: %v", dev.Name, err)
+	if ifErr != nil {
+		log.Printf("[SNMP] Interface poll failed for %s: %v", dev.Name, ifErr)
 		return
 	}
 
@@ -1803,6 +1834,7 @@ func (c *Collector) deviceRefreshLoop() {
 			c.deviceMu.Unlock()
 			c.setTFTPServerIP(tftpIP)
 			c.applyTFTPAllowlist()
+			c.pruneThroughputCache(devices)
 
 			names := make([]string, len(devices))
 			for i, d := range devices {
