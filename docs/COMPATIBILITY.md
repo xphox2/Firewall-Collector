@@ -15,7 +15,7 @@
    preserved — no data loss.
 4. Wire format: `internal/relay/relay.go::SchemaVersionMin` / `SchemaVersionMax`
    on both repos. They **MUST** stay in lockstep. The current value
-   is `1-1` on both sides.
+   is `1-4` on both sides.
 
 ## Compatibility table
 
@@ -27,7 +27,8 @@
 
 | Collector version | Talks to server | Notes |
 |---|---|---|
-| **1.3.10+** (current) | 0.11.73+ for disk/load; any 0.11.x otherwise | Negotiates **schema v3**. Sends `disk_usage` + `load_average` only when the server negotiates ≥ 3; against an older (v2) server those two sends no-op, everything else works. |
+| **1.3.14+** (current, **schema v4**) | 0.11.75+ for the command channel; any 0.11.x otherwise | Negotiates **schema v4** — the first server→collector COMMAND CHANNEL: the heartbeat response may carry `pending_commands`, which the collector executes (only the `noop` type so far) and acknowledges via `POST /api/probes/:id/command-result`, idempotent by `command_id`. Both directions are gated on the negotiated schema ≥ 4, so against a ≤ 0.11.74 server nothing changes (no parsing, no result POSTs, no 404 churn). Command payloads may later carry credentials — run the relay over **HTTPS**; payloads are never logged. Deploy the server first; the collector follows at any time. |
+| 1.3.10 – 1.3.13 | 0.11.73+ for disk/load; any 0.11.x otherwise | Negotiates **schema v3**. Sends `disk_usage` + `load_average` only when the server negotiates ≥ 3; against an older (v2) server those two sends no-op, everything else works. |
 | 1.2.137 – 1.3.9 | 0.10.382+ (recommended), 0.10.380+ (works, field ignored) | Advertises `schema_version` on register (v2). |
 | 1.2.78 – 1.2.107 | any 0.10.x | Pre-handshake. Field omitted → server assumes v1. |
 | < 1.2.78 | unsupported | Missing disk-spillover (1.2.101) and several other hardening fixes. |
@@ -45,6 +46,7 @@ handshake is symmetric and both directions are backward-compatible.
 matches the drain timeout, so `docker compose pull && up -d` is safe).
 
 **Step 3.** Verify in the admin UI: Probes page should show
-`schema_version: 1` for every registered probe. Anything else is a
+`schema_version: 4` for every re-registered probe (server 0.11.75+
+persists the negotiated version on the probe row). A lower value is a
 mismatch — check the probe's logs and the server's
 [MIGRATING.md](https://github.com/xphox2/Firewall-Monitoring/blob/master/MIGRATING.md).

@@ -464,9 +464,15 @@ type Config struct {
 // (/flow-counters endpoint). It is gated: the collector only emits counter
 // samples to a server that negotiated v2, so a v1 server never sees the new
 // endpoint. v1 remains fully supported (Min stays 1) for mixed-version deploys.
+// v4 adds the server→collector COMMAND CHANNEL: the heartbeat response
+// carries `pending_commands` (PendingCommand) and the collector reports each
+// outcome to POST /api/probes/:id/command-result (CommandResult). Both
+// directions are gated on a negotiated schema ≥ 4 (mirroring the disk/load
+// v3 gate), so a v3 server is never POSTed an endpoint it doesn't have and a
+// v3 collector never parses commands.
 const (
 	SchemaVersionMin = 1
-	SchemaVersionMax = 3
+	SchemaVersionMax = 4
 )
 
 type RegisterRequest struct {
@@ -487,6 +493,38 @@ type RegisterResponse struct {
 	// SchemaVersion is the version the server selected for this probe. A
 	// pre-handshake server omits it (zero value) → the collector assumes v1.
 	SchemaVersion int `json:"schema_version,omitempty"`
+}
+
+// PendingCommand is one server→collector command delivered on the heartbeat
+// response (schema v4). The server attaches pending_commands only for probes
+// that registered with schema ≥ 4, and re-delivers a command whose result it
+// hasn't received (at-least-once) — the executor must dedupe by CommandID.
+// SECURITY: Payload is the command's type-specific JSON document; future
+// command types will carry credentials in it, so it must NEVER be logged
+// (log CommandID + Type only).
+type PendingCommand struct {
+	CommandID string    `json:"command_id"`
+	DeviceID  uint      `json:"device_id"`
+	Type      string    `json:"type"`
+	Payload   string    `json:"payload"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// CommandResult is the body of POST /api/probes/:id/command-result (schema
+// v4): the outcome report for one executed PendingCommand. Status must be
+// "succeeded" or "failed"; the server is idempotent by CommandID (first
+// terminal result wins), so retries and redelivery races are safe.
+type CommandResult struct {
+	CommandID string `json:"command_id"`
+	Status    string `json:"status"`
+	Result    string `json:"result"`
+}
+
+// heartbeatResponse is the schema-v4 heartbeat reply shape. Pre-v4 servers
+// return just {"success":true}; decoding tolerates the absent field.
+type heartbeatResponse struct {
+	Success         bool             `json:"success"`
+	PendingCommands []PendingCommand `json:"pending_commands"`
 }
 
 type Client struct {
@@ -558,6 +596,14 @@ type Client struct {
 	// heartbeat includes it so the server can detect host-key changes.
 	observedHostKeysFn func() map[uint]string
 
+	// commandHandlerFn, if set, receives the pending_commands the server
+	// attached to a heartbeat response (schema v4). Invoked on a separate
+	// goroutine so a slow command executor can never stall the heartbeat
+	// cadence (a stalled heartbeat marks the probe offline server-side).
+	// SECURITY: command payloads may carry credentials for future command
+	// types — the handler must never log them.
+	commandHandlerFn func([]PendingCommand)
+
 	// onMetricSendFailed, if set, is called (with the metric kind) whenever a
 	// primary metric send fails and is buffered to the spillover queue. Wired to
 	// the observability counter firewall_collector_metric_send_failed_total (M12).
@@ -568,6 +614,14 @@ type Client struct {
 // fingerprints (device ID -> fingerprint) to include on each heartbeat.
 func (c *Client) SetObservedHostKeysProvider(fn func() map[uint]string) {
 	c.observedHostKeysFn = fn
+}
+
+// SetCommandHandler registers the executor for heartbeat-delivered server
+// commands (schema v4). The handler is invoked asynchronously with each
+// batch of pending commands; it must dedupe by CommandID itself (the server
+// re-delivers a command whose result it hasn't received — at-least-once).
+func (c *Client) SetCommandHandler(fn func([]PendingCommand)) {
+	c.commandHandlerFn = fn
 }
 
 // SetMetricSendFailedHook registers a callback invoked (with the metric kind)
@@ -1102,6 +1156,7 @@ func (c *Client) sendHeartbeatWithStatus(status string) error {
 
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		c.handlePendingCommands(resp)
 		return nil
 
 	case resp.StatusCode == 401 || resp.StatusCode == 403:
@@ -1135,6 +1190,55 @@ func (c *Client) sendHeartbeatWithStatus(status string) error {
 	default:
 		return fmt.Errorf("heartbeat failed (HTTP %d): %s", resp.StatusCode, httpErrorDetail(resp))
 	}
+}
+
+// handlePendingCommands parses the schema-v4 pending_commands field off a
+// successful heartbeat response and hands the batch to the registered
+// command handler on its own goroutine (a slow executor must never stall the
+// heartbeat cadence — a stalled heartbeat marks the probe offline
+// server-side). Gated on a negotiated schema ≥ 4: below that the server
+// never sends the field and this collector doesn't parse for it, mirroring
+// the disk/load v3 send gate. Never logs command payloads.
+func (c *Client) handlePendingCommands(resp *http.Response) {
+	if c.negotiatedSchema.Load() < 4 || c.commandHandlerFn == nil {
+		return
+	}
+	var hb heartbeatResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&hb); err != nil {
+		log.Printf("[Relay] Heartbeat response parse (pending_commands): %v", err)
+		return
+	}
+	if len(hb.PendingCommands) == 0 {
+		return
+	}
+	log.Printf("[Relay] Heartbeat delivered %d pending command(s)", len(hb.PendingCommands))
+	go c.commandHandlerFn(hb.PendingCommands)
+}
+
+// SendCommandResult reports the outcome of one executed server command to
+// POST /api/probes/:id/command-result (schema v4). Mirrors the disk/load v3
+// gate: a no-op against a server that negotiated < 4 (it has no such route,
+// and 404s would churn re-registration). The server is idempotent by
+// CommandID, so redelivery races and retried POSTs are safe.
+func (c *Client) SendCommandResult(res CommandResult) error {
+	if c.negotiatedSchema.Load() < 4 {
+		return nil
+	}
+	jsonData, err := json.Marshal(res)
+	if err != nil {
+		return fmt.Errorf("failed to marshal command result: %w", err)
+	}
+	url := fmt.Sprintf("%s/api/probes/%d/command-result", c.Config.ServerURL, c.GetProbeID())
+	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
+	if err != nil {
+		return fmt.Errorf("failed to send command result: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("command result for %s returned HTTP %d: %s",
+			res.CommandID, resp.StatusCode, httpErrorDetail(resp))
+	}
+	return nil
 }
 
 // --- Queue methods (append to queue for batch sending) ---
