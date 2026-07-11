@@ -45,7 +45,7 @@ var (
 	onsOIDStorageUnits = ".1.3.6.1.2.1.25.2.3.1.4" // hrStorageAllocationUnits (bytes)
 	onsOIDStorageSize  = ".1.3.6.1.2.1.25.2.3.1.5" // hrStorageSize (in units)
 	onsOIDStorageUsed  = ".1.3.6.1.2.1.25.2.3.1.6" // hrStorageUsed (in units)
-	hrStorageFixedDisk = "25.2.1.4"                // suffix of hrStorageTypes.fixedDisk
+	hrStorageFixedDisk = ".25.2.1.4"               // suffix of hrStorageTypes.fixedDisk (leading dot avoids false-matching ...125.2.1.4)
 
 	// --- UCD-SNMP-MIB laTable (load average) ---
 	onsBaseOIDLoad = ".1.3.6.1.4.1.2021.10.1.3" // laLoad column; .1/.2/.3 = 1/5/15 min
@@ -207,6 +207,17 @@ func (o *OPNsenseProfile) ParseProcessorStats(pdus []gosnmp.SnmpPDU) []relay.Pro
 
 func (o *OPNsenseProfile) StorageBaseOID() string { return onsBaseOIDStorage }
 
+// nonNegUint64 coerces an SNMP integer to uint64, clamping a negative value
+// (from a broken agent returning a signed Integer32) to 0 rather than wrapping
+// to a huge number. A 0 then falls through the size==0/units==0 guards.
+func nonNegUint64(v interface{}) uint64 {
+	n := gosnmp.ToBigInt(v).Int64()
+	if n < 0 {
+		return 0
+	}
+	return uint64(n)
+}
+
 // ParseDiskUsage walks hrStorageTable and emits one row per fixed-disk
 // filesystem (RAM/virtual/network/removable storage rows are dropped). Byte
 // totals are size/used × allocation-units; percent is clamped and size==0 rows
@@ -245,16 +256,16 @@ func (o *OPNsenseProfile) ParseDiskUsage(pdus []gosnmp.SnmpPDU) []relay.DiskUsag
 			}
 		case strings.HasPrefix(pdu.Name, onsOIDStorageUnits+"."):
 			if r := get(getIndexFromOID(pdu.Name, onsOIDStorageUnits)); r != nil {
-				r.units = uint64(gosnmp.ToBigInt(pdu.Value).Int64())
+				r.units = nonNegUint64(pdu.Value)
 			}
 		case strings.HasPrefix(pdu.Name, onsOIDStorageSize+"."):
 			if r := get(getIndexFromOID(pdu.Name, onsOIDStorageSize)); r != nil {
-				r.size = uint64(gosnmp.ToBigInt(pdu.Value).Int64())
+				r.size = nonNegUint64(pdu.Value)
 				r.hasSize = true
 			}
 		case strings.HasPrefix(pdu.Name, onsOIDStorageUsed+"."):
 			if r := get(getIndexFromOID(pdu.Name, onsOIDStorageUsed)); r != nil {
-				r.used = uint64(gosnmp.ToBigInt(pdu.Value).Int64())
+				r.used = nonNegUint64(pdu.Value)
 			}
 		}
 	}

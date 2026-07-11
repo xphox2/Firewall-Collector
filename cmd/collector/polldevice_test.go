@@ -162,6 +162,8 @@ func TestPollDevice_CollectsStampsAndSends(t *testing.T) {
 		{"secStats", len(sink.secStats)},
 		{"sdwan", len(sink.sdwan)},
 		{"licenses", len(sink.licenses)},
+		{"diskUsage", len(sink.diskUsage)},
+		{"loadAverage", len(sink.loadAverage)},
 	}
 	for _, c := range checks {
 		if c.got != 1 {
@@ -175,6 +177,13 @@ func TestPollDevice_CollectsStampsAndSends(t *testing.T) {
 	}
 	if sink.interfaceStats[0].DeviceID != 1 || sink.interfaceStats[0].Timestamp.IsZero() {
 		t.Errorf("interface stats not stamped: DeviceID=%d zeroTS=%v", sink.interfaceStats[0].DeviceID, sink.interfaceStats[0].Timestamp.IsZero())
+	}
+	// The two schema-v3 metrics are stamped like the rest.
+	if sink.diskUsage[0].DeviceID != 1 || sink.diskUsage[0].Timestamp.IsZero() {
+		t.Errorf("disk usage not stamped: DeviceID=%d zeroTS=%v", sink.diskUsage[0].DeviceID, sink.diskUsage[0].Timestamp.IsZero())
+	}
+	if sink.loadAverage[0].DeviceID != 1 || sink.loadAverage[0].Timestamp.IsZero() {
+		t.Errorf("load average not stamped: DeviceID=%d zeroTS=%v", sink.loadAverage[0].DeviceID, sink.loadAverage[0].Timestamp.IsZero())
 	}
 
 	// A successful poll resets the circuit breaker and records the device.
