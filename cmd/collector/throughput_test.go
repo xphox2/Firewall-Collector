@@ -388,3 +388,70 @@ func TestSendPerformanceStatus_StaleCacheSendsZero(t *testing.T) {
 		t.Errorf("non-throughput fields must still pass through: sessions=%d cpu=%v", got.SessionCount, got.CPUUsage)
 	}
 }
+
+// TestSendPerformanceStatus_UsesCachedSNMPVitals: with fresh SNMP vitals cached,
+// the SSH row carries the SNMP cpu/mem/disk/sessions (alert coherence) instead
+// of the SSH-parsed methodology, while the SSH-exclusive CPU breakdown and
+// MemoryFreeable pass through.
+func TestSendPerformanceStatus_UsesCachedSNMPVitals(t *testing.T) {
+	sink := &fakeSink{}
+	c := newTestCollector(sink, nil)
+	now := time.Now()
+	c.lastComputed = map[uint]throughputSample{1: {inKbps: 321.5, outKbps: 42.25, ts: now}}
+	c.lastVitals = map[uint]vitalsSample{
+		1: {cpuUsage: 73, memoryUsage: 61, diskUsage: 88, diskTotal: 512, sessions: 1200, ts: now},
+	}
+
+	c.sendPerformanceStatus(validDevice(), sshPerfOutput)
+
+	got := sink.systemStatuses[0]
+	// Alert scalars come from the SNMP cache, not the SSH parse (10/50/8542).
+	if !almostEqual(got.CPUUsage, 73) || !almostEqual(got.MemoryUsage, 61) || !almostEqual(got.DiskUsage, 88) {
+		t.Errorf("vitals = cpu %v mem %v disk %v, want SNMP 73/61/88", got.CPUUsage, got.MemoryUsage, got.DiskUsage)
+	}
+	if got.SessionCount != 1200 || got.DiskTotal != 512 {
+		t.Errorf("sessions/diskTotal = %d/%d, want SNMP 1200/512", got.SessionCount, got.DiskTotal)
+	}
+	// SSH-exclusive fields still pass through.
+	if !almostEqual(got.CPUUser, 5) || !almostEqual(got.CPUIdle, 90) || got.MemoryFreeable != uint64(512000)*1024 {
+		t.Errorf("SSH-exclusive fields lost: user %v idle %v freeable %d", got.CPUUser, got.CPUIdle, got.MemoryFreeable)
+	}
+}
+
+// TestCacheVitals_OutOfOrderPoll: a slow overlapping same-device poll (its `now`
+// predating the cached sample) must NOT clobber the newer vitals — otherwise the
+// SSH row would carry a stale CPU and could false-resolve a genuine CPU_HIGH.
+func TestCacheVitals_OutOfOrderPoll(t *testing.T) {
+	c := newTestCollector(&fakeSink{}, nil)
+	t0 := time.Now()
+	t60 := t0.Add(60 * time.Second)
+
+	c.cacheVitals(1, &relay.SystemStatus{CPUUsage: 91}, t60) // newer sample
+	c.cacheVitals(1, &relay.SystemStatus{CPUUsage: 40}, t0)  // out-of-order (older now)
+
+	v, ok := c.cachedVitals(1, t60)
+	if !ok || !almostEqual(v.cpuUsage, 91) {
+		t.Fatalf("out-of-order poll clobbered vitals: cpu=%v ok=%v, want 91", v.cpuUsage, ok)
+	}
+}
+
+// TestSendPerformanceStatus_StaleVitalsKeepsSSH: a stale/absent vitals cache
+// leaves the SSH-parsed cpu/mem/sessions in place (best effort during an SNMP
+// outage; the server's no-data guard handles the resulting disk_usage==0).
+func TestSendPerformanceStatus_StaleVitalsKeepsSSH(t *testing.T) {
+	sink := &fakeSink{}
+	c := newTestCollector(sink, nil)
+	c.lastVitals = map[uint]vitalsSample{
+		1: {cpuUsage: 73, memoryUsage: 61, diskUsage: 88, sessions: 1200, ts: time.Now().Add(-10 * time.Minute)},
+	}
+
+	c.sendPerformanceStatus(validDevice(), sshPerfOutput)
+
+	got := sink.systemStatuses[0]
+	if !almostEqual(got.CPUUsage, 10) || !almostEqual(got.MemoryUsage, 50) || got.SessionCount != 8542 {
+		t.Errorf("stale vitals should keep SSH values: cpu %v mem %v sessions %d", got.CPUUsage, got.MemoryUsage, got.SessionCount)
+	}
+	if got.DiskUsage != 0 {
+		t.Errorf("DiskUsage = %v, want 0 (SSH row has no disk; server no-data guard covers it)", got.DiskUsage)
+	}
+}

@@ -45,7 +45,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.3.12"
+const version = "1.3.13"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -152,6 +152,7 @@ type Collector struct {
 	// Both guarded by throughputMu and pruned together on device-list refresh.
 	prevIface    map[uint]map[int]ifSample
 	lastComputed map[uint]throughputSample
+	lastVitals   map[uint]vitalsSample
 	throughputMu sync.Mutex
 
 	// Observability (AUDIT-057). metrics is created at startup and
@@ -1499,6 +1500,19 @@ func (c *Collector) sendPerformanceStatus(dev relay.DeviceInfo, output string) {
 		CPUIrq:         perf.CPUIrq,
 		CPUSoftirq:     perf.CPUSoftirq,
 	}
+	// Alert coherence: source cpu/mem/disk/sessions from the latest SNMP vitals
+	// so this SSH row can't fire/flap a threshold alert on a different CPU/mem
+	// methodology (or a missing disk value) than the SNMP rows carry. The CPU
+	// breakdown and MemoryFreeable stay SSH-sourced (their only feed). Stale or
+	// missing SNMP cache → keep the SSH-parsed values (best effort during an
+	// SNMP outage; the server's no-data guard covers a resulting disk_usage==0).
+	if v, ok := c.cachedVitals(dev.ID, time.Now()); ok {
+		status.CPUUsage = v.cpuUsage
+		status.MemoryUsage = v.memoryUsage
+		status.DiskUsage = v.diskUsage
+		status.DiskTotal = v.diskTotal
+		status.SessionCount = v.sessions
+	}
 	if err := c.sink.SendSystemStatuses([]relay.SystemStatus{status}); err != nil {
 		log.Printf("[SSH] Failed to send performance status for %s: %v", dev.Name, err)
 	}
@@ -1661,6 +1675,10 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo) {
 		status.NetworkInKbps = inKbps
 		status.NetworkOutKbps = outKbps
 	}
+
+	// Cache the SNMP vitals so the SSH performance row can relay the same
+	// cpu/mem/disk/session values (single, coherent source for alerting).
+	c.cacheVitals(dev.ID, status, status.Timestamp)
 
 	log.Printf("[SNMP] %s (%s) [device_id=%d]: CPU=%.1f%% Mem=%.1f%% Disk=%.1f%%/%dMB Sessions=%d Net=%.1f/%.1f kbps",
 		dev.Name, dev.IPAddress, dev.ID, status.CPUUsage, status.MemoryUsage, status.DiskUsage, status.DiskTotal, status.SessionCount, status.NetworkInKbps, status.NetworkOutKbps)

@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.13 - 2026-07-11
+
+### Fixed
+- **SSH performance row now carries the SNMP-sourced cpu/mem/disk/session vitals** (single, coherent source for alerting). The FortiGate `diagnose sys performance` row previously reported CPU/memory with a different methodology (instantaneous "CPU states" vs SNMP's 1-minute average) and no disk value — and since the server (v0.11.74) now evaluates the newest relayed `system_status` row for threshold alerts, that methodology gap could flap a borderline CPU_HIGH. The SSH row now fills cpu/mem/disk/sessions from the latest cached SNMP vitals (freshness-gated, same 3× poll-interval pattern as the throughput cache); the SSH-exclusive CPU breakdown and `MemoryFreeable` still pass through. A stale/missing SNMP cache leaves the SSH-parsed values (best effort during an SNMP outage; the server's no-data guard covers a resulting `disk_usage=0`). Tests: fresh-vitals coherence + stale-vitals fallback.
+
 ## 1.3.12 - 2026-07-11
 
 ### Added — SNMP-derived device throughput (all vendors)
