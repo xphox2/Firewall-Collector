@@ -283,6 +283,13 @@ func (o *OPNsenseProfile) ParseDiskUsage(pdus []gosnmp.SnmpPDU) []relay.DiskUsag
 		if !strings.HasSuffix(r.typ, hrStorageFixedDisk) {
 			continue
 		}
+		// Skip the unbound DNS resolver's chroot bind-mounts. OPNsense nullfs-mounts
+		// system libs into /var/unbound so the chrooted resolver can run; SNMP
+		// reports each as a "fixed disk" that just duplicates the underlying
+		// filesystem's usage (e.g. /var/unbound/lib mirrors /), which is noise.
+		if strings.HasPrefix(r.descr, "/var/unbound/") {
+			continue
+		}
 		if !r.hasSize || r.size == 0 || r.units == 0 || r.descr == "" || seen[r.descr] {
 			continue
 		}

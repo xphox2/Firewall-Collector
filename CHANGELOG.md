@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.11 - 2026-07-11
+
+### Fixed
+- **OPNsense disk usage skips the unbound chroot bind-mounts.** OPNsense nullfs-mounts system libraries into `/var/unbound/…` so the chrooted DNS resolver can run; SNMP reports each as a separate "fixed disk" that just duplicates the underlying filesystem's usage (e.g. `/var/unbound/lib` mirrors `/`). `ParseDiskUsage` now drops any mount under `/var/unbound/` as noise. Test updated.
+
 ## 1.3.10 - 2026-07-11
 
 ### Added — SNMP disk-usage & load-average telemetry (schema v3)
