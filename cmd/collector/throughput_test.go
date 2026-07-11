@@ -418,6 +418,23 @@ func TestSendPerformanceStatus_UsesCachedSNMPVitals(t *testing.T) {
 	}
 }
 
+// TestCacheVitals_OutOfOrderPoll: a slow overlapping same-device poll (its `now`
+// predating the cached sample) must NOT clobber the newer vitals — otherwise the
+// SSH row would carry a stale CPU and could false-resolve a genuine CPU_HIGH.
+func TestCacheVitals_OutOfOrderPoll(t *testing.T) {
+	c := newTestCollector(&fakeSink{}, nil)
+	t0 := time.Now()
+	t60 := t0.Add(60 * time.Second)
+
+	c.cacheVitals(1, &relay.SystemStatus{CPUUsage: 91}, t60) // newer sample
+	c.cacheVitals(1, &relay.SystemStatus{CPUUsage: 40}, t0)  // out-of-order (older now)
+
+	v, ok := c.cachedVitals(1, t60)
+	if !ok || !almostEqual(v.cpuUsage, 91) {
+		t.Fatalf("out-of-order poll clobbered vitals: cpu=%v ok=%v, want 91", v.cpuUsage, ok)
+	}
+}
+
 // TestSendPerformanceStatus_StaleVitalsKeepsSSH: a stale/absent vitals cache
 // leaves the SSH-parsed cpu/mem/sessions in place (best effort during an SNMP
 // outage; the server's no-data guard handles the resulting disk_usage==0).

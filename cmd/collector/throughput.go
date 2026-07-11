@@ -141,11 +141,17 @@ func (c *Collector) updateThroughput(deviceID uint, ifaces []relay.InterfaceStat
 // performance row relays this cache instead of the coarser SSH-reported
 // average so the chart has a single throughput source — a stale cache (SNMP
 // broken) yields 0, matching "no throughput data" rather than a frozen value.
-func (c *Collector) cachedThroughput(deviceID uint, now time.Time) (inKbps, outKbps float64) {
-	freshFor := 3 * time.Minute // matches 3× the 60s default poll interval
+// cacheFreshFor is the staleness window for the throughput/vitals caches:
+// 3× the SNMP poll interval (default 3 minutes at the 60s default).
+func (c *Collector) cacheFreshFor() time.Duration {
 	if c.cfg != nil && c.cfg.PollInterval > 0 {
-		freshFor = 3 * c.cfg.PollInterval
+		return 3 * c.cfg.PollInterval
 	}
+	return 3 * time.Minute
+}
+
+func (c *Collector) cachedThroughput(deviceID uint, now time.Time) (inKbps, outKbps float64) {
+	freshFor := c.cacheFreshFor()
 	c.throughputMu.Lock()
 	defer c.throughputMu.Unlock()
 	s, ok := c.lastComputed[deviceID]
@@ -163,6 +169,12 @@ func (c *Collector) cacheVitals(deviceID uint, s *relay.SystemStatus, now time.T
 	if c.lastVitals == nil {
 		c.lastVitals = make(map[uint]vitalsSample)
 	}
+	// Out-of-order guard (as in updateThroughput): a slow overlapping same-device
+	// poll must not clobber a newer sample with stale vitals — that would make
+	// the SSH row carry an older CPU/mem than the newest SNMP row.
+	if v, ok := c.lastVitals[deviceID]; ok && !now.After(v.ts) {
+		return
+	}
 	c.lastVitals[deviceID] = vitalsSample{
 		cpuUsage:    s.CPUUsage,
 		memoryUsage: s.MemoryUsage,
@@ -178,10 +190,7 @@ func (c *Collector) cacheVitals(deviceID uint, s *relay.SystemStatus, now time.T
 // (SNMP broken) means the SSH row keeps its own parsed values — best effort;
 // the server's no-data guard covers a resulting disk_usage==0.
 func (c *Collector) cachedVitals(deviceID uint, now time.Time) (vitalsSample, bool) {
-	freshFor := 3 * time.Minute
-	if c.cfg != nil && c.cfg.PollInterval > 0 {
-		freshFor = 3 * c.cfg.PollInterval
-	}
+	freshFor := c.cacheFreshFor()
 	c.throughputMu.Lock()
 	defer c.throughputMu.Unlock()
 	v, ok := c.lastVitals[deviceID]
