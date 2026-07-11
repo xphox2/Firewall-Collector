@@ -52,24 +52,37 @@ func TestConfigBackupClient_InterfaceSatisfied(t *testing.T) {
 	var _ ConfigBackupClient = NewOPNsenseClient("h", 22, "u", "p")
 }
 
-func TestParseHexHash(t *testing.T) {
-	const validHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+func TestExtractOPNsenseConfig(t *testing.T) {
+	const doc = `<?xml version="1.0"?>` + "\n<opnsense>\n  <system><hostname>fw</hostname></system>\n</opnsense>"
 	tests := []struct {
-		name string
-		in   string
-		want string
+		name    string
+		in      string
+		want    string
+		wantErr bool
 	}{
-		{"sha256 -q bare hash with newline", validHash + "\n", validHash},
-		{"default sha256 file form", "SHA256 (/conf/config.xml) = " + validHash + "\n", validHash},
-		{"surrounding whitespace", "  " + validHash + "  ", validHash},
-		{"empty output", "", ""},
-		{"too short", "abc123", ""},
-		{"right length but not hex", "zz" + validHash[2:], ""},
+		{"clean document", doc, doc, false},
+		{"trailing newline from cat", doc + "\n", doc, false},
+		{"leading shell/stderr noise", "Last login: Tue\ncsh: no such file\n" + doc, doc, false},
+		{"trailing prompt noise", doc + "\nroot@fw:~ # ", doc, false},
+		{"no xml decl, bare root", "<opnsense>\n<x/>\n</opnsense>", "<opnsense>\n<x/>\n</opnsense>", false},
+		{"truncated: missing close tag", `<?xml version="1.0"?>` + "\n<opnsense>\n<system>", "", true},
+		{"not a config (permission denied)", "cat: /conf/config.xml: Permission denied", "", true},
+		{"empty", "", "", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := parseHexHash(tt.in); got != tt.want {
-				t.Errorf("parseHexHash(%q) = %q, want %q", tt.in, got, tt.want)
+			got, err := extractOPNsenseConfig(tt.in)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got %q", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("extractOPNsenseConfig() = %q, want %q", got, tt.want)
 			}
 		})
 	}

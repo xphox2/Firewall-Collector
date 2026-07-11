@@ -32,6 +32,11 @@ type OPNsenseClient struct {
 	keyPassphrase   string
 	client          *ssh.Client
 	observedHostKey string
+	// config caches the extracted config for the client's lifetime (one poll):
+	// GetConfigChecksum and GetConfig then share a single network fetch, and the
+	// checksum is always derived from the exact bytes that get sent.
+	config        string
+	configFetched bool
 }
 
 // NewOPNsenseClient builds a password-authenticated OPNsense SSH client.
@@ -75,60 +80,62 @@ func (c *OPNsenseClient) Close() {
 	}
 }
 
-// GetConfig reads /conf/config.xml and returns it verbatim. It validates that
-// the content looks like an OPNsense config so a permission error or console
-// menu (which would return unrelated text) is reported as a failure rather than
-// stored as a bogus revision.
+// GetConfig reads /conf/config.xml and returns the XML document. The result is
+// cached for the client's lifetime so a poll's checksum + backup share one
+// fetch. extractOPNsenseConfig isolates the document from any shell/stderr noise
+// and requires a complete <opnsense>…</opnsense>, so a permission error, console
+// menu, or truncated capture is reported as a failure rather than stored as a
+// bogus revision.
 func (c *OPNsenseClient) GetConfig() (string, error) {
 	if c.client == nil {
 		return "", fmt.Errorf("not connected")
+	}
+	if c.configFetched {
+		return c.config, nil
 	}
 	out, err := runCommandRaw(c.client, "cat "+opnsenseConfigPath, false, commandTimeout)
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", opnsenseConfigPath, err)
 	}
-	cfg := strings.TrimSpace(out)
-	if !strings.Contains(cfg, "<opnsense>") {
-		return "", fmt.Errorf("unexpected content from %s (missing <opnsense> root — check that the SSH account has shell access and read permission)", opnsenseConfigPath)
+	cfg, err := extractOPNsenseConfig(out)
+	if err != nil {
+		return "", err
 	}
+	c.config = cfg
+	c.configFetched = true
 	return cfg, nil
 }
 
-// GetConfigChecksum returns a cheap change-detection token for the config. It
-// prefers a remote `sha256 -q` (a tiny command that avoids transferring the
-// whole file) and falls back to hashing the fetched config locally on images
-// where that binary or its output differs.
+// extractOPNsenseConfig isolates the XML document from raw command output. It
+// tolerates any shell/stderr noise before the XML declaration or after the
+// closing root tag (so a login banner or csh warning can't corrupt the stored
+// config), and requires a complete <opnsense>…</opnsense> pair so a truncated
+// capture is rejected rather than silently stored (the server has no OPNsense
+// validator to catch it downstream).
+func extractOPNsenseConfig(out string) (string, error) {
+	start := strings.Index(out, "<?xml")
+	if start < 0 {
+		start = strings.Index(out, "<opnsense>")
+	}
+	if start < 0 {
+		return "", fmt.Errorf("no OPNsense config in output from %s (missing <opnsense> root — check the SSH account has shell access and read permission)", opnsenseConfigPath)
+	}
+	const closeTag = "</opnsense>"
+	end := strings.LastIndex(out, closeTag)
+	if end < start {
+		return "", fmt.Errorf("incomplete OPNsense config from %s (missing %s — capture may be truncated)", opnsenseConfigPath, closeTag)
+	}
+	return out[start : end+len(closeTag)], nil
+}
+
+// GetConfigChecksum returns a change-detection token derived from the exact
+// config bytes GetConfig will send, so the stored checksum always corresponds
+// to the stored config. Backed by the same cached fetch as GetConfig.
 func (c *OPNsenseClient) GetConfigChecksum() (string, error) {
-	if c.client == nil {
-		return "", fmt.Errorf("not connected")
-	}
-	if out, err := runCommandRaw(c.client, "sha256 -q "+opnsenseConfigPath, false, commandTimeout); err == nil {
-		if h := parseHexHash(out); h != "" {
-			return h, nil
-		}
-	}
 	cfg, err := c.GetConfig()
 	if err != nil {
 		return "", err
 	}
 	sum := sha256.Sum256([]byte(cfg))
 	return hex.EncodeToString(sum[:]), nil
-}
-
-// parseHexHash extracts a 64-char hex SHA-256 from command output. It takes the
-// last whitespace field so it handles both `sha256 -q` (bare hash) and the
-// default `SHA256 (file) = <hash>` form.
-func parseHexHash(out string) string {
-	fields := strings.Fields(out)
-	if len(fields) == 0 {
-		return ""
-	}
-	cand := fields[len(fields)-1]
-	if len(cand) != 64 {
-		return ""
-	}
-	if _, err := hex.DecodeString(cand); err != nil {
-		return ""
-	}
-	return cand
 }

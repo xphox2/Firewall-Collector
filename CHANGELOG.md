@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.8 - 2026-07-11
+
+### Fixed — review hardening of the vendor-aware SSH backup (1.3.6)
+- **Empty-vendor FortiGate devices no longer lose FortiGate behavior.** The SSH client factory maps an empty vendor to FortiGate (legacy default), but the backup path compared the literal `"fortigate"`, so a legacy device record with an empty vendor (common when a prod server lags the repo) was denied the TFTP capture path *and* stamped `backup_quality="full"` — which the server honors, defeating its FortiOS masked-backup detection. A shared `isFortiGateVendor` helper (empty **or** `"fortigate"`) now drives both decisions consistently.
+- **The syslog-triggered TFTP backup is now vendor-gated too.** Only the poll path was gated in 1.3.6; a config-change syslog spoofed with a non-FortiGate device's source IP could still reach the FortiGate-hardcoded `execute backup config tftp` and mis-drive that box with FortiOS CLI. The gate now lives at `fetchConfigViaTFTP`, the shared chokepoint for both the poll and syslog callers.
+- **OPNsense config capture is more robust and its checksum is coherent.** The config is fetched once and cached, so the checksum is derived from the exact bytes that get sent (the previous remote-`sha256`/local-hash split could disagree for the same config). Extraction now isolates the `<?xml>…</opnsense>` document from any shell/stderr noise (login banner, csh warning, trailing prompt) and requires a complete `<opnsense>…</opnsense>` pair, so a truncated capture is rejected rather than stored — the server has no OPNsense validator to catch it downstream. Added `extractOPNsenseConfig` unit coverage (noise-prefix/suffix, truncation, permission-denied).
+
 ## 1.3.7 - 2026-07-11
 
 ### Fixed — Go toolchain CVE gate

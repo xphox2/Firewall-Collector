@@ -45,7 +45,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.3.7"
+const version = "1.3.8"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -984,10 +984,19 @@ func (c *Collector) sshPollDevice(dev relay.DeviceInfo) {
 	}
 }
 
+// isFortiGateVendor reports whether a device vendor string denotes FortiGate.
+// An empty vendor is treated as FortiGate for legacy device records — matching
+// the SNMP vendor resolver and the SSH client factory default — so empty-vendor
+// FortiGates keep their FortiGate-only behavior (TFTP capture, server-inferred
+// backup quality) instead of being misclassified as another vendor.
+func isFortiGateVendor(vendor string) bool {
+	return vendor == "" || vendor == "fortigate"
+}
+
 func (c *Collector) checkAndSendConfigRevision(dev relay.DeviceInfo, checksum string, client ssh.ConfigBackupClient) {
 	// TFTP backup is a FortiGate-only path (`execute backup config tftp`); other
 	// vendors always use the direct SSH config read below.
-	if dev.Vendor == "fortigate" && c.cfg.TFTPConfigEnabled && c.tftpServer != nil {
+	if isFortiGateVendor(dev.Vendor) && c.cfg.TFTPConfigEnabled && c.tftpServer != nil {
 		c.fetchConfigViaTFTP(dev, checksum, "poll")
 		return
 	}
@@ -1009,7 +1018,7 @@ func (c *Collector) checkAndSendConfigRevision(dev relay.DeviceInfo, checksum st
 	// passwords), so the quality is "full". FortiGate is left empty so the
 	// server's FortiGate-aware validator can still classify the backup; other
 	// vendors have no such validator, so mark it explicitly.
-	if dev.Vendor != "fortigate" {
+	if !isFortiGateVendor(dev.Vendor) {
 		rev.BackupQuality = "full"
 	}
 	if err := c.relayClient.SendConfigRevision(&rev); err != nil {
@@ -1240,6 +1249,15 @@ func (c *Collector) getTFTPServerIP() string {
 }
 
 func (c *Collector) fetchConfigViaTFTP(dev relay.DeviceInfo, checksum string, triggerSource string) {
+	// TFTP capture drives `execute backup config tftp` over a FortiGate SSH
+	// client, so it is FortiGate-only. Guard here — the shared chokepoint for
+	// both the poll and syslog-triggered callers — so a config-change syslog
+	// spoofed with a non-FortiGate device's source IP can't mis-drive that box
+	// with FortiOS CLI.
+	if !isFortiGateVendor(dev.Vendor) {
+		log.Printf("[TFTP] Skipping TFTP config backup for %s — TFTP capture is FortiGate-only (vendor=%q, trigger=%s)", dev.Name, dev.Vendor, triggerSource)
+		return
+	}
 	if c.tftpServer == nil {
 		log.Printf("[TFTP] TFTP server not available for device %d (%s)", dev.ID, dev.Name)
 		return
