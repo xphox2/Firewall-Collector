@@ -770,3 +770,51 @@ func (s *SNMPClient) GetLicenseInfo(vendor ...string) ([]relay.LicenseInfo, erro
 
 	return licProvider.ParseLicenseInfo(pdus), nil
 }
+
+func (s *SNMPClient) GetDiskUsage(vendor ...string) ([]relay.DiskUsage, error) {
+	v := ""
+	if len(vendor) > 0 {
+		v = vendor[0]
+	}
+	profile := s.resolveVendor(v)
+	if profile == nil {
+		return nil, nil
+	}
+	p, ok := profile.(StorageProvider)
+	if !ok {
+		return nil, nil
+	}
+	baseOID := p.StorageBaseOID()
+	if baseOID == "" {
+		return nil, nil
+	}
+	pdus, err := s.client.WalkAll(baseOID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to walk storage table: %w", err)
+	}
+	return p.ParseDiskUsage(pdus), nil
+}
+
+func (s *SNMPClient) GetLoadAverage(vendor ...string) ([]relay.LoadAverage, error) {
+	v := ""
+	if len(vendor) > 0 {
+		v = vendor[0]
+	}
+	profile := s.resolveVendor(v)
+	if profile == nil {
+		return nil, nil
+	}
+	p, ok := profile.(LoadProvider)
+	if !ok {
+		return nil, nil
+	}
+	baseOID := p.LoadBaseOID()
+	if baseOID == "" {
+		return nil, nil
+	}
+	pdus, err := s.client.WalkAll(baseOID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to walk load table: %w", err)
+	}
+	return p.ParseLoadAverage(pdus), nil
+}

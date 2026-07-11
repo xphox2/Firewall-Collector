@@ -1,6 +1,7 @@
 package snmp
 
 import (
+	"sort"
 	"strings"
 	"time"
 
@@ -36,6 +37,18 @@ var (
 	// --- HOST-RESOURCES-MIB Processor ---
 	onsBaseOIDProcessor = ".1.3.6.1.2.1.25.3.3.1"
 	onsOIDProcessorLoad = ".1.3.6.1.2.1.25.3.3.1.2"
+
+	// --- HOST-RESOURCES-MIB Storage (hrStorageTable) ---
+	onsBaseOIDStorage  = ".1.3.6.1.2.1.25.2.3.1"
+	onsOIDStorageType  = ".1.3.6.1.2.1.25.2.3.1.2" // hrStorageType (an OID)
+	onsOIDStorageDescr = ".1.3.6.1.2.1.25.2.3.1.3" // hrStorageDescr (mount)
+	onsOIDStorageUnits = ".1.3.6.1.2.1.25.2.3.1.4" // hrStorageAllocationUnits (bytes)
+	onsOIDStorageSize  = ".1.3.6.1.2.1.25.2.3.1.5" // hrStorageSize (in units)
+	onsOIDStorageUsed  = ".1.3.6.1.2.1.25.2.3.1.6" // hrStorageUsed (in units)
+	hrStorageFixedDisk = ".25.2.1.4"               // suffix of hrStorageTypes.fixedDisk (leading dot avoids false-matching ...125.2.1.4)
+
+	// --- UCD-SNMP-MIB laTable (load average) ---
+	onsBaseOIDLoad = ".1.3.6.1.4.1.2021.10.1.3" // laLoad column; .1/.2/.3 = 1/5/15 min
 )
 
 // OPNsenseProfile implements VendorProfile for OPNsense firewalls.
@@ -191,6 +204,134 @@ func (o *OPNsenseProfile) ParseProcessorStats(pdus []gosnmp.SnmpPDU) []relay.Pro
 }
 
 // Traps: OPNsense bsnmpd sends standard linkUp/linkDown traps only.
+
+func (o *OPNsenseProfile) StorageBaseOID() string { return onsBaseOIDStorage }
+
+// nonNegUint64 coerces an SNMP integer to uint64, clamping a negative value
+// (from a broken agent returning a signed Integer32) to 0 rather than wrapping
+// to a huge number. A 0 then falls through the size==0/units==0 guards.
+func nonNegUint64(v interface{}) uint64 {
+	n := gosnmp.ToBigInt(v).Int64()
+	if n < 0 {
+		return 0
+	}
+	return uint64(n)
+}
+
+// ParseDiskUsage walks hrStorageTable and emits one row per fixed-disk
+// filesystem (RAM/virtual/network/removable storage rows are dropped). Byte
+// totals are size/used × allocation-units; percent is clamped and size==0 rows
+// are skipped to avoid div-by-zero; duplicate mounts are de-duplicated.
+func (o *OPNsenseProfile) ParseDiskUsage(pdus []gosnmp.SnmpPDU) []relay.DiskUsage {
+	now := time.Now()
+	type row struct {
+		typ, descr        string
+		units, size, used uint64
+		hasSize           bool
+	}
+	rows := map[int]*row{}
+	get := func(idx int) *row {
+		if idx < 0 {
+			return nil
+		}
+		r := rows[idx]
+		if r == nil {
+			r = &row{}
+			rows[idx] = r
+		}
+		return r
+	}
+	for _, pdu := range pdus {
+		if !isValidPDU(pdu) {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(pdu.Name, onsOIDStorageType+"."):
+			if r := get(getIndexFromOID(pdu.Name, onsOIDStorageType)); r != nil {
+				r.typ = safeString(pdu.Value)
+			}
+		case strings.HasPrefix(pdu.Name, onsOIDStorageDescr+"."):
+			if r := get(getIndexFromOID(pdu.Name, onsOIDStorageDescr)); r != nil {
+				r.descr = safeString(pdu.Value)
+			}
+		case strings.HasPrefix(pdu.Name, onsOIDStorageUnits+"."):
+			if r := get(getIndexFromOID(pdu.Name, onsOIDStorageUnits)); r != nil {
+				r.units = nonNegUint64(pdu.Value)
+			}
+		case strings.HasPrefix(pdu.Name, onsOIDStorageSize+"."):
+			if r := get(getIndexFromOID(pdu.Name, onsOIDStorageSize)); r != nil {
+				r.size = nonNegUint64(pdu.Value)
+				r.hasSize = true
+			}
+		case strings.HasPrefix(pdu.Name, onsOIDStorageUsed+"."):
+			if r := get(getIndexFromOID(pdu.Name, onsOIDStorageUsed)); r != nil {
+				r.used = nonNegUint64(pdu.Value)
+			}
+		}
+	}
+
+	idxs := make([]int, 0, len(rows))
+	for k := range rows {
+		idxs = append(idxs, k)
+	}
+	sort.Ints(idxs)
+
+	var result []relay.DiskUsage
+	seen := map[string]bool{}
+	for _, idx := range idxs {
+		r := rows[idx]
+		if !strings.HasSuffix(r.typ, hrStorageFixedDisk) {
+			continue
+		}
+		if !r.hasSize || r.size == 0 || r.units == 0 || r.descr == "" || seen[r.descr] {
+			continue
+		}
+		seen[r.descr] = true
+		total := r.size * r.units
+		used := r.used * r.units
+		if used > total {
+			used = total
+		}
+		result = append(result, relay.DiskUsage{
+			Timestamp:   now,
+			Mount:       r.descr,
+			TotalBytes:  total,
+			UsedBytes:   used,
+			UsedPercent: float64(used) / float64(total) * 100,
+		})
+	}
+	return result
+}
+
+func (o *OPNsenseProfile) LoadBaseOID() string { return onsBaseOIDLoad }
+
+// ParseLoadAverage reads the UCD laLoad column (.1/.2/.3 = 1/5/15-minute, each a
+// DisplayString like "0.35") into a single row. Returns nil if no load OID is
+// present.
+func (o *OPNsenseProfile) ParseLoadAverage(pdus []gosnmp.SnmpPDU) []relay.LoadAverage {
+	la := relay.LoadAverage{Timestamp: time.Now()}
+	found := false
+	for _, pdu := range pdus {
+		if !isValidPDU(pdu) {
+			continue
+		}
+		switch getIndexFromOID(pdu.Name, onsBaseOIDLoad) {
+		case 1:
+			la.Load1 = safeFloat(pdu.Value)
+			found = true
+		case 2:
+			la.Load5 = safeFloat(pdu.Value)
+			found = true
+		case 3:
+			la.Load15 = safeFloat(pdu.Value)
+			found = true
+		}
+	}
+	if !found {
+		return nil
+	}
+	return []relay.LoadAverage{la}
+}
 
 func (o *OPNsenseProfile) TrapOIDs() map[string]TrapDef {
 	return nil

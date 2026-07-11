@@ -27,7 +27,8 @@
 
 | Collector version | Talks to server | Notes |
 |---|---|---|
-| **1.2.137+** (current) | 0.10.382+ (recommended), 0.10.380+ (works, field ignored) | Advertises `schema_version` on register. |
+| **1.3.10+** (current) | 0.11.73+ for disk/load; any 0.11.x otherwise | Negotiates **schema v3**. Sends `disk_usage` + `load_average` only when the server negotiates ≥ 3; against an older (v2) server those two sends no-op, everything else works. |
+| 1.2.137 – 1.3.9 | 0.10.382+ (recommended), 0.10.380+ (works, field ignored) | Advertises `schema_version` on register (v2). |
 | 1.2.78 – 1.2.107 | any 0.10.x | Pre-handshake. Field omitted → server assumes v1. |
 | < 1.2.78 | unsupported | Missing disk-spillover (1.2.101) and several other hardening fixes. |
 

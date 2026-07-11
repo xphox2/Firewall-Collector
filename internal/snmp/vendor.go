@@ -90,6 +90,20 @@ type LicenseProvider interface {
 	ParseLicenseInfo(pdus []gosnmp.SnmpPDU) []relay.LicenseInfo
 }
 
+// StorageProvider is an optional interface for vendors that expose per-filesystem
+// disk usage via SNMP (HOST-RESOURCES hrStorageTable).
+type StorageProvider interface {
+	StorageBaseOID() string
+	ParseDiskUsage(pdus []gosnmp.SnmpPDU) []relay.DiskUsage
+}
+
+// LoadProvider is an optional interface for vendors that expose system load
+// average via SNMP (UCD-SNMP-MIB laTable).
+type LoadProvider interface {
+	LoadBaseOID() string
+	ParseLoadAverage(pdus []gosnmp.SnmpPDU) []relay.LoadAverage
+}
+
 var (
 	vendorMu       sync.RWMutex
 	vendorRegistry = make(map[string]VendorProfile)
