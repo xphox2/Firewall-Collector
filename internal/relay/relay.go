@@ -403,6 +403,42 @@ type InterfaceAddress struct {
 	NetMask   string    `json:"net_mask"`
 }
 
+// TopologyEntry is one row of L2 topology evidence (schema v5): an ARP-cache
+// binding (entry_type "arp": IP+MAC seen via local interface if_index) or an
+// FDB/MAC-table binding (entry_type "fdb": MAC learned on if_index, VLAN
+// vlan_id). MAC addresses are canonical lowercase colon form — the server
+// joins them against interface MACs to infer port-to-port links. Each send is
+// the device's COMPLETE snapshot for the entry types it contains; the server
+// replaces, not appends.
+type TopologyEntry struct {
+	Timestamp  time.Time `json:"timestamp"`
+	DeviceID   uint      `json:"device_id"`
+	EntryType  string    `json:"entry_type"` // "fdb" | "arp"
+	IfIndex    int       `json:"if_index"`
+	IfName     string    `json:"if_name,omitempty"`    // SSH-sourced ARP only
+	MACAddress string    `json:"mac_address"`          // canonical "aa:bb:cc:dd:ee:ff"
+	IPAddress  string    `json:"ip_address,omitempty"` // arp only
+	VlanID     int       `json:"vlan_id,omitempty"`    // fdb only
+	Source     string    `json:"source"`               // "snmp" | "ssh"
+}
+
+// TopologyNeighbor is one LLDP/CDP neighbor-table row (schema v5): the local
+// port plus whatever identity the neighbor advertised. Like TopologyEntry,
+// each send is the device's complete snapshot per protocol.
+type TopologyNeighbor struct {
+	Timestamp       time.Time `json:"timestamp"`
+	DeviceID        uint      `json:"device_id"`
+	Protocol        string    `json:"protocol"` // "lldp" | "cdp"
+	LocalIfIndex    int       `json:"local_if_index"`
+	LocalPortName   string    `json:"local_port_name,omitempty"`
+	RemoteChassisID string    `json:"remote_chassis_id"`
+	RemotePortID    string    `json:"remote_port_id"`
+	RemotePortDesc  string    `json:"remote_port_desc,omitempty"`
+	RemoteSysName   string    `json:"remote_sys_name,omitempty"`
+	RemoteSysDesc   string    `json:"remote_sys_desc,omitempty"`
+	RemoteCaps      string    `json:"remote_caps,omitempty"`
+}
+
 type DeviceInfo struct {
 	ID              uint   `json:"id"`
 	Name            string `json:"name"`
@@ -470,9 +506,14 @@ type Config struct {
 // directions are gated on a negotiated schema ≥ 4 (mirroring the disk/load
 // v3 gate), so a v3 server is never POSTed an endpoint it doesn't have and a
 // v3 collector never parses commands.
+// v5 adds L2 TOPOLOGY snapshots (TopologyEntry ARP/FDB rows to
+// /topology-entries, TopologyNeighbor LLDP/CDP rows to /topology-neighbors),
+// gated on negotiated schema ≥ 5. These are state snapshots with server-side
+// replace semantics, sent via doSnapshotSend (never spooled — a replayed old
+// snapshot would revert newer state).
 const (
 	SchemaVersionMin = 1
-	SchemaVersionMax = 4
+	SchemaVersionMax = 5
 )
 
 type RegisterRequest struct {
@@ -1427,6 +1468,66 @@ func (c *Client) doDirectSend(endpoint string, name string, payload interface{})
 	return fmt.Errorf("send %s returned permanent status %d (dropped)", name, resp.StatusCode)
 }
 
+// doSnapshotSend sends a state-snapshot batch (L2 topology) immediately and
+// NEVER buffers it to the spillover queue: the server applies these with
+// DELETE+INSERT replace semantics, so a spooled old snapshot re-POSTed after
+// a newer one has been accepted would revert the device's state until the
+// next cycle. On any failure the batch is dropped (counted via
+// onMetricSendFailed) — the next topology cycle resends the full state, which
+// is cheap and self-healing. Auth loss still gets one re-register + one retry,
+// mirroring doDirectSend.
+func (c *Client) doSnapshotSend(endpoint string, name string, payload interface{}) error {
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal %s: %w", name, err)
+	}
+
+	dropped := func(format string, args ...interface{}) error {
+		if c.onMetricSendFailed != nil {
+			c.onMetricSendFailed(name)
+		}
+		return fmt.Errorf(format, args...)
+	}
+
+	if !c.approved.Load() {
+		if !c.tryReregister() {
+			return dropped("probe not approved (%s dropped)", name)
+		}
+	}
+
+	url := fmt.Sprintf("%s/api/probes/%d/%s", c.Config.ServerURL, c.GetProbeID(), endpoint)
+	// The content-derived idempotency key still travels so a response lost
+	// after a server-side commit dedupes the immediate auth-retry below.
+	hdr := map[string]string{"X-Probe-Batch-ID": contentBatchID(jsonData)}
+
+	resp, err := c.doAuthenticatedRequestH("POST", url, jsonData, hdr)
+	if err != nil {
+		return dropped("failed to send %s (dropped): %w", name, err)
+	}
+	drainAndClose(resp)
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+
+	if resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 404 {
+		log.Printf("[Relay] Probe rejected (%d on %s), attempting re-registration...", resp.StatusCode, name)
+		c.approved.Store(false)
+		if c.tryReregister() {
+			resp2, err2 := c.doAuthenticatedRequestH("POST", url, jsonData, hdr)
+			if err2 == nil {
+				drainAndClose(resp2)
+				if resp2.StatusCode >= 200 && resp2.StatusCode < 300 {
+					return nil
+				}
+			}
+		}
+		return dropped("probe re-register/send failed (%d on %s, dropped)", resp.StatusCode, name)
+	}
+
+	return dropped("send %s returned status %d (dropped)", name, resp.StatusCode)
+}
+
 // drainAndClose drains and closes an HTTP response body so the underlying
 // keep-alive connection can be reused (closing without draining forces the
 // transport to drop the connection — the per-cycle pool-defeat the audit flagged
@@ -1579,6 +1680,27 @@ func (c *Client) SendLicenseInfo(licenses []LicenseInfo) error {
 
 func (c *Client) SendInterfaceAddresses(addrs []InterfaceAddress) error {
 	return c.doDirectSend("interface-addresses", "interface addresses", addrs)
+}
+
+// SendTopologyEntries / SendTopologyNeighbors are schema-v5 endpoints carrying
+// L2 topology STATE SNAPSHOTS (server replaces the device's rows on every
+// batch). They no-op against a lower-schema server, and they deliberately use
+// doSnapshotSend instead of doDirectSend: spooling a failed snapshot and
+// replaying it later could land AFTER a newer live snapshot and revert the
+// device's topology server-side. Dropping is safe — the next topology cycle
+// resends the complete state.
+func (c *Client) SendTopologyEntries(entries []TopologyEntry) error {
+	if c.negotiatedSchema.Load() < 5 {
+		return nil
+	}
+	return c.doSnapshotSend("topology-entries", "topology entries", entries)
+}
+
+func (c *Client) SendTopologyNeighbors(neighbors []TopologyNeighbor) error {
+	if c.negotiatedSchema.Load() < 5 {
+		return nil
+	}
+	return c.doSnapshotSend("topology-neighbors", "topology neighbors", neighbors)
 }
 
 // --- FetchDevices ---

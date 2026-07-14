@@ -50,6 +50,15 @@ func (fakeSNMP) GetDiskUsage(...string) ([]relay.DiskUsage, error) {
 func (fakeSNMP) GetLoadAverage(...string) ([]relay.LoadAverage, error) {
 	return []relay.LoadAverage{{}}, nil
 }
+func (fakeSNMP) GetARPTable() ([]relay.TopologyEntry, error) {
+	return []relay.TopologyEntry{{EntryType: "arp", IfIndex: 3, MACAddress: "aa:bb:cc:dd:ee:01", IPAddress: "10.0.0.2"}}, nil
+}
+func (fakeSNMP) GetFDBTable() ([]relay.TopologyEntry, error) {
+	return []relay.TopologyEntry{{EntryType: "fdb", IfIndex: 4, MACAddress: "aa:bb:cc:dd:ee:02", VlanID: 10}}, nil
+}
+func (fakeSNMP) GetTopologyNeighbors(...string) ([]relay.TopologyNeighbor, error) {
+	return []relay.TopologyNeighbor{{Protocol: "lldp", LocalIfIndex: 3, RemoteChassisID: "aa:bb:cc:dd:ee:03"}}, nil
+}
 func (fakeSNMP) Close() error { return nil }
 
 // fakeSink is a metricSink that records everything pollDevice would send.
@@ -66,6 +75,11 @@ type fakeSink struct {
 	licenses       []relay.LicenseInfo
 	diskUsage      []relay.DiskUsage
 	loadAverage    []relay.LoadAverage
+	topoEntries    []relay.TopologyEntry
+	topoNeighbors  []relay.TopologyNeighbor
+	// topoSendCount counts SendTopologyEntries calls (one per snapshot),
+	// distinct from row counts — cadence tests key off it.
+	topoSendCount int
 }
 
 func (f *fakeSink) SendSystemStatuses(s []relay.SystemStatus) error {
@@ -116,6 +130,15 @@ func (f *fakeSink) SendLoadAverage(s []relay.LoadAverage) error {
 	f.loadAverage = append(f.loadAverage, s...)
 	return nil
 }
+func (f *fakeSink) SendTopologyEntries(s []relay.TopologyEntry) error {
+	f.topoEntries = append(f.topoEntries, s...)
+	f.topoSendCount++
+	return nil
+}
+func (f *fakeSink) SendTopologyNeighbors(s []relay.TopologyNeighbor) error {
+	f.topoNeighbors = append(f.topoNeighbors, s...)
+	return nil
+}
 
 // newTestCollector builds a Collector wired to the given SNMP dialer and sink,
 // with the maps and metrics pollDevice touches initialized.
@@ -145,7 +168,7 @@ func TestPollDevice_CollectsStampsAndSends(t *testing.T) {
 		return fakeSNMP{}, nil
 	})
 
-	c.pollDevice(validDevice())
+	c.pollDevice(validDevice(), true)
 
 	// Every metric type reached the sink exactly once.
 	checks := []struct {
@@ -204,7 +227,7 @@ func TestPollDevice_SkipsInvalidCredentials(t *testing.T) {
 
 	dev := validDevice()
 	dev.SNMPCommunity = ""
-	c.pollDevice(dev)
+	c.pollDevice(dev, true)
 
 	if dialed {
 		t.Error("newSNMP must not be called for a device with an empty community")
@@ -222,7 +245,7 @@ func TestPollDevice_ConnectFailure(t *testing.T) {
 		return nil, errors.New("connect refused")
 	})
 
-	c.pollDevice(validDevice())
+	c.pollDevice(validDevice(), true)
 
 	if len(sink.systemStatuses) != 0 {
 		t.Errorf("connect failure sent %d system statuses, want 0", len(sink.systemStatuses))

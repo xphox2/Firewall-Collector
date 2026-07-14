@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.3.15 - 2026-07-13
+
+### Added — L2 topology collection: ARP / MAC-table / LLDP / CDP (relay **schema v5**)
+- **The collector now walks each device's layer-2 topology evidence and relays it for the server's port-to-port connection map** (replacing the server's old draw-a-link-per-shared-subnet heuristic). New `internal/snmp/topology.go`, all standard MIBs so every vendor is covered with zero per-vendor code:
+  - **ARP**: IP-MIB `ipNetToMediaTable`, falling back to the RFC 4293 `ipNetToPhysicalTable` when empty (IPv4 only; both index shapes handled).
+  - **FDB / MAC table**: Q-BRIDGE `dot1qTpFdbTable` (VLAN-aware; `fdbId` treated as the VLAN ID — documented simplification), falling back to legacy BRIDGE-MIB `dot1dTpFdbTable`; bridge ports resolved to ifIndexes via `dot1dBasePortTable`. Learned unicast entries only.
+  - **LLDP**: `lldpRemTable` + `lldpLocPortTable` local port names; chassis/port MAC subtypes rendered canonical lowercase; neighbor-controlled strings stripped of control characters.
+  - **CDP**: new optional `CDPProvider` vendor interface, implemented for `cisco_asa` (best-effort — ASA itself doesn't run CDP; covers adjacent Cisco gear).
+  - Unsupported subtrees yield clean empties (SNMPv1 noSuchName mapped to empty) — no per-cycle log spam from firewalls without BRIDGE/LLDP MIBs.
+- **Cadence:** every 5th SNMP cycle (~5 min at the default 60s interval), first cycle included so topology appears at startup. **Cap:** combined ARP+FDB snapshot ≤ 4000 rows/device (FDB truncated first, truncation logged) so the server never truncates a snapshot mid-device.
+- **Wire (schema v5):** `SchemaVersionMax` 4 → **5**. New `TopologyEntry` (arp/fdb) → `POST /probes/:id/topology-entries` and `TopologyNeighbor` (lldp/cdp) → `POST /probes/:id/topology-neighbors`, both gated on a negotiated schema ≥ 5. These are STATE SNAPSHOTS with server-side replace semantics, so they use a new no-spool send path (`doSnapshotSend`): a failed send is dropped and the next cycle resends full state — spooling and replaying an old snapshot would revert newer server-side state.
+- **FortiGate SSH ARP supplement** (`get system arp`, carries interface *names*): sent only when the last SNMP topology cycle affirmatively returned an empty ARP table, so SSH and SNMP snapshots can never alternate-overwrite under the server's replace semantics. FortiGate transparent-mode bridge FDB via `diagnose netlink brctl` is explicitly deferred.
+- Tests: ARP/FDB/LLDP/CDP fixture parses (index shapes, lowercase MACs, multicast/self/unmapped-port filters, control-char stripping), 8-vendor conformance sweep, combined-cap FDB-first truncation, pollDevice topology gating + atomic ARP+FDB send + stamping, poll-cycle cadence, schema-v5 gate (zero POSTs at v4), never-spools guard, FortiOS ARP parser.
+- docs/COMPATIBILITY.md: schema v5 row.
+
 ## 1.3.14 - 2026-07-11
 
 ### Added — server→collector command channel (relay **schema v4**)

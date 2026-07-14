@@ -380,6 +380,12 @@ func (c *FortiGateClient) GetSystemSessionList() (string, error) {
 	return c.Execute("get system session list")
 }
 
+// GetARPTable returns the FortiOS ARP cache (`get system arp`) — the SSH
+// supplement for FortiGates whose SNMP agent exposes no ipNetToMedia table.
+func (c *FortiGateClient) GetARPTable() (string, error) {
+	return c.Execute("get system arp")
+}
+
 func (c *FortiGateClient) BackupConfigTFTP(filename, tftpServerIP string) (string, error) {
 	cmd := fmt.Sprintf("execute backup config tftp %s %s", filename, tftpServerIP)
 	// Request a PTY: some FortiOS builds drop non-PTY channels before completing
