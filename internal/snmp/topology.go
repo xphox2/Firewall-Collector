@@ -119,20 +119,16 @@ func isUnicastMAC(mac string) bool {
 	return false
 }
 
-// walkQuiet walks a subtree that many firewalls simply do not implement. An
-// unsupported OID must come back as an empty result, not an error: v2c/v3
-// agents end the walk immediately (empty slice, nil error) but SNMPv1 agents
-// answer noSuchName, which gosnmp can surface as an error. Only transport
-// failures (timeouts — the device stopped answering mid-walk) propagate.
+// walkQuiet walks a subtree that many firewalls simply do not implement. No
+// error classification is needed: gosnmp (v1.43.x walk.go) terminates the
+// walk CLEANLY on noSuchName/endOfMibView/noSuchObject — an unsupported
+// subtree is an empty slice with a nil error on every SNMP version. Real
+// errors (timeouts, v3 auth/crypto failures, OID-not-increasing agents) MUST
+// propagate: swallowing them would let a transiently-broken device report an
+// affirmatively-empty table, which corrupts the snmpARPEmpty contract and,
+// under the server's replace semantics, the stored snapshot.
 func (s *SNMPClient) walkQuiet(oid string) ([]gosnmp.SnmpPDU, error) {
-	pdus, err := s.client.WalkAll(oid)
-	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "timeout") {
-			return nil, err
-		}
-		return nil, nil
-	}
-	return pdus, nil
+	return s.client.WalkAll(oid)
 }
 
 // GetARPTable walks the device's ARP cache (ipNetToMediaTable, falling back

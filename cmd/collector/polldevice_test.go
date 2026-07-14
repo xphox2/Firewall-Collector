@@ -80,6 +80,8 @@ type fakeSink struct {
 	// topoSendCount counts SendTopologyEntries calls (one per snapshot),
 	// distinct from row counts — cadence tests key off it.
 	topoSendCount int
+	// topoUnsupported simulates a pre-v5 server (TopologySupported false).
+	topoUnsupported bool
 }
 
 func (f *fakeSink) SendSystemStatuses(s []relay.SystemStatus) error {
@@ -139,6 +141,7 @@ func (f *fakeSink) SendTopologyNeighbors(s []relay.TopologyNeighbor) error {
 	f.topoNeighbors = append(f.topoNeighbors, s...)
 	return nil
 }
+func (f *fakeSink) TopologySupported() bool { return !f.topoUnsupported }
 
 // newTestCollector builds a Collector wired to the given SNMP dialer and sink,
 // with the maps and metrics pollDevice touches initialized.

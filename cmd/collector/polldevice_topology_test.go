@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"testing"
 
 	"firewall-collector/internal/relay"
@@ -91,6 +92,44 @@ func TestPollDevice_SNMPARPEmptyFlag(t *testing.T) {
 	c2.pollDevice(validDevice(), true)
 	if !c2.snmpARPWasEmpty(1) {
 		t.Fatal("flag must be true after an affirmatively empty SNMP ARP snapshot")
+	}
+}
+
+// fakeSNMPARPError simulates a transient walk failure (timeout, v3 auth) —
+// distinct from an affirmatively empty table.
+type fakeSNMPARPError struct{ fakeSNMP }
+
+func (fakeSNMPARPError) GetARPTable() ([]relay.TopologyEntry, error) {
+	return nil, errors.New("request timeout (after 1 retries)")
+}
+
+// TestPollDevice_ARPWalkErrorKeepsFlagFalse pins the review finding: a FAILED
+// ARP walk must never set snmpARPEmpty=true — otherwise a transiently-broken
+// device (v3 engine resync, timeout) triggers the SSH ARP supplement and the
+// SSH/SNMP snapshots alternate-overwrite under the server's replace semantics.
+func TestPollDevice_ARPWalkErrorKeepsFlagFalse(t *testing.T) {
+	sink := &fakeSink{}
+	c := newTestCollector(sink, func(string, int, string, string, *snmp.SNMPv3Config) (deviceSNMP, error) {
+		return fakeSNMPARPError{}, nil
+	})
+	c.pollDevice(validDevice(), true)
+	if c.snmpARPWasEmpty(1) {
+		t.Fatal("a walk ERROR set snmpARPEmpty=true — must stay false (unknown ≠ empty)")
+	}
+}
+
+// TestPollDevice_TopologySkippedBelowSchemaV5: against a pre-v5 server the
+// expensive topology walks are skipped entirely (not walked-then-discarded).
+func TestPollDevice_TopologySkippedBelowSchemaV5(t *testing.T) {
+	sink := &fakeSink{topoUnsupported: true}
+	c := newTestCollector(sink, topoDialer())
+	c.pollDevice(validDevice(), true)
+	if len(sink.topoEntries) != 0 || len(sink.topoNeighbors) != 0 {
+		t.Fatalf("topology collected below schema v5: entries=%d neighbors=%d",
+			len(sink.topoEntries), len(sink.topoNeighbors))
+	}
+	if c.snmpARPWasEmpty(1) {
+		t.Fatal("skipped topology must not touch the snmpARPEmpty flag")
 	}
 }
 

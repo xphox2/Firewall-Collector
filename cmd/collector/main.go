@@ -87,6 +87,9 @@ type metricSink interface {
 	SendLoadAverage([]relay.LoadAverage) error
 	SendTopologyEntries([]relay.TopologyEntry) error
 	SendTopologyNeighbors([]relay.TopologyNeighbor) error
+	// TopologySupported gates the (expensive full-table) topology walks on
+	// the negotiated relay schema — no point walking what can't be sent.
+	TopologySupported() bool
 }
 
 // snmpDialer constructs a deviceSNMP for a device. Defaults to a live SNMP
@@ -1043,10 +1046,13 @@ func (c *Collector) fortiGateSSHDiagnostics(dev relay.DeviceInfo, fgt *ssh.Forti
 		c.sendVPNStatuses(dev, phase1Output, phase2Output)
 	}
 
-	// ARP supplement: only when the last SNMP topology cycle affirmatively
-	// returned an empty ARP table — the server replaces a device's ARP
-	// snapshot on every send, so SSH and SNMP sources must never alternate.
-	if c.snmpARPWasEmpty(dev.ID) {
+	// ARP supplement: only when the server speaks schema v5 AND the last SNMP
+	// topology cycle affirmatively returned an empty ARP table — the server
+	// replaces a device's ARP snapshot on every send, so SSH and SNMP sources
+	// must never alternate. Known limitation: on multi-VDOM FortiGates
+	// `get system arp` needs a VDOM context and fails, so the supplement
+	// silently yields nothing there.
+	if c.sink.TopologySupported() && c.snmpARPWasEmpty(dev.ID) {
 		if arpOutput, err := fgt.GetARPTable(); err == nil {
 			c.sendSSHARPTable(dev, arpOutput)
 		}
@@ -1075,6 +1081,8 @@ func (c *Collector) sendSSHARPTable(dev relay.DeviceInfo, output string) {
 		})
 	}
 	if len(entries) > snmp.MaxTopologyEntriesPerDevice {
+		log.Printf("[SSH] ARP topology for %s truncated: %d entries dropped (cap %d)",
+			dev.Name, len(entries)-snmp.MaxTopologyEntriesPerDevice, snmp.MaxTopologyEntriesPerDevice)
 		entries = entries[:snmp.MaxTopologyEntriesPerDevice]
 	}
 	if err := c.sink.SendTopologyEntries(entries); err != nil {
@@ -1846,8 +1854,9 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo, collectTopology bool) {
 
 	// L2 topology (slow cadence — every topologyCycleInterval-th cycle). ARP
 	// and FDB ride ONE send so the server ingests them as a single atomic
-	// per-device snapshot; the relay gates the send on schema v5.
-	if collectTopology {
+	// per-device snapshot. Skipped entirely below a negotiated schema v5 —
+	// these are full-table walks, the costliest SNMP work in the poll.
+	if collectTopology && c.sink.TopologySupported() {
 		c.collectDeviceTopology(dev, client, vendor, now)
 	}
 }
@@ -1902,6 +1911,23 @@ func (c *Collector) snmpARPWasEmpty(deviceID uint) bool {
 	c.snmpARPEmptyMu.Lock()
 	defer c.snmpARPEmptyMu.Unlock()
 	return c.snmpARPEmpty[deviceID]
+}
+
+// pruneSNMPARPFlags drops the ARP-empty flags of devices no longer assigned,
+// so a device removed and later re-assigned can't inherit a stale flag and
+// trigger the SSH ARP supplement before its first fresh topology cycle.
+func (c *Collector) pruneSNMPARPFlags(devices []relay.DeviceInfo) {
+	keep := make(map[uint]bool, len(devices))
+	for _, d := range devices {
+		keep[d.ID] = true
+	}
+	c.snmpARPEmptyMu.Lock()
+	defer c.snmpARPEmptyMu.Unlock()
+	for id := range c.snmpARPEmpty {
+		if !keep[id] {
+			delete(c.snmpARPEmpty, id)
+		}
+	}
 }
 
 func (c *Collector) recordPollFailure(deviceID uint) {
@@ -1983,6 +2009,7 @@ func (c *Collector) deviceRefreshLoop() {
 			c.setTFTPServerIP(tftpIP)
 			c.applyTFTPAllowlist()
 			c.pruneThroughputCache(devices)
+			c.pruneSNMPARPFlags(devices)
 
 			names := make([]string, len(devices))
 			for i, d := range devices {

@@ -437,6 +437,7 @@ type TopologyNeighbor struct {
 	RemoteSysName   string    `json:"remote_sys_name,omitempty"`
 	RemoteSysDesc   string    `json:"remote_sys_desc,omitempty"`
 	RemoteCaps      string    `json:"remote_caps,omitempty"`
+	RemoteMgmtAddr  string    `json:"remote_mgmt_addr,omitempty"` // neighbor's advertised mgmt IP (CDP cacheAddress)
 }
 
 type DeviceInfo struct {
@@ -1701,6 +1702,16 @@ func (c *Client) SendTopologyNeighbors(neighbors []TopologyNeighbor) error {
 		return nil
 	}
 	return c.doSnapshotSend("topology-neighbors", "topology neighbors", neighbors)
+}
+
+// TopologySupported reports whether the negotiated relay schema carries the
+// v5 L2-topology endpoints. The poll loop consults this BEFORE walking — the
+// FDB/ARP/LLDP walks are the most expensive SNMP operations the collector
+// does (full-table walks, thousands of rows), so against a pre-v5 server they
+// are skipped entirely rather than collected and silently discarded by the
+// send gates above.
+func (c *Client) TopologySupported() bool {
+	return c.negotiatedSchema.Load() >= 5
 }
 
 // --- FetchDevices ---

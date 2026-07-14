@@ -400,7 +400,7 @@ func (c *CiscoASAProfile) ParseCDPNeighbors(pdus []gosnmp.SnmpPDU) []relay.Topol
 			RemotePortID:    row.port,
 			RemoteSysName:   row.deviceID,
 			RemoteSysDesc:   row.platform,
-			RemoteCaps:      row.address,
+			RemoteMgmtAddr:  row.address,
 		})
 	}
 	return out

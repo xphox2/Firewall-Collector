@@ -267,7 +267,7 @@ func TestParseCDPNeighbors(t *testing.T) {
 	if n.RemoteSysName != "core-switch.lab" || n.RemotePortID != "GigabitEthernet1/0/24" {
 		t.Errorf("identity wrong: %+v", n)
 	}
-	if n.RemoteCaps != "10.1.1.2" {
-		t.Errorf("address = %q, want 10.1.1.2", n.RemoteCaps)
+	if n.RemoteMgmtAddr != "10.1.1.2" {
+		t.Errorf("mgmt address = %q, want 10.1.1.2", n.RemoteMgmtAddr)
 	}
 }
