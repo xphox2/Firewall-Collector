@@ -446,3 +446,25 @@ func TestParseLicenseStatus_NoneStatus(t *testing.T) {
 		t.Errorf("Status = %q, want no_license", licenses[0].Status)
 	}
 }
+
+// TestParseARPTable characterizes FortiOS `get system arp` parsing: header
+// skipped, MACs canonical lowercase, incomplete/multicast entries dropped.
+func TestParseARPTable(t *testing.T) {
+	output := `Address           Age(min)   Hardware Addr      Interface
+192.168.5.1       0          00:09:0F:09:00:02  internal
+192.168.5.107     3          AA:BB:CC:00:55:01  lan2
+10.0.0.9          1          00:00:00:00:00:00  wan1
+224.0.0.5         0          01:00:5E:00:00:05  internal
+garbage line
+`
+	got := ParseARPTable(output)
+	if len(got) != 2 {
+		t.Fatalf("got %d entries, want 2: %+v", len(got), got)
+	}
+	if got[0].IPAddress != "192.168.5.1" || got[0].MACAddress != "00:09:0f:09:00:02" || got[0].Interface != "internal" {
+		t.Errorf("row 0 wrong: %+v", got[0])
+	}
+	if got[1].MACAddress != "aa:bb:cc:00:55:01" || got[1].Interface != "lan2" {
+		t.Errorf("row 1 wrong (MAC must be lowercase): %+v", got[1])
+	}
+}

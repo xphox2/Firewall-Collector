@@ -104,6 +104,16 @@ type LoadProvider interface {
 	ParseLoadAverage(pdus []gosnmp.SnmpPDU) []relay.LoadAverage
 }
 
+// CDPProvider is an optional interface for vendors that expose the Cisco
+// Discovery Protocol neighbor cache (CISCO-CDP-MIB cdpCacheTable). LLDP is
+// standard and walked for every vendor; CDP is the only neighbor protocol
+// that needs an enterprise OID. Best-effort: ASA appliances themselves don't
+// run CDP, so the walk normally returns empty there.
+type CDPProvider interface {
+	CDPCacheBaseOID() string
+	ParseCDPNeighbors(pdus []gosnmp.SnmpPDU) []relay.TopologyNeighbor
+}
+
 var (
 	vendorMu       sync.RWMutex
 	vendorRegistry = make(map[string]VendorProfile)

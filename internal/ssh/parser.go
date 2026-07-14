@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"log"
+	"net"
 	"regexp"
 	"sort"
 	"strconv"
@@ -749,4 +750,54 @@ func sortedIntKeys[V any](m map[int]V) []int {
 	}
 	sort.Ints(keys)
 	return keys
+}
+
+// ARPEntryInfo is one row parsed from FortiOS `get system arp`. Unlike the
+// SNMP ARP walk it carries the interface NAME (FortiOS prints no ifIndex),
+// which the server resolves against interface stats.
+type ARPEntryInfo struct {
+	IPAddress  string
+	MACAddress string // canonical lowercase colon form
+	Interface  string
+}
+
+// ParseARPTable parses FortiOS `get system arp` output:
+//
+//	Address           Age(min)   Hardware Addr      Interface
+//	192.168.5.1       0          00:09:0f:09:00:02  internal
+//
+// Incomplete entries (MAC 00:00:00:00:00:00 or "Incomplete") and multicast
+// MACs are dropped — they can't attribute a link.
+func ParseARPTable(output string) []ARPEntryInfo {
+	var out []ARPEntryInfo
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) < 4 {
+			continue
+		}
+		ip := fields[0]
+		if net.ParseIP(ip) == nil {
+			continue // header or noise
+		}
+		hw, err := net.ParseMAC(fields[2])
+		if err != nil || len(hw) != 6 || hw[0]&1 == 1 {
+			continue
+		}
+		allZero := true
+		for _, o := range hw {
+			if o != 0 {
+				allZero = false
+				break
+			}
+		}
+		if allZero {
+			continue
+		}
+		out = append(out, ARPEntryInfo{
+			IPAddress:  ip,
+			MACAddress: hw.String(),
+			Interface:  fields[3],
+		})
+	}
+	return out
 }

@@ -1,6 +1,8 @@
 package snmp
 
 import (
+	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -65,6 +67,16 @@ var (
 const (
 	asaFailoverIdxPrimary   = 6
 	asaFailoverIdxSecondary = 7
+)
+
+// --- CISCO-CDP-MIB cdpCacheTable (L2 topology neighbors) ---
+// Indexed by cdpCacheIfIndex.cdpCacheDeviceIndex.
+var (
+	asaBaseOIDCdpCache       = ".1.3.6.1.4.1.9.9.23.1.2.1.1"
+	asaOIDCdpCacheAddress    = ".1.3.6.1.4.1.9.9.23.1.2.1.1.4" // binary IP of neighbor
+	asaOIDCdpCacheDeviceId   = ".1.3.6.1.4.1.9.9.23.1.2.1.1.6"
+	asaOIDCdpCacheDevicePort = ".1.3.6.1.4.1.9.9.23.1.2.1.1.7"
+	asaOIDCdpCachePlatform   = ".1.3.6.1.4.1.9.9.23.1.2.1.1.8"
 )
 
 // CiscoASAProfile implements VendorProfile (plus the optional HAProvider
@@ -316,4 +328,80 @@ func asaHardwareStatusText(v int64) string {
 	default:
 		return "unknown"
 	}
+}
+
+// CDPCacheBaseOID implements CDPProvider (CISCO-CDP-MIB cdpCacheTable).
+func (c *CiscoASAProfile) CDPCacheBaseOID() string { return asaBaseOIDCdpCache }
+
+// ParseCDPNeighbors converts cdpCacheTable rows into topology neighbors.
+// Index is cdpCacheIfIndex.cdpCacheDeviceIndex; the local ifIndex is the
+// first index component. CDP has no chassis-MAC TLV, so RemoteChassisID
+// carries the neighbor's device ID string and matching falls back to sysname.
+func (c *CiscoASAProfile) ParseCDPNeighbors(pdus []gosnmp.SnmpPDU) []relay.TopologyNeighbor {
+	type cdpRow struct {
+		ifIndex  int
+		address  string
+		deviceID string
+		port     string
+		platform string
+	}
+	rows := map[string]*cdpRow{}
+	get := func(name, col string) *cdpRow {
+		suffix := strings.TrimPrefix(name, col+".")
+		if suffix == name {
+			return nil
+		}
+		parts := strings.Split(suffix, ".")
+		if len(parts) != 2 {
+			return nil
+		}
+		row, ok := rows[suffix]
+		if !ok {
+			ifIndex, err := strconv.Atoi(parts[0])
+			if err != nil {
+				return nil
+			}
+			row = &cdpRow{ifIndex: ifIndex}
+			rows[suffix] = row
+		}
+		return row
+	}
+	for _, pdu := range pdus {
+		switch {
+		case strings.HasPrefix(pdu.Name, asaOIDCdpCacheAddress+"."):
+			if row := get(pdu.Name, asaOIDCdpCacheAddress); row != nil {
+				if b, ok := pdu.Value.([]byte); ok && len(b) == 4 {
+					row.address = net.IP(b).String()
+				}
+			}
+		case strings.HasPrefix(pdu.Name, asaOIDCdpCacheDeviceId+"."):
+			if row := get(pdu.Name, asaOIDCdpCacheDeviceId); row != nil {
+				row.deviceID = printableOrMAC(pdu.Value, 0, -1)
+			}
+		case strings.HasPrefix(pdu.Name, asaOIDCdpCacheDevicePort+"."):
+			if row := get(pdu.Name, asaOIDCdpCacheDevicePort); row != nil {
+				row.port = printableOrMAC(pdu.Value, 0, -1)
+			}
+		case strings.HasPrefix(pdu.Name, asaOIDCdpCachePlatform+"."):
+			if row := get(pdu.Name, asaOIDCdpCachePlatform); row != nil {
+				row.platform = printableOrMAC(pdu.Value, 0, -1)
+			}
+		}
+	}
+	out := make([]relay.TopologyNeighbor, 0, len(rows))
+	for _, row := range rows {
+		if row.deviceID == "" {
+			continue
+		}
+		out = append(out, relay.TopologyNeighbor{
+			Protocol:        "cdp",
+			LocalIfIndex:    row.ifIndex,
+			RemoteChassisID: row.deviceID,
+			RemotePortID:    row.port,
+			RemoteSysName:   row.deviceID,
+			RemoteSysDesc:   row.platform,
+			RemoteMgmtAddr:  row.address,
+		})
+	}
+	return out
 }
