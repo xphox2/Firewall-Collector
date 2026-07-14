@@ -468,3 +468,41 @@ garbage line
 		t.Errorf("row 1 wrong (MAC must be lowercase): %+v", got[1])
 	}
 }
+
+// TestParseBridgeList: names extracted from `diagnose netlink brctl list`,
+// unsafe names (command-injection defense) dropped.
+func TestParseBridgeList(t *testing.T) {
+	output := `list bridge information
+1. name=internal ifindex=9 mac_entries=5
+2. name=lan-sw ifindex=12 mac_entries=2
+3. name=bad;name ifindex=13
+`
+	got := ParseBridgeList(output)
+	if len(got) != 2 || got[0] != "internal" || got[1] != "lan-sw" {
+		t.Fatalf("got %v, want [internal lan-sw]", got)
+	}
+}
+
+// TestParseBridgeFDB: learned unicast rows keep the member port NAME;
+// Local/Static (self), multicast and header rows are dropped.
+func TestParseBridgeFDB(t *testing.T) {
+	output := `show bridge control interface internal host.
+fdb: size=256, used=6, num=6, depth=1
+Bridge internal host table
+port no  device  devname  mac addr                 ttl    attributes
+  3      9       internal3    E8:F6:D7:00:10:5B    88
+  1      7       internal1    e0:23:ff:6a:e5:d8    31     Hit(31)
+  2      8       internal2    00:09:0f:09:00:07    0      Local Static
+  4      10      internal4    01:00:5e:00:00:05    12
+`
+	got := ParseBridgeFDB(output)
+	if len(got) != 2 {
+		t.Fatalf("got %d entries, want 2: %+v", len(got), got)
+	}
+	if got[0].Interface != "internal3" || got[0].MACAddress != "e8:f6:d7:00:10:5b" {
+		t.Errorf("row 0 wrong (MAC must be lowercase): %+v", got[0])
+	}
+	if got[1].Interface != "internal1" || got[1].MACAddress != "e0:23:ff:6a:e5:d8" {
+		t.Errorf("row 1 wrong: %+v", got[1])
+	}
+}

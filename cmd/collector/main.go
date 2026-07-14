@@ -45,7 +45,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.3.15"
+const version = "1.3.16"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -158,13 +158,15 @@ type Collector struct {
 	// topologyCycleInterval-th SNMP cycle, first cycle included so topology
 	// appears at startup). Only touched from snmpPollingLoop's goroutine.
 	pollCycleCount uint64
-	// snmpARPEmpty records, per device, whether the most recent SNMP topology
-	// cycle returned an EMPTY ARP table. The SSH loop (separate goroutine and
-	// cadence) only sends its ARP supplement when this is affirmatively true —
-	// under the server's replace semantics, SSH and SNMP ARP snapshots for the
-	// same device would otherwise overwrite each other every cycle. Unknown
-	// (device never topology-polled, collector restarted) means "don't send".
+	// snmpARPEmpty / snmpFDBEmpty record, per device, whether the most recent
+	// SNMP topology cycle returned an EMPTY ARP / FDB table. The SSH loop
+	// (separate goroutine and cadence) only sends its supplements when the
+	// matching flag is affirmatively true — under the server's replace
+	// semantics, SSH and SNMP snapshots for the same (device, entry type)
+	// would otherwise overwrite each other every cycle. Unknown (device never
+	// topology-polled, collector restarted, walk error) means "don't send".
 	snmpARPEmpty   map[uint]bool
+	snmpFDBEmpty   map[uint]bool
 	snmpARPEmptyMu sync.Mutex
 
 	// SNMP-derived device throughput (see throughput.go). prevIface caches
@@ -1057,6 +1059,64 @@ func (c *Collector) fortiGateSSHDiagnostics(dev relay.DeviceInfo, fgt *ssh.Forti
 			c.sendSSHARPTable(dev, arpOutput)
 		}
 	}
+
+	// Bridge-FDB supplement: FortiGates expose no BRIDGE-MIB over SNMP, but
+	// the hardware/software-switch MAC table — the ONLY per-physical-port
+	// attribution the box offers, and what the server's transitive
+	// suppression needs to see which device a daisy-chained peer actually
+	// hangs off — is available via `diagnose netlink brctl`. Same gating as
+	// ARP: schema v5 + affirmatively-empty SNMP FDB.
+	if c.sink.TopologySupported() && c.snmpFDBWasEmpty(dev.ID) {
+		c.sendSSHBridgeFDB(dev, fgt)
+	}
+}
+
+// sendSSHBridgeFDB enumerates the FortiGate's bridges and relays their host
+// tables as the device's FDB topology snapshot (Source "ssh", member port
+// NAMES — the server resolves names against interface stats).
+func (c *Collector) sendSSHBridgeFDB(dev relay.DeviceInfo, fgt *ssh.FortiGateClient) {
+	listOut, err := fgt.GetBridgeList()
+	if err != nil {
+		return // no bridges / VDOM context — nothing to supplement
+	}
+	bridges := ssh.ParseBridgeList(listOut)
+	if len(bridges) == 0 {
+		return
+	}
+	// Bound the per-device SSH round trips — a FortiGate has a handful of
+	// switches at most; more likely indicates parser confusion.
+	if len(bridges) > 8 {
+		bridges = bridges[:8]
+	}
+	now := time.Now()
+	var entries []relay.TopologyEntry
+	for _, bridge := range bridges {
+		out, err := fgt.GetBridgeFDB(bridge)
+		if err != nil {
+			continue
+		}
+		for _, e := range ssh.ParseBridgeFDB(out) {
+			entries = append(entries, relay.TopologyEntry{
+				Timestamp:  now,
+				DeviceID:   dev.ID,
+				EntryType:  "fdb",
+				IfName:     e.Interface,
+				MACAddress: e.MACAddress,
+				Source:     "ssh",
+			})
+		}
+	}
+	if len(entries) == 0 {
+		return
+	}
+	if len(entries) > snmp.MaxTopologyEntriesPerDevice {
+		log.Printf("[SSH] Bridge FDB topology for %s truncated: %d entries dropped (cap %d)",
+			dev.Name, len(entries)-snmp.MaxTopologyEntriesPerDevice, snmp.MaxTopologyEntriesPerDevice)
+		entries = entries[:snmp.MaxTopologyEntriesPerDevice]
+	}
+	if err := c.sink.SendTopologyEntries(entries); err != nil {
+		log.Printf("[SSH] Failed to send bridge FDB topology for %s: %v", dev.Name, err)
+	}
 }
 
 // sendSSHARPTable parses FortiOS `get system arp` output and relays it as the
@@ -1874,13 +1934,17 @@ func (c *Collector) collectDeviceTopology(dev relay.DeviceInfo, client deviceSNM
 		log.Printf("[SNMP] FDB walk failed for %s: %v", dev.Name, fdbErr)
 	}
 
-	// Record whether SNMP affirmatively produced an empty ARP table — the SSH
-	// loop's ARP supplement keys off this (walk errors leave it "don't send").
+	// Record whether SNMP affirmatively produced empty ARP/FDB tables — the
+	// SSH loop's supplements key off these (walk errors leave "don't send").
 	c.snmpARPEmptyMu.Lock()
 	if c.snmpARPEmpty == nil {
 		c.snmpARPEmpty = make(map[uint]bool)
 	}
+	if c.snmpFDBEmpty == nil {
+		c.snmpFDBEmpty = make(map[uint]bool)
+	}
 	c.snmpARPEmpty[dev.ID] = arpErr == nil && len(arp) == 0
+	c.snmpFDBEmpty[dev.ID] = fdbErr == nil && len(fdb) == 0
 	c.snmpARPEmptyMu.Unlock()
 
 	entries, droppedCount := snmp.CapCombinedTopology(arp, fdb)
@@ -1913,6 +1977,15 @@ func (c *Collector) snmpARPWasEmpty(deviceID uint) bool {
 	return c.snmpARPEmpty[deviceID]
 }
 
+// snmpFDBWasEmpty is the FDB twin — FortiGates expose no BRIDGE-MIB over
+// SNMP (live-verified), so this is true for effectively every FortiGate and
+// gates the SSH bridge-FDB supplement.
+func (c *Collector) snmpFDBWasEmpty(deviceID uint) bool {
+	c.snmpARPEmptyMu.Lock()
+	defer c.snmpARPEmptyMu.Unlock()
+	return c.snmpFDBEmpty[deviceID]
+}
+
 // pruneSNMPARPFlags drops the ARP-empty flags of devices no longer assigned,
 // so a device removed and later re-assigned can't inherit a stale flag and
 // trigger the SSH ARP supplement before its first fresh topology cycle.
@@ -1926,6 +1999,11 @@ func (c *Collector) pruneSNMPARPFlags(devices []relay.DeviceInfo) {
 	for id := range c.snmpARPEmpty {
 		if !keep[id] {
 			delete(c.snmpARPEmpty, id)
+		}
+	}
+	for id := range c.snmpFDBEmpty {
+		if !keep[id] {
+			delete(c.snmpFDBEmpty, id)
 		}
 	}
 }
