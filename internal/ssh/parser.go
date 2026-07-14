@@ -889,3 +889,65 @@ func ParseBridgeFDB(output string) []BridgeFDBEntryInfo {
 	}
 	return out
 }
+
+// ParseFreeBSDBridgeList extracts bridge names from `ifconfig -g bridge`
+// (one interface name per line; empty on a routed-only box).
+func ParseFreeBSDBridgeList(output string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, line := range strings.Split(output, "\n") {
+		n := strings.TrimSpace(line)
+		if n == "" || !bridgeNameRe.MatchString(n) || seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	return out
+}
+
+// ParseFreeBSDBridgeFDB parses `ifconfig <bridge> addr` learned-address rows:
+//
+//	58:9c:fc:10:ff:a1 Vlan1 vtnet0 1141 flags=0<>
+//
+// Fields: MAC, VLAN tag, member interface, expiry, flags. STATIC/STICKY rows
+// (the bridge's own or pinned MACs) and multicast/zero MACs are dropped.
+func ParseFreeBSDBridgeFDB(output string) []BridgeFDBEntryInfo {
+	var out []BridgeFDBEntryInfo
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) < 3 {
+			continue
+		}
+		hw, err := net.ParseMAC(fields[0])
+		if err != nil || len(hw) != 6 || hw[0]&1 == 1 {
+			continue
+		}
+		allZero := true
+		for _, o := range hw {
+			if o != 0 {
+				allZero = false
+				break
+			}
+		}
+		if allZero {
+			continue
+		}
+		upper := strings.ToUpper(line)
+		if strings.Contains(upper, "STATIC") || strings.Contains(upper, "STICKY") {
+			continue
+		}
+		// Field layout shifts by FreeBSD version (the Vlan column is absent
+		// pre-13): the member interface is the first non-Vlan field after
+		// the MAC.
+		iface := fields[1]
+		if strings.HasPrefix(iface, "Vlan") && len(fields) >= 3 {
+			iface = fields[2]
+		}
+		if iface == "" {
+			continue
+		}
+		out = append(out, BridgeFDBEntryInfo{Interface: iface, MACAddress: hw.String()})
+	}
+	return out
+}

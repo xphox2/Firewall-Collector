@@ -143,6 +143,31 @@ func (c *OPNsenseClient) GetHardwareSensors() (string, error) {
 	return runCommandRaw(c.client, "sysctl -iq hw.temperature dev.ina2xx dev.emc2302", false, commandTimeout)
 }
 
+// GetBridgeList returns the FreeBSD bridge interface names (`ifconfig -g
+// bridge`) — the L2-topology FDB supplement for bridged OPNsense boxes. A
+// routed-only box (no if_bridge) yields empty output, and FreeBSD's stock
+// SNMP agents expose no BRIDGE-MIB, so SSH is the only source.
+func (c *OPNsenseClient) GetBridgeList() (string, error) {
+	if c.client == nil {
+		return "", fmt.Errorf("not connected")
+	}
+	return runCommandRaw(c.client, "ifconfig -g bridge", false, commandTimeout)
+}
+
+// GetBridgeFDB returns one bridge's learned address table
+// (`ifconfig <bridge> addr`) with per-member-interface attribution. The name
+// is validated before command interpolation (same defense as the FortiGate
+// path).
+func (c *OPNsenseClient) GetBridgeFDB(bridge string) (string, error) {
+	if c.client == nil {
+		return "", fmt.Errorf("not connected")
+	}
+	if !bridgeNameRe.MatchString(bridge) {
+		return "", fmt.Errorf("invalid bridge name %q", bridge)
+	}
+	return runCommandRaw(c.client, "ifconfig "+bridge+" addr", false, commandTimeout)
+}
+
 // GetConfigChecksum returns a change-detection token derived from the exact
 // config bytes GetConfig will send, so the stored checksum always corresponds
 // to the stored config. Backed by the same cached fetch as GetConfig.

@@ -1009,6 +1009,12 @@ func (c *Collector) sshPollDevice(dev relay.DeviceInfo) {
 		} else {
 			log.Printf("[SSH] Hardware sensors failed for %s: %v", dev.Name, err)
 		}
+		// L2 bridge-FDB supplement (bridged boxes only — a routed OPNsense
+		// has no if_bridge and yields nothing). Same double-gating as the
+		// FortiGate path: schema v5 + affirmatively-empty SNMP FDB.
+		if c.sink.TopologySupported() && c.snmpFDBWasEmpty(dev.ID) {
+			c.sendSSHBridgeFDB(dev, client, ssh.ParseFreeBSDBridgeList, ssh.ParseFreeBSDBridgeFDB)
+		}
 		return
 	case *ssh.FortiGateClient:
 		c.fortiGateSSHDiagnostics(dev, client)
@@ -1067,23 +1073,33 @@ func (c *Collector) fortiGateSSHDiagnostics(dev relay.DeviceInfo, fgt *ssh.Forti
 	// hangs off — is available via `diagnose netlink brctl`. Same gating as
 	// ARP: schema v5 + affirmatively-empty SNMP FDB.
 	if c.sink.TopologySupported() && c.snmpFDBWasEmpty(dev.ID) {
-		c.sendSSHBridgeFDB(dev, fgt)
+		c.sendSSHBridgeFDB(dev, fgt, ssh.ParseBridgeList, ssh.ParseBridgeFDB)
 	}
 }
 
-// sendSSHBridgeFDB enumerates the FortiGate's bridges and relays their host
+// bridgeFDBSource is the vendor-neutral seam for SSH bridge-FDB collection —
+// FortiGateClient (`diagnose netlink brctl`) and OPNsenseClient
+// (`ifconfig -g bridge` / `ifconfig <br> addr`) both satisfy it; the matching
+// output parsers are passed alongside.
+type bridgeFDBSource interface {
+	GetBridgeList() (string, error)
+	GetBridgeFDB(bridge string) (string, error)
+}
+
+// sendSSHBridgeFDB enumerates the device's bridges and relays their MAC host
 // tables as the device's FDB topology snapshot (Source "ssh", member port
 // NAMES — the server resolves names against interface stats).
-func (c *Collector) sendSSHBridgeFDB(dev relay.DeviceInfo, fgt *ssh.FortiGateClient) {
-	listOut, err := fgt.GetBridgeList()
+func (c *Collector) sendSSHBridgeFDB(dev relay.DeviceInfo, src bridgeFDBSource,
+	parseList func(string) []string, parseFDB func(string) []ssh.BridgeFDBEntryInfo) {
+	listOut, err := src.GetBridgeList()
 	if err != nil {
 		return // no bridges / VDOM context — nothing to supplement
 	}
-	bridges := ssh.ParseBridgeList(listOut)
+	bridges := parseList(listOut)
 	if len(bridges) == 0 {
 		return
 	}
-	// Bound the per-device SSH round trips — a FortiGate has a handful of
+	// Bound the per-device SSH round trips — a firewall has a handful of
 	// switches at most; more likely indicates parser confusion.
 	if len(bridges) > 8 {
 		bridges = bridges[:8]
@@ -1091,11 +1107,11 @@ func (c *Collector) sendSSHBridgeFDB(dev relay.DeviceInfo, fgt *ssh.FortiGateCli
 	now := time.Now()
 	var entries []relay.TopologyEntry
 	for _, bridge := range bridges {
-		out, err := fgt.GetBridgeFDB(bridge)
+		out, err := src.GetBridgeFDB(bridge)
 		if err != nil {
 			continue
 		}
-		for _, e := range ssh.ParseBridgeFDB(out) {
+		for _, e := range parseFDB(out) {
 			entries = append(entries, relay.TopologyEntry{
 				Timestamp:  now,
 				DeviceID:   dev.ID,

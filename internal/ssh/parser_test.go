@@ -506,3 +506,39 @@ port no  device  devname  mac addr                 ttl    attributes
 		t.Errorf("row 1 wrong: %+v", got[1])
 	}
 }
+
+// TestParseFreeBSDBridgeList: one name per line; unsafe names dropped;
+// routed-only boxes (empty output) yield nil.
+func TestParseFreeBSDBridgeList(t *testing.T) {
+	if got := ParseFreeBSDBridgeList("bridge0\nbridge1\nbad name\n"); len(got) != 2 || got[0] != "bridge0" || got[1] != "bridge1" {
+		t.Fatalf("got %v, want [bridge0 bridge1]", got)
+	}
+	if got := ParseFreeBSDBridgeList(""); len(got) != 0 {
+		t.Fatalf("routed-only box must yield nothing, got %v", got)
+	}
+}
+
+// TestParseFreeBSDBridgeFDB: learned rows keep the member interface, both
+// with and without the Vlan column (FreeBSD version drift); STATIC/STICKY,
+// multicast and zero MACs dropped.
+func TestParseFreeBSDBridgeFDB(t *testing.T) {
+	output := `	58:9c:fc:10:ff:a1 Vlan1 vtnet0 1141 flags=0<>
+	E8:F6:D7:00:10:5B Vlan1 igb1 900 flags=0<>
+	00:09:0f:09:00:07 Vlan1 igb0 0 flags=3<STATIC,STICKY>
+	01:00:5e:00:00:05 Vlan1 igb1 12 flags=0<>
+	aa:bb:cc:dd:ee:01 em0 300 flags=0<>
+`
+	got := ParseFreeBSDBridgeFDB(output)
+	if len(got) != 3 {
+		t.Fatalf("got %d entries, want 3: %+v", len(got), got)
+	}
+	if got[0].Interface != "vtnet0" || got[0].MACAddress != "58:9c:fc:10:ff:a1" {
+		t.Errorf("row 0 wrong: %+v", got[0])
+	}
+	if got[1].Interface != "igb1" || got[1].MACAddress != "e8:f6:d7:00:10:5b" {
+		t.Errorf("row 1 wrong (MAC must be lowercase): %+v", got[1])
+	}
+	if got[2].Interface != "em0" {
+		t.Errorf("no-Vlan-column row wrong: %+v", got[2])
+	}
+}
