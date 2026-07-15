@@ -386,6 +386,19 @@ func (c *FortiGateClient) GetARPTable() (string, error) {
 	return c.Execute("get system arp")
 }
 
+// GetBridgeList returns the FortiOS bridge (hardware/software switch)
+// enumeration — the SSH supplement for the MAC forwarding table, since
+// FortiGates expose no BRIDGE-MIB over SNMP (live-verified 2026-07-14).
+func (c *FortiGateClient) GetBridgeList() (string, error) {
+	return c.Execute("diagnose netlink brctl list")
+}
+
+// GetBridgeFDB returns one bridge's MAC host table with per-member-port
+// attribution (`diagnose netlink brctl name host <bridge>`).
+func (c *FortiGateClient) GetBridgeFDB(bridge string) (string, error) {
+	return c.Execute("diagnose netlink brctl name host " + bridge)
+}
+
 func (c *FortiGateClient) BackupConfigTFTP(filename, tftpServerIP string) (string, error) {
 	cmd := fmt.Sprintf("execute backup config tftp %s %s", filename, tftpServerIP)
 	// Request a PTY: some FortiOS builds drop non-PTY channels before completing

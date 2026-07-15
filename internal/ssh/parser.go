@@ -801,3 +801,153 @@ func ParseARPTable(output string) []ARPEntryInfo {
 	}
 	return out
 }
+
+// BridgeFDBEntryInfo is one learned MAC from a FortiOS bridge host table
+// (`diagnose netlink brctl name host <bridge>`) — the member PORT NAME is the
+// payload: it is the only per-physical-port MAC attribution a FortiGate
+// offers (no BRIDGE-MIB over SNMP).
+type BridgeFDBEntryInfo struct {
+	Interface  string // member port name (devname column)
+	MACAddress string // canonical lowercase colon form
+}
+
+// bridgeNameRe validates bridge names before they are interpolated into an
+// SSH command line — defense in depth against a hostile name in device output.
+var bridgeNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// ParseBridgeList extracts bridge names from `diagnose netlink brctl list`:
+//
+//	list bridge information
+//	1. name=internal ifindex=9 mac_entries=5
+//
+// Names failing the safety pattern are dropped.
+func ParseBridgeList(output string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, line := range strings.Split(output, "\n") {
+		idx := strings.Index(line, "name=")
+		if idx < 0 {
+			continue
+		}
+		name := strings.Fields(line[idx+len("name="):])
+		if len(name) == 0 {
+			continue
+		}
+		n := strings.TrimSpace(name[0])
+		if n == "" || !bridgeNameRe.MatchString(n) || seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	return out
+}
+
+// ParseBridgeFDB parses a FortiOS bridge host table:
+//
+//	show bridge control interface internal host.
+//	fdb: size=256, used=6, num=6, depth=1
+//	Bridge internal host table
+//	port no  device  devname  mac addr                 ttl    attributes
+//	  3      9       internal3    02:09:0f:78:69:01    88
+//	  1      7       internal1    00:09:0f:09:00:07    0      Local Static
+//
+// Local/Static rows (the bridge's own MACs) and multicast/zero MACs are
+// dropped — only dynamically learned unicast entries attribute a link.
+func ParseBridgeFDB(output string) []BridgeFDBEntryInfo {
+	var out []BridgeFDBEntryInfo
+	for _, line := range strings.Split(output, "\n") {
+		if strings.Contains(line, "Local") || strings.Contains(line, "Static") {
+			continue
+		}
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) < 4 {
+			continue
+		}
+		// port-no and device must be numeric — filters headers/banners.
+		if _, err := strconv.Atoi(fields[0]); err != nil {
+			continue
+		}
+		if _, err := strconv.Atoi(fields[1]); err != nil {
+			continue
+		}
+		hw, err := net.ParseMAC(fields[3])
+		if err != nil || len(hw) != 6 || hw[0]&1 == 1 {
+			continue
+		}
+		allZero := true
+		for _, o := range hw {
+			if o != 0 {
+				allZero = false
+				break
+			}
+		}
+		if allZero {
+			continue
+		}
+		out = append(out, BridgeFDBEntryInfo{Interface: fields[2], MACAddress: hw.String()})
+	}
+	return out
+}
+
+// ParseFreeBSDBridgeList extracts bridge names from `ifconfig -g bridge`
+// (one interface name per line; empty on a routed-only box).
+func ParseFreeBSDBridgeList(output string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, line := range strings.Split(output, "\n") {
+		n := strings.TrimSpace(line)
+		if n == "" || !bridgeNameRe.MatchString(n) || seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	return out
+}
+
+// ParseFreeBSDBridgeFDB parses `ifconfig <bridge> addr` learned-address rows:
+//
+//	58:9c:fc:10:ff:a1 Vlan1 vtnet0 1141 flags=0<>
+//
+// Fields: MAC, VLAN tag, member interface, expiry, flags. STATIC/STICKY rows
+// (the bridge's own or pinned MACs) and multicast/zero MACs are dropped.
+func ParseFreeBSDBridgeFDB(output string) []BridgeFDBEntryInfo {
+	var out []BridgeFDBEntryInfo
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) < 3 {
+			continue
+		}
+		hw, err := net.ParseMAC(fields[0])
+		if err != nil || len(hw) != 6 || hw[0]&1 == 1 {
+			continue
+		}
+		allZero := true
+		for _, o := range hw {
+			if o != 0 {
+				allZero = false
+				break
+			}
+		}
+		if allZero {
+			continue
+		}
+		upper := strings.ToUpper(line)
+		if strings.Contains(upper, "STATIC") || strings.Contains(upper, "STICKY") {
+			continue
+		}
+		// Field layout shifts by FreeBSD version (the Vlan column is absent
+		// pre-13): the member interface is the first non-Vlan field after
+		// the MAC.
+		iface := fields[1]
+		if strings.HasPrefix(iface, "Vlan") && len(fields) >= 3 {
+			iface = fields[2]
+		}
+		if iface == "" {
+			continue
+		}
+		out = append(out, BridgeFDBEntryInfo{Interface: iface, MACAddress: hw.String()})
+	}
+	return out
+}

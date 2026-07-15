@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.3.16 - 2026-07-14
+
+### Added — FortiGate + OPNsense SSH bridge-FDB supplement (per-member-port MAC table)
+
+Live validation of the port-to-port map found that FortiGates expose **no BRIDGE-MIB over SNMP** (verified by walk), so the map had no per-physical-port MAC attribution at all on FortiGate-switched segments — a daisy-chained peer (OPNsense → FW2 → FW1) could only be linked to the device it exchanges L3 traffic with, and the server's transitive suppression had nothing to work with.
+
+- New FortiGate SSH supplement: `diagnose netlink brctl list` enumerates the hardware/software switches (bridge names validated before command interpolation; capped at 8), `diagnose netlink brctl name host <bridge>` yields each switch's host table. Learned unicast rows are relayed as `entry_type=fdb` topology entries carrying the member port **name** (`internal3`) — exactly the per-port evidence the server's inference and transitive suppression need. Local/Static (self) and multicast rows dropped.
+- Same double-gating as the SSH ARP supplement: negotiated schema ≥ 5 AND the last SNMP topology cycle affirmatively returned an empty FDB (`snmpFDBEmpty` flag; walk errors keep it "don't send"), so SSH and SNMP FDB snapshots can never alternate-overwrite. Flags pruned on device-list refresh; truncation logged. Multi-VDOM limitation matches the ARP supplement (diagnose needs a VDOM context).
+- Requires server ≥ 0.11.96 for name-only FDB rows to participate in inference (older servers store them; the inference there keys FDB by ifIndex only).
+- **OPNsense/FreeBSD too**: `ifconfig -g bridge` + `ifconfig <bridge> addr` relayed through the same vendor-neutral pipeline (shared `bridgeFDBSource` seam, per-vendor parsers). Only applies to BRIDGED boxes — a routed OPNsense has no if_bridge and yields nothing (live 192.168.5.107 is routed; verified via SNMP ifTable). STATIC/STICKY and multicast rows dropped; handles the FreeBSD version drift where the Vlan column is absent.
+- Tests: FortiOS bridge-list/host-table parses (unsafe-name drop, member-port names, lowercase MACs, Local/Static + multicast filters) and the FreeBSD equivalents (Vlan-column drift, STATIC/STICKY, routed-only empty).
+
+
 ## 1.3.15 - 2026-07-13
 
 ### Added — L2 topology collection: ARP / MAC-table / LLDP / CDP (relay **schema v5**)
