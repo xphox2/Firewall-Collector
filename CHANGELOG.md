@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.3.18 - 2026-07-19
+
+### Added — IPSec deploy preflight (read-only vendor REST; no device writes)
+
+First execution-side sub-phase of the IPSec apply program (PR-C1). Adds a READ-ONLY REST transport so the collector can pre-check a deploy without touching device config.
+
+- New `internal/fwapi` package: an HTTPS client that authenticates to a firewall's management REST API (FortiGate `Authorization: Bearer <token>`; OPNsense HTTP basic `key:secret`) and runs a set of **GETs** — an auth/version check plus reads of the objects a deploy would create — returning a structured `PreflightReport` (`reachable`, `auth_ok`, `os_version`, per-check `collision`, `conflict`). Every request is a GET; the package performs NO writes. TLS is verified by default (the token would otherwise be exposed to a MITM); verification is skipped only when the server marks the device `insecure_tls` (self-signed mgmt cert, operator opt-in). Response bodies are read under a 1 MiB cap.
+- New `ipsec_preflight` command handler in the executor: parses the (decrypted) command payload, runs the preflight, and returns the report JSON. The API token is used only to build the auth header and is **never logged**. Command execution stays sequential per batch.
+- Collision detection is conservative (adversarial-review hardening): OPNsense matches the tunnel name against exact connection-row field values (never a raw-body substring, so `fwm-t7` can't match a deployed `fwm-t70`); FortiGate treats only an explicit 404 as "absent" — an auth/VDOM/5xx on a collision read is reported `indeterminate`, never a false "clear".
+- Tests: FortiGate clean/no-conflict, name-collision, bad-token, and forbidden-read-indeterminate cases + OPNsense basic-auth/version/empty-search and exact-vs-substring match against an `httptest` TLS server; per-vendor auth-header construction.
+
+## 1.3.17 - 2026-07-19
+
+### Added — Palo Alto (PAN-OS) SSH config backup + drift
+
+- New `internal/ssh/paloalto.go` `PaloAltoClient`: captures the running config as XML via `show config running` over SSH, mirroring the OPNsense single-document capture pattern (dial → one command → extract `<config>…</config>` → cache → SHA-256 checksum). In a non-interactive SSH exec session PAN-OS disables the CLI pager automatically, so no pager pre-step is needed.
+- `extractPaloAltoConfig` isolates the running-config XML from prompt/banner/echoed-command noise and requires a complete `<config …>…</config>` document, so a permission error, operational-mode error, or truncated capture is reported as a failure rather than stored as a bogus revision. XML capture is deliberate — it matches the server's existing `paloalto` config-diff normalizer (masks `<phash>/<secret>/<key>/<password>/<passphrase>` and `<config>` root-attribute version drift), so drift detection works with no server change.
+- Wired `paloalto` into the `NewConfigBackupClient` factory; the existing vendor-agnostic SSH poll + config-revision relay path now backs up Palo Alto devices. Non-superuser exports (secrets replaced with `*****`) are flagged `QualityMasked` by the server, as with FortiGate masked backups.
+- SSH host-key change detection (trust-on-first-use, alert-only) applies for free via the shared `dialSSH` observed-host-key capture.
+- Tests: vendor-dispatch coverage for `paloalto`, `extractPaloAltoConfig` (clean/trailing-noise/echoed-command/bare-root/truncated/op-mode-error/empty), interface-satisfaction and not-connected guards.
+
 ## 1.3.16 - 2026-07-14
 
 ### Added — FortiGate + OPNsense SSH bridge-FDB supplement (per-member-port MAC table)

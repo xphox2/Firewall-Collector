@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
 	"time"
 
+	"firewall-collector/internal/fwapi"
 	"firewall-collector/internal/relay"
 )
 
@@ -71,6 +74,24 @@ func newCommandExecutor(sink commandResultSink) *commandExecutor {
 	// configuration exists.
 	e.handlers["noop"] = func(cmd relay.PendingCommand) (string, error) {
 		return "noop executed", nil
+	}
+	// ipsec_preflight (PR-C1): a READ-ONLY REST preflight for an IPSec deploy —
+	// authenticate to the device API and GET the objects a deploy would create
+	// (collision checks). Performs NO device writes. Returns the structured
+	// report as JSON. The payload carries the API token — NEVER log it.
+	e.handlers["ipsec_preflight"] = func(cmd relay.PendingCommand) (string, error) {
+		var p fwapi.PreflightPayload
+		if err := json.Unmarshal([]byte(cmd.Payload), &p); err != nil {
+			return "", fmt.Errorf("invalid preflight payload: %w", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		report := fwapi.RunPreflight(ctx, p)
+		out, err := json.Marshal(report)
+		if err != nil {
+			return "", fmt.Errorf("marshal preflight report: %w", err)
+		}
+		return string(out), nil
 	}
 	return e
 }
