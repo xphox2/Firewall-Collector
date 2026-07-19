@@ -9,10 +9,12 @@ func TestNewConfigBackupClient_VendorDispatch(t *testing.T) {
 		// wantType is checked via a type switch below.
 		wantFortiGate bool
 		wantOPNsense  bool
+		wantPaloAlto  bool
 	}{
 		{vendor: "fortigate", wantFortiGate: true},
 		{vendor: "", wantFortiGate: true}, // legacy default
 		{vendor: "opnsense", wantOPNsense: true},
+		{vendor: "paloalto", wantPaloAlto: true},
 		{vendor: "pfsense", wantErr: true},
 		{vendor: "bogus", wantErr: true},
 	}
@@ -37,6 +39,10 @@ func TestNewConfigBackupClient_VendorDispatch(t *testing.T) {
 			case *OPNsenseClient:
 				if !tt.wantOPNsense {
 					t.Fatalf("vendor %q: got OPNsenseClient, did not expect it", tt.vendor)
+				}
+			case *PaloAltoClient:
+				if !tt.wantPaloAlto {
+					t.Fatalf("vendor %q: got PaloAltoClient, did not expect it", tt.vendor)
 				}
 			default:
 				t.Fatalf("vendor %q: unexpected client type %T", tt.vendor, c)

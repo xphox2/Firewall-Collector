@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.17 - 2026-07-19
+
+### Added — Palo Alto (PAN-OS) SSH config backup + drift
+
+- New `internal/ssh/paloalto.go` `PaloAltoClient`: captures the running config as XML via `show config running` over SSH, mirroring the OPNsense single-document capture pattern (dial → one command → extract `<config>…</config>` → cache → SHA-256 checksum). In a non-interactive SSH exec session PAN-OS disables the CLI pager automatically, so no pager pre-step is needed.
+- `extractPaloAltoConfig` isolates the running-config XML from prompt/banner/echoed-command noise and requires a complete `<config …>…</config>` document, so a permission error, operational-mode error, or truncated capture is reported as a failure rather than stored as a bogus revision. XML capture is deliberate — it matches the server's existing `paloalto` config-diff normalizer (masks `<phash>/<secret>/<key>/<password>/<passphrase>` and `<config>` root-attribute version drift), so drift detection works with no server change.
+- Wired `paloalto` into the `NewConfigBackupClient` factory; the existing vendor-agnostic SSH poll + config-revision relay path now backs up Palo Alto devices. Non-superuser exports (secrets replaced with `*****`) are flagged `QualityMasked` by the server, as with FortiGate masked backups.
+- SSH host-key change detection (trust-on-first-use, alert-only) applies for free via the shared `dialSSH` observed-host-key capture.
+- Tests: vendor-dispatch coverage for `paloalto`, `extractPaloAltoConfig` (clean/trailing-noise/echoed-command/bare-root/truncated/op-mode-error/empty), interface-satisfaction and not-connected guards.
+
 ## 1.3.16 - 2026-07-14
 
 ### Added — FortiGate + OPNsense SSH bridge-FDB supplement (per-member-port MAC table)
