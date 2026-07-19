@@ -45,27 +45,29 @@ type PreflightPayload struct {
 
 // StepResult is the outcome of one preflight GET.
 type StepResult struct {
-	Check      string `json:"check"`
-	Path       string `json:"path"`
-	StatusCode int    `json:"status_code"`
-	OK         bool   `json:"ok"`      // request reached the API and was authorized
-	Present    bool   `json:"present"` // the object exists (only meaningful for collision checks)
-	Collision  bool   `json:"collision"`
-	Note       string `json:"note,omitempty"`
+	Check         string `json:"check"`
+	Path          string `json:"path"`
+	StatusCode    int    `json:"status_code"`
+	OK            bool   `json:"ok"`            // request reached the API and was authorized
+	Present       bool   `json:"present"`       // the object exists (only meaningful for collision checks)
+	Collision     bool   `json:"collision"`     // ExpectAbsent step whose object is definitely present
+	Indeterminate bool   `json:"indeterminate"` // collision check could not be decided (auth/VDOM/5xx)
+	Note          string `json:"note,omitempty"`
 }
 
 // PreflightReport is the structured result returned to the server as the
 // command result. It contains NO secrets (no token, no PSK).
 type PreflightReport struct {
-	Vendor    string       `json:"vendor"`
-	End       int          `json:"end"`
-	DeviceID  uint         `json:"device_id"`
-	Reachable bool         `json:"reachable"`
-	AuthOK    bool         `json:"auth_ok"`
-	OSVersion string       `json:"os_version,omitempty"`
-	Conflict  bool         `json:"conflict"`
-	Checks    []StepResult `json:"checks"`
-	Error     string       `json:"error,omitempty"`
+	Vendor        string       `json:"vendor"`
+	End           int          `json:"end"`
+	DeviceID      uint         `json:"device_id"`
+	Reachable     bool         `json:"reachable"`
+	AuthOK        bool         `json:"auth_ok"`
+	OSVersion     string       `json:"os_version,omitempty"`
+	Conflict      bool         `json:"conflict"`      // at least one collision check is definitely present
+	Indeterminate bool         `json:"indeterminate"` // at least one collision check could not be decided
+	Checks        []StepResult `json:"checks"`
+	Error         string       `json:"error,omitempty"`
 }
 
 // RunPreflight executes the payload's read-only steps and returns a structured
@@ -107,11 +109,17 @@ func RunPreflight(ctx context.Context, p PreflightPayload) PreflightReport {
 				sr.Note = "authentication failed"
 			}
 		default:
-			sr.Present = objectPresent(p.Vendor, status, body, p.TunnelName)
-			if step.ExpectAbsent && sr.Present {
+			present, indeterminate := objectPresent(p.Vendor, status, body, p.TunnelName)
+			sr.Present = present
+			sr.Indeterminate = indeterminate
+			switch {
+			case step.ExpectAbsent && present:
 				sr.Collision = true
 				rep.Conflict = true
 				sr.Note = "an object with this name already exists on the device"
+			case step.ExpectAbsent && indeterminate:
+				rep.Indeterminate = true
+				sr.Note = fmt.Sprintf("collision check inconclusive (HTTP %d) — verify API-user read access / VDOM", status)
 			}
 		}
 		rep.Checks = append(rep.Checks, sr)
@@ -154,15 +162,61 @@ func applyAuth(req *http.Request, vendor, token string) {
 }
 
 // objectPresent decides whether a collision-check GET indicates the object
-// already exists. FortiGate cmdb returns 200 for a present object and 404 when
-// absent. OPNsense search endpoints return 200 with a rows array regardless, so
-// presence is inferred from the tunnel name appearing in the body.
-func objectPresent(vendor string, status int, body []byte, tunnelName string) bool {
+// already exists. It returns (present, indeterminate): only an authoritative
+// answer sets present; anything ambiguous (auth/VDOM/5xx, or unparseable
+// search output) is indeterminate so the caller never reports a false "clear".
+//
+//   - FortiGate cmdb: 200 → present; 404 → absent; anything else (401/403/424/
+//     4xx/5xx — e.g. an API user without vpn.ipsec read access, or a
+//     wrong-VDOM GET) → indeterminate.
+//   - OPNsense search: 2xx with a parseable rows array → present iff a row has
+//     a field value EXACTLY equal to the tunnel name (never a raw-body
+//     substring — "fwm-t7" must not match a deployed "fwm-t70"); a non-2xx or
+//     unparseable body → indeterminate.
+func objectPresent(vendor string, status int, body []byte, tunnelName string) (present, indeterminate bool) {
 	if vendor == "opnsense" {
-		return status >= 200 && status < 300 && tunnelName != "" && strings.Contains(string(body), tunnelName)
+		if status < 200 || status >= 300 {
+			return false, true
+		}
+		matched, ok := opnsenseRowsMatch(body, tunnelName)
+		if !ok {
+			return false, true // couldn't parse the search result → don't claim "clear"
+		}
+		return matched, false
 	}
 	// fortigate cmdb
-	return status >= 200 && status < 300
+	switch {
+	case status == http.StatusNotFound:
+		return false, false
+	case status >= 200 && status < 300:
+		return true, false
+	default:
+		return false, true
+	}
+}
+
+// opnsenseRowsMatch parses an OPNsense search response ({"rows":[{...}],...})
+// and reports whether any row has a string field EXACTLY equal to name. The
+// second return is false when the body can't be parsed as a rows array (so the
+// caller treats it as indeterminate rather than a false negative).
+func opnsenseRowsMatch(body []byte, name string) (matched, parsed bool) {
+	if name == "" {
+		return false, true
+	}
+	var resp struct {
+		Rows []map[string]any `json:"rows"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return false, false
+	}
+	for _, row := range resp.Rows {
+		for _, v := range row {
+			if s, ok := v.(string); ok && s == name {
+				return true, true
+			}
+		}
+	}
+	return false, true
 }
 
 // extractVersion best-effort pulls a version string from an auth/status body.

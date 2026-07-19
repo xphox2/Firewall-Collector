@@ -127,6 +127,47 @@ func TestRunPreflight_OPNsense_BasicAuthAndVersion(t *testing.T) {
 	}
 }
 
+func TestRunPreflight_FortiGate_IndeterminateOnForbidden(t *testing.T) {
+	// Auth works (monitor status 200) but the cmdb read is forbidden (API user
+	// lacks vpn.ipsec read / wrong VDOM) → the collision check must be
+	// indeterminate, NOT a false "clear".
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v2/monitor/system/status", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"version":"v7.6.7"}`))
+	})
+	mux.HandleFunc("/api/v2/cmdb/vpn.ipsec/phase1-interface/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	})
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+	rep := RunPreflight(context.Background(), fortiPayload(srv.URL, "good"))
+	if !rep.AuthOK {
+		t.Fatalf("want auth_ok, got %+v", rep)
+	}
+	if rep.Conflict {
+		t.Errorf("must NOT report a definite conflict on a 403 collision read: %+v", rep.Checks)
+	}
+	if !rep.Indeterminate {
+		t.Errorf("want indeterminate=true when the collision read is forbidden: %+v", rep.Checks)
+	}
+}
+
+func TestOPNsenseRowsMatch_ExactNotSubstring(t *testing.T) {
+	// A deployed connection "fwm-t70" must NOT match preflight for "fwm-t7".
+	body := []byte(`{"rows":[{"description":"fwm-t70","uuid":"x"}],"total":1}`)
+	if m, parsed := opnsenseRowsMatch(body, "fwm-t7"); m || !parsed {
+		t.Errorf("fwm-t7 wrongly matched fwm-t70 (m=%t parsed=%t)", m, parsed)
+	}
+	// Exact match hits.
+	if m, parsed := opnsenseRowsMatch(body, "fwm-t70"); !m || !parsed {
+		t.Errorf("fwm-t70 should match exactly (m=%t parsed=%t)", m, parsed)
+	}
+	// Unparseable body → not parsed (caller treats as indeterminate).
+	if _, parsed := opnsenseRowsMatch([]byte(`not json`), "fwm-t7"); parsed {
+		t.Error("unparseable body must report parsed=false")
+	}
+}
+
 func TestApplyAuth_Vendors(t *testing.T) {
 	rF, _ := http.NewRequest(http.MethodGet, "https://x/", nil)
 	applyAuth(rF, "fortigate", "tok123")
