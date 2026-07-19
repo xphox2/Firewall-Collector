@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.18 - 2026-07-19
+
+### Added — IPSec deploy preflight (read-only vendor REST; no device writes)
+
+First execution-side sub-phase of the IPSec apply program (PR-C1). Adds a READ-ONLY REST transport so the collector can pre-check a deploy without touching device config.
+
+- New `internal/fwapi` package: an HTTPS client that authenticates to a firewall's management REST API (FortiGate `Authorization: Bearer <token>`; OPNsense HTTP basic `key:secret`) and runs a set of **GETs** — an auth/version check plus reads of the objects a deploy would create — returning a structured `PreflightReport` (`reachable`, `auth_ok`, `os_version`, per-check `collision`, `conflict`). Every request is a GET; the package performs NO writes. TLS is verified by default (the token would otherwise be exposed to a MITM); verification is skipped only when the server marks the device `insecure_tls` (self-signed mgmt cert, operator opt-in). Response bodies are read under a 1 MiB cap.
+- New `ipsec_preflight` command handler in the executor: parses the (decrypted) command payload, runs the preflight, and returns the report JSON. The API token is used only to build the auth header and is **never logged**. Command execution stays sequential per batch.
+- Tests: FortiGate clean/no-conflict, name-collision, and bad-token cases + OPNsense basic-auth/version/empty-search against an `httptest` TLS server; per-vendor auth-header construction.
+
 ## 1.3.17 - 2026-07-19
 
 ### Added — Palo Alto (PAN-OS) SSH config backup + drift
