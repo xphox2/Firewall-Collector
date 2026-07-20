@@ -313,12 +313,7 @@ func RunRemove(ctx context.Context, p ApplyPayload) ApplyReport {
 			// just not counted as a failure.
 			sr.Status = gstatus
 			sr.Note = "foreign object (not tagged " + p.OwnerTag + ") — left in place"
-			rep.StepsTotal++
-			if len(rep.Steps) < maxReportSteps {
-				rep.Steps = append(rep.Steps, sr)
-			} else {
-				rep.StepsOmitted++
-			}
+			rep.record(sr) // sr.OK is false → listed (operator sees it), allOK untouched
 			continue
 		}
 		// Owned → delete. 404 (raced/already gone) counts as success.
