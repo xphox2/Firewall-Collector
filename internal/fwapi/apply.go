@@ -28,6 +28,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
+	"strings"
 	"time"
 )
 
@@ -41,6 +43,9 @@ type ApplyStep struct {
 	Method      string `json:"method,omitempty"`
 	Path        string `json:"path,omitempty"`
 	Body        string `json:"body,omitempty"`
+	// CaptureAs names the token bound to this create's device-assigned uuid (see
+	// the server's ipsec.ApplyStep). NOT part of checksumSteps.
+	CaptureAs string `json:"capture_as,omitempty"`
 }
 
 // ApplyPayload is the decrypted command payload for a WRITE (apply or remove).
@@ -62,6 +67,10 @@ type ApplyPayload struct {
 	Steps          []ApplyStep     `json:"steps"`
 	Checksum       string          `json:"checksum"`
 	CollisionSteps []PreflightStep `json:"collision_steps,omitempty"`
+	// Substitutions resolves <uuid:NAME> tokens for a REMOVE (the UUIDs captured
+	// when the tunnel was applied, stored server-side). Empty for apply (captured
+	// live) and for FortiGate (no tokens).
+	Substitutions map[string]string `json:"substitutions,omitempty"`
 }
 
 // checksumSteps MUST produce the identical hash to the server's
@@ -110,6 +119,10 @@ type ApplyReport struct {
 	StepsOmitted int               `json:"steps_omitted,omitempty"` // non-OK steps beyond the cap
 	Steps        []ApplyStepResult `json:"steps"`                   // NON-OK steps only (capped)
 	Error        string            `json:"error,omitempty"`
+	// CapturedUUIDs maps each <uuid:NAME> token to the device-assigned UUID read
+	// from a CaptureAs step's response during apply (OPNsense; empty for FortiGate).
+	// The server persists these so a later rollback can delete what was created.
+	CapturedUUIDs map[string]string `json:"captured_uuids,omitempty"`
 }
 
 // report bounds so a worst-case (all-failing) report can't blow the result cap.
@@ -152,6 +165,93 @@ func newClient(insecure bool) *http.Client {
 }
 
 func is2xx(status int) bool { return status >= 200 && status < 300 }
+
+// tokenRe matches a <uuid:NAME> placeholder; uuidRe validates a captured value
+// before it is spliced into a subsequent request (bounds a hostile/garbled
+// device response — F7). OPNsense UUIDs are RFC-4122 lowercase.
+var (
+	tokenRe = regexp.MustCompile(`<uuid:([a-zA-Z0-9_]+)>`)
+	uuidRe  = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+)
+
+// substitute replaces every <uuid:NAME> in s from m; the second return lists any
+// token with no mapping (caller decides: apply-time = error, remove-time = skip).
+func substitute(s string, m map[string]string) (string, []string) {
+	var unresolved []string
+	out := tokenRe.ReplaceAllStringFunc(s, func(tok string) string {
+		name := tokenRe.FindStringSubmatch(tok)[1]
+		if v, ok := m[name]; ok {
+			return v
+		}
+		unresolved = append(unresolved, name)
+		return tok
+	})
+	return out, unresolved
+}
+
+// writeOK decides whether a write/delete/apply step succeeded. FortiGate cmdb =
+// HTTP 2xx. OPNsense returns 200 EVEN ON validation failure, so its body must be
+// inspected: a create is `{"result":"saved","uuid":…}`, a delete `{"result":
+// "deleted"}` or the idempotent `{"result":"not found"}`, a reconfigure
+// `{"status":"ok"}`; a failure is `{"result":"failed","validations":{…}}` or
+// `{"status":"failed"}`.
+func writeOK(vendor string, status int, body []byte) bool {
+	if !is2xx(status) {
+		return false
+	}
+	if vendor != "opnsense" {
+		return true
+	}
+	var r struct {
+		Result      string          `json:"result"`
+		Status      string          `json:"status"`
+		Validations json.RawMessage `json:"validations"`
+	}
+	if json.Unmarshal(body, &r) != nil {
+		return true // a 2xx we can't parse — rare; don't manufacture a failure
+	}
+	if strings.EqualFold(r.Result, "failed") || strings.EqualFold(r.Result, "error") {
+		return false
+	}
+	if strings.EqualFold(r.Status, "failed") || strings.EqualFold(r.Status, "error") {
+		return false
+	}
+	if v := strings.TrimSpace(string(r.Validations)); v != "" && v != "null" && v != "{}" && v != "[]" {
+		return false
+	}
+	return true
+}
+
+// opnsenseResult extracts the short result/status token from an OPNsense response
+// body for a compact error note (never includes bodies/secrets).
+func opnsenseResult(body []byte) string {
+	var r struct {
+		Result string `json:"result"`
+		Status string `json:"status"`
+	}
+	if json.Unmarshal(body, &r) != nil {
+		return "unparseable"
+	}
+	if r.Result != "" {
+		return "result=" + r.Result
+	}
+	if r.Status != "" {
+		return "status=" + r.Status
+	}
+	return "no result"
+}
+
+// captureUUID reads a created object's device-assigned uuid from an OPNsense
+// response; the second return is false if absent or not a valid UUID.
+func captureUUID(body []byte) (string, bool) {
+	var r struct {
+		UUID string `json:"uuid"`
+	}
+	if json.Unmarshal(body, &r) != nil || r.UUID == "" {
+		return "", false
+	}
+	return r.UUID, uuidRe.MatchString(r.UUID)
+}
 
 // RunApply writes one end's config: checksum → collision-precheck → ordered
 // writes → verify. It never returns an error — the report captures every outcome;
@@ -214,24 +314,65 @@ func RunApply(ctx context.Context, p ApplyPayload) ApplyReport {
 		return rep
 	}
 
-	// (3) Execute the ordered write steps; stop on the first non-2xx.
+	// (3) Execute the ordered write steps; stop on the first failure. For UUID-
+	// chained vendors, substitute <uuid:NAME> from the live capture map BEFORE
+	// sending, and capture this step's returned uuid AFTER a success. A failure
+	// after the first write leaves Aborted=false — the device MAY be partially
+	// configured, which is a rollback case, not the "nothing written" abort.
+	captured := map[string]string{}
 	for _, s := range p.Steps {
-		status, _, err := doRequest(ctx, client, p.Vendor, p.APIToken, p.BaseURL, s.Method, s.Path, s.Body)
-		sr := ApplyStepResult{Op: "apply", Path: s.Path, Status: status}
+		path, up := substitute(s.Path, captured)
+		body, ub := substitute(s.Body, captured)
+		sr := ApplyStepResult{Op: "apply", Path: path, Status: 0}
+		if len(up)+len(ub) > 0 {
+			sr.Note = fmt.Sprintf("unresolved uuid token(s) %v — chaining failed", append(up, ub...))
+			rep.record(sr)
+			rep.Error = "internal: " + sr.Note + " — the device MAY be partially configured; roll back"
+			rep.CapturedUUIDs = captured
+			return rep
+		}
+		status, respBody, err := doRequest(ctx, client, p.Vendor, p.APIToken, p.BaseURL, s.Method, path, body)
+		sr.Status = status
 		if err != nil {
 			sr.Note = friendlyNetErr(err)
 			rep.record(sr)
 			rep.Error = "write failed: " + friendlyNetErr(err) + " — the device MAY be partially configured; roll back"
+			rep.CapturedUUIDs = captured
 			return rep
 		}
-		sr.OK = is2xx(status)
+		sr.OK = writeOK(p.Vendor, status, respBody)
+		if sr.OK && s.CaptureAs != "" {
+			uuid, ok := captureUUID(respBody)
+			if !ok {
+				// The object may exist on the device but we have no UUID to delete
+				// it — the compensating rollback will skip it and can't prove it
+				// gone, so the object could orphan. Acceptable: the next deploy's
+				// full-footprint ExpectAbsent preflight (exact-description match)
+				// catches such an orphan as a collision before any re-write.
+				sr.OK = false
+				sr.Note = "created but returned no valid uuid — cannot chain"
+			} else {
+				captured[s.CaptureAs] = uuid
+			}
+		}
+		if !sr.OK && sr.Note == "" {
+			// Fill the note BEFORE recording, and surface OPNsense's body verdict —
+			// a 200 {"result":"failed"} would otherwise read as a healthy "HTTP 200".
+			if p.Vendor == "opnsense" {
+				sr.Note = fmt.Sprintf("write rejected (HTTP %d, %s)", status, opnsenseResult(respBody))
+			} else {
+				sr.Note = fmt.Sprintf("write step returned HTTP %d", status)
+			}
+		}
 		rep.record(sr)
 		if !sr.OK {
-			rep.Error = fmt.Sprintf("write step returned HTTP %d — the device MAY be partially configured; roll back", status)
+			rep.Error = sr.Note + " — the device MAY be partially configured; roll back"
+			rep.CapturedUUIDs = captured
 			return rep
 		}
 	}
 	rep.Applied = true
+	rep.CapturedUUIDs = captured
 
 	// (4) Verify: the same collision GETs, now expecting PRESENT (skip auth).
 	verified := true
@@ -277,6 +418,55 @@ func RunRemove(ctx context.Context, p ApplyPayload) ApplyReport {
 	}
 
 	client := newClient(p.InsecureTLS)
+
+	// OPNsense: delete by the UUID captured at apply time (substituted from the
+	// server-stored map). No ownership GET is needed — we only ever delete UUIDs
+	// WE created, so there is no foreign-object risk. A step whose token has no
+	// stored UUID means that object was never created → SKIP (success). Reconfigure
+	// steps carry no token and always run. Idempotent: OPNsense returns 200
+	// {"result":"not found"} for an already-gone object (there is no 404).
+	if p.Vendor == "opnsense" {
+		// Only well-formed UUIDs may fill a delete path (defence in depth: the
+		// server-stored map was validated at capture, but a garbled deploy_json
+		// must not splice arbitrary text into a request path). A dropped entry
+		// leaves its token unresolved → the step is skipped, never sent malformed.
+		subs := make(map[string]string, len(p.Substitutions))
+		for k, v := range p.Substitutions {
+			if uuidRe.MatchString(v) {
+				subs[k] = v
+			}
+		}
+		allOK := true
+		for _, s := range p.Steps {
+			path, unresolved := substitute(s.Path, subs)
+			sr := ApplyStepResult{Op: "remove", Path: path}
+			if len(unresolved) > 0 {
+				sr.OK = true // object was never created — nothing to remove
+				sr.Note = "not created — skipped"
+				rep.record(sr)
+				continue
+			}
+			status, body, err := doRequest(ctx, client, p.Vendor, p.APIToken, p.BaseURL, s.Method, path, s.Body)
+			sr.Status = status
+			if err != nil {
+				allOK = false
+				sr.Note = "delete failed: " + friendlyNetErr(err)
+			} else if writeOK(p.Vendor, status, body) {
+				sr.OK = true
+			} else {
+				allOK = false
+				sr.Note = fmt.Sprintf("delete returned HTTP %d / %s", status, opnsenseResult(body))
+			}
+			rep.record(sr)
+		}
+		rep.Applied = allOK
+		if !allOK {
+			rep.Error = "one or more objects could not be removed — see steps"
+		}
+		return rep
+	}
+
+	// FortiGate: ownership-guarded GET-before-DELETE by deterministic mkey.
 	allOK := true
 	for _, s := range p.Steps {
 		sr := ApplyStepResult{Op: "remove", Path: s.Path}

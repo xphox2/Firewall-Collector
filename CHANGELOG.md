@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.21 - 2026-07-20
+
+### Added — IPSec apply: OPNsense (UUID chaining) + capture/substitute engine (C2b-2a)
+
+The collector can now apply/remove OPNsense IPSec tunnels, whose REST MVC model is UUID-chained (a created object's device-assigned UUID must be referenced by its children and targeted by its delete).
+
+- New `<uuid:NAME>` substitution engine in `internal/fwapi`: `RunApply` captures each `CaptureAs` step's returned `uuid` and substitutes `<uuid:NAME>` into subsequent steps' path/body **after** the checksum-verify (the checksum still pins the server-rendered placeholder template; FortiGate has no tokens → byte-identical behavior). Captured UUIDs are validated against a UUID regex before use.
+- Vendor-aware write success: OPNsense returns HTTP 200 even on validation failure, so the body is inspected (`result`/`status`/`validations`); a create must return a valid `uuid`, `reconfigure` must be `status:ok`.
+- `RunRemove` gains an OPNsense branch: delete by the server-supplied captured UUID (POST `del*/<uuid>`), treat `200 {"result":"not found"}` as idempotent success, and skip any step whose UUID token was never captured (object never created) — no ownership GET needed since we only ever delete UUIDs we created. FortiGate's tag-guarded GET-before-DELETE path is unchanged.
+- The `apply_ipsec`/`remove_ipsec` handlers now accept `opnsense` alongside `fortigate`; the compact report carries the captured UUID map back to the server (for rollback), never bodies or the PSK.
+
 ## 1.3.20 - 2026-07-19
 
 ### Added — IPSec deploy execution: FortiGate apply / verify / rollback (C2b-1)
