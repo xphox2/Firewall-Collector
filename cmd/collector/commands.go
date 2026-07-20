@@ -123,8 +123,8 @@ func (e *commandExecutor) runIPSecWrite(cmd relay.PendingCommand, remove bool) (
 	if err := json.Unmarshal([]byte(cmd.Payload), &p); err != nil {
 		return "", fmt.Errorf("invalid apply payload: %w", err)
 	}
-	if p.Vendor != "fortigate" {
-		return "", fmt.Errorf("apply not yet supported for %q (C2b-2)", p.Vendor)
+	if p.Vendor != "fortigate" && p.Vendor != "opnsense" {
+		return "", fmt.Errorf("apply not supported for vendor %q", p.Vendor)
 	}
 	unlock := e.lockDevice(p.DeviceID)
 	defer unlock()
