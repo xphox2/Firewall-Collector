@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.19 - 2026-07-19
+
+### Improved — IPSec preflight: fail fast + actionable errors when the device API is unreachable
+
+When the device's REST API doesn't answer, the preflight used to run all four GETs sequentially, each waiting out the full 15s client timeout (~60s of cryptic "context deadline exceeded" per end).
+
+- If the **auth/reachability** probe hits a transport error (timeout / refused / no route / TLS), the remaining collision GETs are **skipped** ("skipped — device API unreachable") instead of repeating the same timeout — one failure, ~15s, not four.
+- Transport errors are translated to **actionable** messages: a timeout now says to check HTTPS admin access on the device interface, the API Port (FortiGate admin HTTPS is often 8443/4443, not 443), and the REST API admin trusthost; "refused" points at the wrong port; TLS errors point at the self-signed-cert toggle.
+- A top-level `error` on the report captures the unreachable reason.
+
 ## 1.3.18 - 2026-07-19
 
 ### Added — IPSec deploy preflight (read-only vendor REST; no device writes)

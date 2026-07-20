@@ -2,6 +2,7 @@ package fwapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -165,6 +166,51 @@ func TestOPNsenseRowsMatch_ExactNotSubstring(t *testing.T) {
 	// Unparseable body → not parsed (caller treats as indeterminate).
 	if _, parsed := opnsenseRowsMatch([]byte(`not json`), "fwm-t7"); parsed {
 		t.Error("unparseable body must report parsed=false")
+	}
+}
+
+func TestRunPreflight_UnreachableFailsFast(t *testing.T) {
+	// A server that never responds (blocks) would be slow; instead point at a
+	// closed port on localhost so the connection is refused quickly, and assert
+	// the auth failure short-circuits the remaining collision GETs.
+	closed := "https://127.0.0.1:1" // nothing listens on TCP/1
+	p := PreflightPayload{
+		TunnelID: 3, TunnelName: "fwm-t3", End: 0, Vendor: "fortigate",
+		DeviceID: 1, BaseURL: closed, APIToken: "tok", InsecureTLS: true,
+		Steps: []PreflightStep{
+			{Check: "auth", Method: "GET", Path: "/api/v2/monitor/system/status"},
+			{Check: "phase1", Method: "GET", Path: "/api/v2/cmdb/vpn.ipsec/phase1-interface/fwm-t3", ExpectAbsent: true},
+			{Check: "phase2", Method: "GET", Path: "/api/v2/cmdb/vpn.ipsec/phase2-interface/fwm-t3", ExpectAbsent: true},
+			{Check: "vti", Method: "GET", Path: "/api/v2/cmdb/system/interface/fwm-t3", ExpectAbsent: true},
+		},
+	}
+	rep := RunPreflight(context.Background(), p)
+	if rep.Reachable || rep.AuthOK {
+		t.Fatalf("want unreachable + auth_ok=false, got %+v", rep)
+	}
+	if rep.Error == "" {
+		t.Error("want a top-level Error explaining unreachability")
+	}
+	if len(rep.Checks) != 4 {
+		t.Fatalf("want 4 check rows (auth + 3 skipped), got %d", len(rep.Checks))
+	}
+	// The auth row carries a friendly note; the 3 collision rows are skipped.
+	for i := 1; i < 4; i++ {
+		if !strings.Contains(rep.Checks[i].Note, "skipped") {
+			t.Errorf("check %q should be skipped after auth failure, note=%q", rep.Checks[i].Check, rep.Checks[i].Note)
+		}
+		if rep.Checks[i].StatusCode != 0 || rep.Checks[i].Collision {
+			t.Errorf("skipped check %q must not report a status/collision", rep.Checks[i].Check)
+		}
+	}
+}
+
+func TestFriendlyNetErr(t *testing.T) {
+	if got := friendlyNetErr(context.DeadlineExceeded); !strings.Contains(got, "timed out") {
+		t.Errorf("deadline → %q, want a timeout message", got)
+	}
+	if got := friendlyNetErr(errors.New("dial tcp: connection refused")); !strings.Contains(got, "refused") {
+		t.Errorf("refused → %q", got)
 	}
 }
 
