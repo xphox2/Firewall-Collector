@@ -87,18 +87,58 @@ type ApplyStepResult struct {
 }
 
 // ApplyReport is the structured command result. No secrets, no request bodies.
+//
+// It is COMPACT by design: only NON-OK steps are listed (failures/skips/
+// collisions), while successful steps are counted in StepsOK/StepsTotal. A fully
+// successful deploy — even at the maximum 49 protected subnets (~300 steps) —
+// therefore produces a tiny report that stays well under the server's result
+// size cap; without this, the verbose per-step form crossed the cap around 18
+// subnets, got truncated to invalid JSON, and made a healthy deploy read as an
+// error. Listed steps and collisions are additionally hard-capped.
 type ApplyReport struct {
-	Vendor     string            `json:"vendor"`
-	End        int               `json:"end"`
-	DeviceID   uint              `json:"device_id"`
-	Op         string            `json:"op"`
-	Applied    bool              `json:"applied"`  // all write steps returned 2xx
-	Verified   bool              `json:"verified"` // post-write objects confirmed present
-	Aborted    bool              `json:"aborted"`  // refused BEFORE any write (checksum/collision/auth)
-	Conflict   bool              `json:"conflict"` // a pre-existing colliding object was found
-	Collisions []string          `json:"collisions,omitempty"`
-	Steps      []ApplyStepResult `json:"steps"`
-	Error      string            `json:"error,omitempty"`
+	Vendor       string            `json:"vendor"`
+	End          int               `json:"end"`
+	DeviceID     uint              `json:"device_id"`
+	Op           string            `json:"op"`
+	Applied      bool              `json:"applied"`  // all write steps returned 2xx
+	Verified     bool              `json:"verified"` // post-write objects confirmed present
+	Aborted      bool              `json:"aborted"`  // refused BEFORE any write (checksum/collision/auth)
+	Conflict     bool              `json:"conflict"` // a pre-existing colliding object was found
+	Collisions   []string          `json:"collisions,omitempty"`
+	StepsOK      int               `json:"steps_ok"`
+	StepsTotal   int               `json:"steps_total"`
+	StepsOmitted int               `json:"steps_omitted,omitempty"` // non-OK steps beyond the cap
+	Steps        []ApplyStepResult `json:"steps"`                   // NON-OK steps only (capped)
+	Error        string            `json:"error,omitempty"`
+}
+
+// report bounds so a worst-case (all-failing) report can't blow the result cap.
+const (
+	maxReportSteps      = 40
+	maxReportCollisions = 40
+)
+
+// record counts every step and lists only the non-OK ones (capped). Successful
+// steps — including a remove's "already absent" — are counted, never listed.
+func (r *ApplyReport) record(sr ApplyStepResult) {
+	r.StepsTotal++
+	if sr.OK {
+		r.StepsOK++
+		return
+	}
+	if len(r.Steps) < maxReportSteps {
+		r.Steps = append(r.Steps, sr)
+	} else {
+		r.StepsOmitted++
+	}
+}
+
+// addCollision records a colliding object path, capped.
+func (r *ApplyReport) addCollision(path string) {
+	r.Conflict = true
+	if len(r.Collisions) < maxReportCollisions {
+		r.Collisions = append(r.Collisions, path)
+	}
 }
 
 func newClient(insecure bool) *http.Client {
@@ -137,7 +177,7 @@ func RunApply(ctx context.Context, p ApplyPayload) ApplyReport {
 			rep.Aborted = true
 			rep.Error = "device API unreachable during precheck: " + friendlyNetErr(err)
 			sr.Note = friendlyNetErr(err)
-			rep.Steps = append(rep.Steps, sr)
+			rep.record(sr)
 			return rep
 		}
 		if cs.Check == "auth" {
@@ -145,29 +185,28 @@ func RunApply(ctx context.Context, p ApplyPayload) ApplyReport {
 				rep.Aborted = true
 				rep.Error = fmt.Sprintf("authentication/reachability check failed (HTTP %d) — refusing to write", status)
 				sr.Note = "auth failed"
-				rep.Steps = append(rep.Steps, sr)
+				rep.record(sr)
 				return rep
 			}
 			sr.OK = true
-			rep.Steps = append(rep.Steps, sr)
+			rep.record(sr)
 			continue
 		}
 		present, indeterminate := objectPresent(p.Vendor, status, body, p.TunnelName)
 		switch {
 		case cs.ExpectAbsent && present:
-			rep.Conflict = true
-			rep.Collisions = append(rep.Collisions, cs.Path)
+			rep.addCollision(cs.Path)
 			sr.Note = "object already exists — not overwriting"
 		case cs.ExpectAbsent && indeterminate:
 			rep.Aborted = true
 			rep.Error = fmt.Sprintf("collision check inconclusive (HTTP %d) — refusing to write; verify API-user read access / VDOM", status)
 			sr.Note = "indeterminate"
-			rep.Steps = append(rep.Steps, sr)
+			rep.record(sr)
 			return rep
 		default:
 			sr.OK = true
 		}
-		rep.Steps = append(rep.Steps, sr)
+		rep.record(sr)
 	}
 	if rep.Conflict {
 		rep.Aborted = true
@@ -181,12 +220,12 @@ func RunApply(ctx context.Context, p ApplyPayload) ApplyReport {
 		sr := ApplyStepResult{Op: "apply", Path: s.Path, Status: status}
 		if err != nil {
 			sr.Note = friendlyNetErr(err)
-			rep.Steps = append(rep.Steps, sr)
+			rep.record(sr)
 			rep.Error = "write failed: " + friendlyNetErr(err) + " — the device MAY be partially configured; roll back"
 			return rep
 		}
 		sr.OK = is2xx(status)
-		rep.Steps = append(rep.Steps, sr)
+		rep.record(sr)
 		if !sr.OK {
 			rep.Error = fmt.Sprintf("write step returned HTTP %d — the device MAY be partially configured; roll back", status)
 			return rep
@@ -205,7 +244,7 @@ func RunApply(ctx context.Context, p ApplyPayload) ApplyReport {
 		if err != nil {
 			verified = false
 			sr.Note = friendlyNetErr(err)
-			rep.Steps = append(rep.Steps, sr)
+			rep.record(sr)
 			continue
 		}
 		present, _ := objectPresent(p.Vendor, status, body, p.TunnelName)
@@ -214,7 +253,7 @@ func RunApply(ctx context.Context, p ApplyPayload) ApplyReport {
 			verified = false
 			sr.Note = "expected object not found after write"
 		}
-		rep.Steps = append(rep.Steps, sr)
+		rep.record(sr)
 	}
 	rep.Verified = verified
 	if !verified {
@@ -246,28 +285,30 @@ func RunRemove(ctx context.Context, p ApplyPayload) ApplyReport {
 		if gerr != nil {
 			allOK = false
 			sr.Note = "unreachable: " + friendlyNetErr(gerr)
-			rep.Steps = append(rep.Steps, sr)
+			rep.record(sr)
 			continue
 		}
 		if gstatus == http.StatusNotFound {
 			sr.OK = true
 			sr.Status = gstatus
 			sr.Note = "already absent"
-			rep.Steps = append(rep.Steps, sr)
+			rep.record(sr)
 			continue
 		}
 		if !is2xx(gstatus) {
 			allOK = false
 			sr.Status = gstatus
 			sr.Note = fmt.Sprintf("ownership check inconclusive (HTTP %d) — not deleting", gstatus)
-			rep.Steps = append(rep.Steps, sr)
+			rep.record(sr)
 			continue
 		}
 		if !ownedBy(gbody, p.OwnerTag) {
-			// A foreign object occupies this key — DO NOT delete it.
+			// A foreign object occupies this key — DO NOT delete it (but this leaves
+			// the object in place, so the rollback is NOT fully complete).
+			allOK = false
 			sr.Status = gstatus
 			sr.Note = "foreign object (not tagged " + p.OwnerTag + ") — not removed"
-			rep.Steps = append(rep.Steps, sr)
+			rep.record(sr)
 			continue
 		}
 		// Owned → delete. 404 (raced/already gone) counts as success.
@@ -282,7 +323,7 @@ func RunRemove(ctx context.Context, p ApplyPayload) ApplyReport {
 			allOK = false
 			sr.Note = fmt.Sprintf("delete returned HTTP %d", dstatus)
 		}
-		rep.Steps = append(rep.Steps, sr)
+		rep.record(sr)
 	}
 	rep.Applied = allOK
 	if !allOK {

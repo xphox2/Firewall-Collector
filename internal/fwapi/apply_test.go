@@ -2,8 +2,10 @@ package fwapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -303,5 +305,40 @@ func TestChecksumSteps_ParityWithServer(t *testing.T) {
 	const want = "c55b02d2f55baad85110bd051d22a479dd2402e9ec8fd0191cdee90996c6b820"
 	if got := checksumSteps(steps); got != want {
 		t.Fatalf("checksum = %s, want %s (server/collector serialization drifted)", got, want)
+	}
+}
+
+// TestApplyReport_CompactAtMaxSubnets proves a fully-successful apply at the
+// server's maximum 49 protected subnets (~300 write steps + ~100 collision GETs)
+// produces a report well under the server's result-size cap — the verbose
+// per-step form used to blow the 10 KB cap around 18 subnets and truncate to
+// invalid JSON.
+func TestApplyReport_CompactAtMaxSubnets(t *testing.T) {
+	f := newApplyFortiGate(t)
+	const n = 49
+	var steps []ApplyStep
+	var coll []PreflightStep
+	coll = append(coll, PreflightStep{Check: "auth", Method: "GET", Path: "/api/v2/monitor/system/status"})
+	for i := 0; i < n*2+2; i++ { // routes(2N) + 2 policies
+		p := "/api/v2/cmdb/router/static/" + strconv.Itoa(40000+i)
+		steps = append(steps, ApplyStep{Kind: "http_api", Method: "POST", Path: p, Body: `{"seq-num":1}`})
+		coll = append(coll, PreflightStep{Check: "route", Method: "GET", Path: p, ExpectAbsent: true})
+	}
+	p := applyPayload(f.srv.URL, steps, coll)
+	p.Checksum = checksumSteps(steps)
+
+	rep := RunApply(context.Background(), p)
+	if !rep.Applied || !rep.Verified {
+		t.Fatalf("want applied+verified, got %+v (err=%q)", rep, rep.Error)
+	}
+	blob, _ := json.Marshal(rep)
+	if len(blob) > 8000 {
+		t.Fatalf("report is %d bytes at %d subnets — must stay compact (well under the 64KB cap)", len(blob), n)
+	}
+	if rep.StepsTotal < n {
+		t.Errorf("StepsTotal=%d, want the step count recorded", rep.StepsTotal)
+	}
+	if len(rep.Steps) != 0 {
+		t.Errorf("a fully-successful apply must list 0 non-OK steps, got %d", len(rep.Steps))
 	}
 }
