@@ -14,6 +14,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -85,12 +86,26 @@ func RunPreflight(ctx context.Context, p PreflightPayload) PreflightReport {
 		},
 	}
 
-	for _, step := range p.Steps {
+	for i := 0; i < len(p.Steps); i++ {
+		step := p.Steps[i]
 		sr := StepResult{Check: step.Check, Path: step.Path}
 		status, body, err := doGet(ctx, client, p, step)
 		if err != nil {
-			sr.Note = err.Error()
+			sr.Note = friendlyNetErr(err)
 			rep.Checks = append(rep.Checks, sr)
+			// A transport failure on the auth/reachability probe means the whole
+			// API is unreachable — the remaining collision GETs would fail the same
+			// way, so skip them (fail fast) instead of waiting out N more timeouts.
+			if step.Check == "auth" {
+				rep.Error = "device API unreachable: " + friendlyNetErr(err)
+				for j := i + 1; j < len(p.Steps); j++ {
+					rep.Checks = append(rep.Checks, StepResult{
+						Check: p.Steps[j].Check, Path: p.Steps[j].Path,
+						Note: "skipped — device API unreachable",
+					})
+				}
+				break
+			}
 			continue
 		}
 		sr.StatusCode = status
@@ -125,6 +140,29 @@ func RunPreflight(ctx context.Context, p PreflightPayload) PreflightReport {
 		rep.Checks = append(rep.Checks, sr)
 	}
 	return rep
+}
+
+// friendlyNetErr turns a raw transport error into a short, actionable message
+// (the raw "context deadline exceeded while awaiting headers" is unhelpful to an
+// operator). Kept vendor-neutral but with FortiGate's common admin-port gotcha.
+func friendlyNetErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	switch {
+	case errors.Is(err, context.DeadlineExceeded) || strings.Contains(s, "context deadline exceeded") ||
+		strings.Contains(s, "Client.Timeout") || strings.Contains(s, "i/o timeout") || strings.Contains(s, "TLS handshake timeout"):
+		return "connection timed out — the API did not respond. Check that HTTPS admin access is enabled on the device interface facing the collector, that the API Port matches the device's admin HTTPS port (FortiGate admin is often 8443/4443, not 443), and that the REST API admin's trusthost includes the collector."
+	case strings.Contains(s, "connection refused"):
+		return "connection refused — nothing is listening on that host:port. Verify the API Port and that HTTPS admin access is enabled."
+	case strings.Contains(s, "no route to host") || strings.Contains(s, "network is unreachable"):
+		return "no route to the device — the collector cannot reach that IP/subnet."
+	case strings.Contains(s, "x509") || strings.Contains(s, "certificate") || strings.Contains(s, "tls:"):
+		return "TLS error: " + s + " — enable 'Allow self-signed TLS certificate' on the device if it uses a self-signed cert."
+	default:
+		return s
+	}
 }
 
 func doGet(ctx context.Context, client *http.Client, p PreflightPayload, step PreflightStep) (int, []byte, error) {
