@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.3.20 - 2026-07-19
+
+### Added — IPSec deploy execution: FortiGate apply / verify / rollback (C2b-1)
+
+The write side of the IPSec apply saga (FortiGate only in C2b-1). New `apply_ipsec` / `remove_ipsec` command handlers execute the server-rendered REST cmdb steps against the device — the first collector commands that CHANGE device configuration.
+
+- Generalized the read-only preflight transport into `doRequest` (method + JSON body + Content-Type) and added `RunApply` / `RunRemove` in `internal/fwapi`:
+  - **`RunApply`**: verifies the artifact checksum (byte-identical to the server's `ipsec.ChecksumSteps`) and refuses to write on mismatch; runs the collision precheck (the same GETs, expecting ABSENT — aborts before any write on a present object OR an indeterminate/auth-failed check, fail-safe); executes the ordered write steps stopping on the first non-2xx; then verifies the objects are present (the same GETs, expecting PRESENT, skipping auth).
+  - **`RunRemove`**: checksum-verifies, then GETs each target and DELETEs it ONLY if its FortiOS `comment`/`comments`/name matches the tunnel's `fwm-t<ID>` owner tag (a foreign object at the same key is reported and left untouched); a 404 counts as already-removed.
+  - The structured `ApplyReport` carries per-step op/path/status only — never request bodies or the PSK. The PSK-bearing payload is never logged.
+- New command handlers register `apply_ipsec`/`remove_ipsec` with a ~240s timeout, reject any non-FortiGate vendor ("apply not yet supported … (C2b-2)"), and serialize writes **per device** with a mutex so a deploy and a rollback delivered on different heartbeats can't interleave POST/DELETE against one firewall.
+
 ## 1.3.19 - 2026-07-19
 
 ### Improved — IPSec preflight: fail fast + actionable errors when the device API is unreachable

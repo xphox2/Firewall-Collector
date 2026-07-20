@@ -40,6 +40,13 @@ type commandExecutor struct {
 	// so a redelivery re-POSTs the cached result instead of re-executing.
 	// Bounded by pruning entries older than completedTTL.
 	completed map[string]completedCommand
+	// deviceMu serializes config-WRITE commands per device. A batch runs its
+	// commands sequentially, but the relay dispatches one goroutine PER heartbeat
+	// (relay.HandleCommands off the heartbeat path), so an apply and a rollback
+	// delivered on different heartbeats could otherwise interleave POST/DELETE on
+	// the same firewall. Each write handler holds its device's lock for the whole
+	// apply/verify (or remove).
+	deviceMu map[uint]*sync.Mutex
 
 	// handlers maps a command type to its implementation. A handler returns
 	// the result text (echoed to the server, capped there) or an error.
@@ -66,6 +73,7 @@ func newCommandExecutor(sink commandResultSink) *commandExecutor {
 		sink:      sink,
 		inFlight:  make(map[string]bool),
 		completed: make(map[string]completedCommand),
+		deviceMu:  make(map[uint]*sync.Mutex),
 		handlers:  make(map[string]func(relay.PendingCommand) (string, error)),
 	}
 	// noop: the end-to-end proof command (PR-1). Executes as an immediate
@@ -93,7 +101,64 @@ func newCommandExecutor(sink commandResultSink) *commandExecutor {
 		}
 		return string(out), nil
 	}
+	// apply_ipsec / remove_ipsec (C2b-1): WRITE one IPSec tunnel end to the device
+	// (FortiGate only). The handler checksum-verifies, collision-prechecks, writes,
+	// and verifies (apply) or ownership-checks + deletes (remove). The payload
+	// carries the PSK — NEVER log it. Writes are serialized per device.
+	e.handlers["apply_ipsec"] = func(cmd relay.PendingCommand) (string, error) {
+		return e.runIPSecWrite(cmd, false)
+	}
+	e.handlers["remove_ipsec"] = func(cmd relay.PendingCommand) (string, error) {
+		return e.runIPSecWrite(cmd, true)
+	}
 	return e
+}
+
+// runIPSecWrite executes an apply_ipsec (remove=false) or remove_ipsec
+// (remove=true). C2b-1 supports FortiGate only; any other vendor is rejected
+// before any device contact. The whole apply/verify (or remove) holds the
+// device's write lock so concurrent commands can't interleave on one firewall.
+func (e *commandExecutor) runIPSecWrite(cmd relay.PendingCommand, remove bool) (string, error) {
+	var p fwapi.ApplyPayload
+	if err := json.Unmarshal([]byte(cmd.Payload), &p); err != nil {
+		return "", fmt.Errorf("invalid apply payload: %w", err)
+	}
+	if p.Vendor != "fortigate" {
+		return "", fmt.Errorf("apply not yet supported for %q (C2b-2)", p.Vendor)
+	}
+	unlock := e.lockDevice(p.DeviceID)
+	defer unlock()
+
+	// Generous timeout: writes + collision precheck + verify GETs against a busy
+	// firewall REST API.
+	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
+	defer cancel()
+
+	var report fwapi.ApplyReport
+	if remove {
+		report = fwapi.RunRemove(ctx, p)
+	} else {
+		report = fwapi.RunApply(ctx, p)
+	}
+	out, err := json.Marshal(report)
+	if err != nil {
+		return "", fmt.Errorf("marshal apply report: %w", err)
+	}
+	return string(out), nil
+}
+
+// lockDevice acquires (creating if needed) the per-device write mutex and returns
+// its unlock func.
+func (e *commandExecutor) lockDevice(deviceID uint) func() {
+	e.mu.Lock()
+	m := e.deviceMu[deviceID]
+	if m == nil {
+		m = &sync.Mutex{}
+		e.deviceMu[deviceID] = m
+	}
+	e.mu.Unlock()
+	m.Lock()
+	return m.Unlock
 }
 
 // HandleCommands is the relay.Client command-handler callback: executes each
