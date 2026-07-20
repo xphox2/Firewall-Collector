@@ -303,12 +303,22 @@ func RunRemove(ctx context.Context, p ApplyPayload) ApplyReport {
 			continue
 		}
 		if !ownedBy(gbody, p.OwnerTag) {
-			// A foreign object occupies this key — DO NOT delete it (but this leaves
-			// the object in place, so the rollback is NOT fully complete).
-			allOK = false
+			// A foreign object occupies this key — DO NOT delete it. This is NOT a
+			// rollback failure: our footprint at this key is absent (the foreign
+			// object isn't ours), so removing OUR objects is complete. Flipping the
+			// rollback to failed here would keep the deploy record and leave the
+			// tunnel stuck (uneditable/undeletable, rollback repeating forever) after
+			// a deploy that collision-aborted on a pre-existing foreign object. The
+			// skip is still LISTED (so the operator sees the foreign object remains),
+			// just not counted as a failure.
 			sr.Status = gstatus
-			sr.Note = "foreign object (not tagged " + p.OwnerTag + ") — not removed"
-			rep.record(sr)
+			sr.Note = "foreign object (not tagged " + p.OwnerTag + ") — left in place"
+			rep.StepsTotal++
+			if len(rep.Steps) < maxReportSteps {
+				rep.Steps = append(rep.Steps, sr)
+			} else {
+				rep.StepsOmitted++
+			}
 			continue
 		}
 		// Owned → delete. 404 (raced/already gone) counts as success.

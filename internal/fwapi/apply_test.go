@@ -226,7 +226,9 @@ func TestRunRemove_OwnershipGuard(t *testing.T) {
 	if ownedGone {
 		t.Errorf("owned object should have been deleted")
 	}
-	// The foreign step is reported (not deleted), so overall is not fully applied.
+	// The foreign skip is LISTED (operator sees it) but does NOT fail the rollback —
+	// our footprint was fully removed, so leaving a foreign object at our key must
+	// not make the tunnel unrecoverable.
 	var sawForeignSkip bool
 	for _, s := range rep.Steps {
 		if s.Path == foreignPath && strings.Contains(s.Note, "foreign") {
@@ -235,6 +237,9 @@ func TestRunRemove_OwnershipGuard(t *testing.T) {
 	}
 	if !sawForeignSkip {
 		t.Errorf("expected a 'foreign object' skip note for %s, got %+v", foreignPath, rep.Steps)
+	}
+	if !rep.Applied {
+		t.Errorf("rollback that removed our object and skipped a foreign one must report Applied=true (recoverable), got %+v", rep)
 	}
 }
 
