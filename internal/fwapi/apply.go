@@ -344,17 +344,28 @@ func RunApply(ctx context.Context, p ApplyPayload) ApplyReport {
 		if sr.OK && s.CaptureAs != "" {
 			uuid, ok := captureUUID(respBody)
 			if !ok {
+				// The object may exist on the device but we have no UUID to delete
+				// it — the compensating rollback will skip it and can't prove it
+				// gone, so the object could orphan. Acceptable: the next deploy's
+				// full-footprint ExpectAbsent preflight (exact-description match)
+				// catches such an orphan as a collision before any re-write.
 				sr.OK = false
 				sr.Note = "created but returned no valid uuid — cannot chain"
 			} else {
 				captured[s.CaptureAs] = uuid
 			}
 		}
-		rep.record(sr)
-		if !sr.OK {
-			if sr.Note == "" {
+		if !sr.OK && sr.Note == "" {
+			// Fill the note BEFORE recording, and surface OPNsense's body verdict —
+			// a 200 {"result":"failed"} would otherwise read as a healthy "HTTP 200".
+			if p.Vendor == "opnsense" {
+				sr.Note = fmt.Sprintf("write rejected (HTTP %d, %s)", status, opnsenseResult(respBody))
+			} else {
 				sr.Note = fmt.Sprintf("write step returned HTTP %d", status)
 			}
+		}
+		rep.record(sr)
+		if !sr.OK {
 			rep.Error = sr.Note + " — the device MAY be partially configured; roll back"
 			rep.CapturedUUIDs = captured
 			return rep
@@ -415,9 +426,19 @@ func RunRemove(ctx context.Context, p ApplyPayload) ApplyReport {
 	// steps carry no token and always run. Idempotent: OPNsense returns 200
 	// {"result":"not found"} for an already-gone object (there is no 404).
 	if p.Vendor == "opnsense" {
+		// Only well-formed UUIDs may fill a delete path (defence in depth: the
+		// server-stored map was validated at capture, but a garbled deploy_json
+		// must not splice arbitrary text into a request path). A dropped entry
+		// leaves its token unresolved → the step is skipped, never sent malformed.
+		subs := make(map[string]string, len(p.Substitutions))
+		for k, v := range p.Substitutions {
+			if uuidRe.MatchString(v) {
+				subs[k] = v
+			}
+		}
 		allOK := true
 		for _, s := range p.Steps {
-			path, unresolved := substitute(s.Path, p.Substitutions)
+			path, unresolved := substitute(s.Path, subs)
 			sr := ApplyStepResult{Op: "remove", Path: path}
 			if len(unresolved) > 0 {
 				sr.OK = true // object was never created — nothing to remove
