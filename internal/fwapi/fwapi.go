@@ -166,20 +166,36 @@ func friendlyNetErr(err error) string {
 }
 
 func doGet(ctx context.Context, client *http.Client, p PreflightPayload, step PreflightStep) (int, []byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(p.BaseURL, "/")+step.Path, nil)
+	return doRequest(ctx, client, p.Vendor, p.APIToken, p.BaseURL, http.MethodGet, step.Path, "")
+}
+
+// doRequest is the general vendor-REST transport: it builds an authenticated
+// request (optionally with a JSON body + Content-Type), executes it, and returns
+// the status + a size-capped body. Shared by the read-only preflight GETs and
+// the apply/remove writes. It performs no interpretation — the caller decides
+// what a status means.
+func doRequest(ctx context.Context, client *http.Client, vendor, token, baseURL, method, path, body string) (int, []byte, error) {
+	var rdr io.Reader
+	if body != "" {
+		rdr = strings.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(baseURL, "/")+path, rdr)
 	if err != nil {
 		return 0, nil, err
 	}
-	applyAuth(req, p.Vendor, p.APIToken)
+	applyAuth(req, vendor, token)
 	req.Header.Set("Accept", "application/json")
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, nil, err
 	}
 	defer resp.Body.Close()
-	// Cap the read — a preflight response is small JSON; never buffer megabytes.
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	return resp.StatusCode, body, nil
+	// Cap the read — a cmdb response is small JSON; never buffer megabytes.
+	rbody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	return resp.StatusCode, rbody, nil
 }
 
 // applyAuth sets the vendor auth header. FortiGate uses a Bearer token;
