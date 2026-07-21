@@ -17,8 +17,10 @@ package fwapi
 // FortiOS comment/comments/name isn't this tunnel's fwm-t<ID> tag.
 //
 // SECURITY: the API token builds the auth header and is NEVER logged; the
-// ApplyReport carries only per-step op/path/status — never request bodies or the
-// PSK.
+// ApplyReport carries only per-step op/path/status plus, on a rejected write, the
+// device's own field-validation messages (generic per-field errors keyed by field
+// name, e.g. "option not in list") — never request bodies, submitted values, or
+// the PSK.
 
 import (
 	"context"
@@ -31,6 +33,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // ApplyStep mirrors the server's ipsec.ApplyStep JSON contract. The checksum is
@@ -222,23 +225,43 @@ func writeOK(vendor string, status int, body []byte) bool {
 	return true
 }
 
-// opnsenseResult extracts the short result/status token from an OPNsense response
-// body for a compact error note (never includes bodies/secrets).
+// opnsenseResult extracts a compact failure detail from an OPNsense response
+// body: the short result/status token PLUS any field-level `validations` (keys +
+// messages, truncated). OPNsense validation messages are generic per-field errors
+// (e.g. "option not in list", "not a valid IP address") — no request bodies or
+// secret values are echoed. Surfacing them turns an opaque "result=failed" into
+// an actionable reason (which field the device rejected).
 func opnsenseResult(body []byte) string {
 	var r struct {
-		Result string `json:"result"`
-		Status string `json:"status"`
+		Result      string          `json:"result"`
+		Status      string          `json:"status"`
+		Validations json.RawMessage `json:"validations"`
 	}
 	if json.Unmarshal(body, &r) != nil {
 		return "unparseable"
 	}
+	head := "no result"
 	if r.Result != "" {
-		return "result=" + r.Result
+		head = "result=" + r.Result
+	} else if r.Status != "" {
+		head = "status=" + r.Status
 	}
-	if r.Status != "" {
-		return "status=" + r.Status
+	if v := strings.TrimSpace(string(r.Validations)); v != "" && v != "null" && v != "{}" && v != "[]" {
+		head += ": " + truncateNote(v, 400)
 	}
-	return "no result"
+	return head
+}
+
+// truncateNote clamps a diagnostic string to n bytes (rune-safe) with an ellipsis
+// so a large validations blob can't bloat the ApplyReport.
+func truncateNote(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "…"
 }
 
 // captureUUID reads a created object's device-assigned uuid from an OPNsense
