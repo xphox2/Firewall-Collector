@@ -203,6 +203,20 @@ func TestOPNsenseApply_ResultFailed_NotApplied(t *testing.T) {
 	if rep.Aborted {
 		t.Errorf("a mid-write failure is not a pre-write abort")
 	}
+	// The device's field-validation detail must reach the report (not just a bare
+	// "result=failed"), so the server's last_error shows WHICH field was rejected.
+	if !strings.Contains(rep.Error, `"x":"bad"`) {
+		t.Errorf("report Error should surface OPNsense validations; got %q", rep.Error)
+	}
+	var sawValidation bool
+	for _, s := range rep.Steps {
+		if !s.OK && strings.Contains(s.Note, `"x":"bad"`) {
+			sawValidation = true
+		}
+	}
+	if !sawValidation {
+		t.Errorf("failing step Note should include the validations detail; steps=%+v", rep.Steps)
+	}
 }
 
 func TestOPNsenseApply_MissingUUID_WriteFailureNotAbort(t *testing.T) {

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.22 - 2026-07-21
+
+### Fixed — IPSec apply: surface OPNsense field-validation detail on a rejected write
+
+OPNsense returns HTTP 200 with `{"result":"failed","validations":{…}}` when a write is rejected. The apply/remove report recorded only a generic `write rejected (HTTP 200, result=failed)` and discarded the `validations` object, so a failed deploy reached the server (and the operator) with no indication of *which* field the device rejected.
+
+- `opnsenseResult` (`internal/fwapi/apply.go`) now appends a compact, truncated `validations` excerpt to the failure note for both `RunApply` and `RunRemove`. It propagates to the step `Note` and the top-level `ApplyReport.Error` → `probe_commands.result` → the server's `last_error`. Validation messages are generic per-field errors keyed by field name (e.g. `connection.proposals`) — no request bodies, submitted values, or the PSK are ever echoed.
+
 ## 1.3.21 - 2026-07-20
 
 ### Added — IPSec apply: OPNsense (UUID chaining) + capture/substitute engine (C2b-2a)
