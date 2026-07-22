@@ -230,3 +230,55 @@ func TestApplyAuth_Vendors(t *testing.T) {
 		t.Fatal("sanity")
 	}
 }
+
+// flakyBody returns its data once, then a mid-body transport error — the shape
+// of a TCP reset partway through a response.
+type flakyBody struct {
+	data []byte
+	sent bool
+}
+
+func (b *flakyBody) Read(p []byte) (int, error) {
+	if !b.sent {
+		b.sent = true
+		return copy(p, b.data), nil
+	}
+	return 0, errors.New("mid-body connection reset")
+}
+func (b *flakyBody) Close() error { return nil }
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// TestDoRequest_BodyReadError_Propagates proves a mid-body transport failure is
+// returned as an error (not a truncated body fed to the verdict parsers, which
+// could misread a cut-off `{"result":"failed"` as a success).
+func TestDoRequest_BodyReadError_Propagates(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       &flakyBody{data: []byte(`{"result":"sa`)},
+			Request:    r,
+		}, nil
+	})}
+	_, _, err := doRequest(context.Background(), client, "opnsense", "k:s", "http://x", http.MethodGet, "/y", "")
+	if err == nil || !strings.Contains(err.Error(), "reading response body") {
+		t.Fatalf("mid-body read failure must surface as an error; got %v", err)
+	}
+}
+
+// TestDoRequest_OversizeBody_Errors proves a body larger than the 1 MiB cap is
+// an explicit error rather than silently truncated JSON.
+func TestDoRequest_OversizeBody_Errors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(make([]byte, (1<<20)+64))
+	}))
+	t.Cleanup(srv.Close)
+	_, _, err := doRequest(context.Background(), srv.Client(), "fortigate", "tok", srv.URL, http.MethodGet, "/", "")
+	if err == nil || !strings.Contains(err.Error(), "1 MiB cap") {
+		t.Fatalf("oversize body must error; got %v", err)
+	}
+}

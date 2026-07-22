@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.25 - 2026-07-22
+
+### Fixed — IPSec apply: no more false successes from truncated/unparseable device responses
+
+Two swallowed-error paths in the vendor REST transport could manufacture a FALSE success on a write:
+
+- **Body-read error discarded** (`internal/fwapi/fwapi.go`): `rbody, _ := io.ReadAll(...)` meant a mid-body TCP failure yielded a truncated body with a nil error — and a truncated OPNsense `{"result":"failed"` fed to the verdict parser could read as a success. The read error is now propagated as a transport error, and a body larger than the 1 MiB cap is an explicit error instead of silent truncation (read one byte past the cap to detect it).
+- **Unparseable OPNsense 2xx = success** (`internal/fwapi/apply.go` `writeOK`): a 2xx whose body couldn't be parsed returned `true` ("don't manufacture a failure"). OPNsense's write endpoints ALWAYS answer with a JSON verdict — a 2xx with no verdict means the outcome is unknown (proxy error page, wrong endpoint, cut-off body), and unknown must fail safe. Now returns `false`.
+
+New tests: `TestDoRequest_BodyReadError_Propagates`, `TestDoRequest_OversizeBody_Errors`, and `TestWriteOK_Verdicts` (12-case truth table incl. the unparseable/truncated-2xx fail-safe cases).
+
 ## 1.3.24 - 2026-07-22
 
 ### Fixed — IPSec apply: conformance gate now fails CLOSED on a malformed spec
