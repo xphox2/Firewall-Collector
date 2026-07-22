@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.3.26 - 2026-07-22
+
+### Added — IPSec SA-liveness probe (`ipsec_status` command, C2b-2b collector half)
+
+The collector can now execute a READ-ONLY SA-liveness probe of a deployed tunnel end, so the server can finally drive a fully-deployed tunnel past `degraded` to `up`/`down`.
+
+- New `fwapi.RunStatusProbe` (`internal/fwapi/status.go`): runs the server-rendered probe steps (one GET per step — both vendor drivers emit exactly one: FortiGate `monitor/vpn/ipsec`, OPNsense `ipsec/sessions/searchPhase1`) and returns the RAW device documents in a `StatusReport` envelope. Parsing stays SERVER-side (vendor `ParseStatus`), so the two repos can never drift on what "up" means.
+- **Single attempt, no settle-retry loop, by design**: the command rides the heartbeat, so it executes 0–60s AFTER the deploy finished — already dwarfing any IKE negotiation time. A retry loop would add latency, not accuracy (documented in code).
+- **Read-only, defense in depth**: a non-GET step is refused before any device contact (a mutating "status" step would be a server-side bug); unsupported vendors and empty step lists are rejected; transport failures land in `Error` (the server treats them as inconclusive, never a false up/down). No device mutex — GETs never interleave dangerously (consistent with preflight).
+- Step bodies capped at 256 KiB so a bloated monitor endpoint can't blow the server's command-result size cap.
+- New `ipsec_status` command handler (60s timeout) + tests: happy-path raw-body passthrough, unreachable device, non-GET refusal, vendor gate, empty steps, handler envelope, bad payload.
+
 ## 1.3.25 - 2026-07-22
 
 ### Fixed — IPSec apply: no more false successes from truncated/unparseable device responses
