@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -74,6 +75,10 @@ type ApplyPayload struct {
 	// when the tunnel was applied, stored server-side). Empty for apply (captured
 	// live) and for FortiGate (no tokens).
 	Substitutions map[string]string `json:"substitutions,omitempty"`
+	// ValidationSpec is the server's vendor conformance spec; when present the
+	// collector re-validates every step's field values before the first write
+	// (IPSec Phase 2). Absent → the pre-write conformance pass is skipped.
+	ValidationSpec json.RawMessage `json:"validation_spec,omitempty"`
 }
 
 // checksumSteps MUST produce the identical hash to the server's
@@ -335,6 +340,26 @@ func RunApply(ctx context.Context, p ApplyPayload) ApplyReport {
 		rep.Aborted = true
 		rep.Error = "one or more objects already exist on the device (see collisions) — roll back the existing deployment before re-deploying, or resolve the object on the device if it is not ours"
 		return rep
+	}
+
+	// (2b) Conformance gate — re-validate every step's field VALUES against the
+	// server-shipped spec BEFORE the first write. Reports ALL offending fields at
+	// once (no first-step masking) and aborts without touching the device. Skipped
+	// when no spec is shipped (older server / no spec for this vendor).
+	if len(p.ValidationSpec) > 0 {
+		var spec conformanceSpec
+		if err := json.Unmarshal(p.ValidationSpec, &spec); err == nil {
+			if findings := validateStepsAgainstSpec(&spec, p.Steps); len(findings) > 0 {
+				msgs := make([]string, 0, len(findings))
+				for _, f := range findings {
+					rep.record(ApplyStepResult{Op: "validate", Path: f.Path, OK: false, Note: f.String()})
+					msgs = append(msgs, f.String())
+				}
+				rep.Aborted = true
+				rep.Error = "pre-write conformance validation failed (" + strconv.Itoa(len(findings)) + " issue(s)); nothing written: " + strings.Join(msgs, "; ")
+				return rep
+			}
+		}
 	}
 
 	// (3) Execute the ordered write steps; stop on the first failure. For UUID-

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.23 - 2026-07-21
+
+### Added — IPSec apply: pre-write conformance gate (harness Phase 2)
+
+When the server ships a `validation_spec` in the apply payload, the collector re-validates every rendered step's field VALUES against the vendor's accepted vocabulary BEFORE the first write, and aborts with the full findings list (nothing written) — defense-in-depth for the server's pre-dispatch guard, and it removes first-step failure masking (all offending fields reported at once).
+
+- `validateStepsAgainstSpec` + a data-driven proposal grammar mirror the server's conformance evaluator; the rule DATA is authored once server-side and shipped, so adding a vendor value is a server-only change.
+- The proposal grammar (the only reimplemented logic) is pinned to the server by the shared `parityCases` list (mirrors the server's `ParityCases`), the same cross-repo pin mechanism as `checksumSteps`.
+- Backward compatible: no `validation_spec` → the gate is skipped.
+
 ## 1.3.22 - 2026-07-21
 
 ### Fixed — IPSec apply: surface OPNsense field-validation detail on a rejected write
