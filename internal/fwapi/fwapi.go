@@ -193,8 +193,19 @@ func doRequest(ctx context.Context, client *http.Client, vendor, token, baseURL,
 		return 0, nil, err
 	}
 	defer resp.Body.Close()
-	// Cap the read — a cmdb response is small JSON; never buffer megabytes.
-	rbody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	// Cap the read — a cmdb response is small JSON; never buffer megabytes. The
+	// read error is NOT discarded: a mid-body transport failure yields a
+	// truncated body that a parser could misread as a verdict (e.g. an OPNsense
+	// `{"result":"failed"` cut short), so propagate it as a transport error.
+	// Read one byte past the cap so a silently-truncated oversize body is also
+	// an error rather than a parse of incomplete JSON.
+	rbody, rerr := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
+	if rerr != nil {
+		return 0, nil, fmt.Errorf("reading response body: %w", rerr)
+	}
+	if len(rbody) > 1<<20 {
+		return 0, nil, fmt.Errorf("response body exceeds the 1 MiB cap")
+	}
 	return resp.StatusCode, rbody, nil
 }
 

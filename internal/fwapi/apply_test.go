@@ -313,6 +313,38 @@ func TestChecksumSteps_ParityWithServer(t *testing.T) {
 	}
 }
 
+// TestWriteOK_Verdicts pins the write-verdict truth table, including the
+// fail-safe flip: an unparseable OPNsense 2xx body is NOT a success (the
+// device's write endpoints always answer with a JSON verdict, so no verdict =
+// unknown outcome = failure).
+func TestWriteOK_Verdicts(t *testing.T) {
+	cases := []struct {
+		name   string
+		vendor string
+		status int
+		body   string
+		want   bool
+	}{
+		{"fortigate 2xx any body", "fortigate", 200, `whatever`, true},
+		{"fortigate non-2xx", "fortigate", 500, ``, false},
+		{"opnsense saved", "opnsense", 200, `{"result":"saved","uuid":"x"}`, true},
+		{"opnsense deleted", "opnsense", 200, `{"result":"deleted"}`, true},
+		{"opnsense not found (idempotent)", "opnsense", 200, `{"result":"not found"}`, true},
+		{"opnsense reconfigure ok", "opnsense", 200, `{"status":"ok"}`, true},
+		{"opnsense result failed", "opnsense", 200, `{"result":"failed","validations":{"x":"bad"}}`, false},
+		{"opnsense status failed", "opnsense", 200, `{"status":"failed"}`, false},
+		{"opnsense non-empty validations", "opnsense", 200, `{"result":"saved","validations":{"f":"bad"}}`, false},
+		{"opnsense unparseable 2xx = NOT ok", "opnsense", 200, `<html>proxy error</html>`, false},
+		{"opnsense truncated json 2xx = NOT ok", "opnsense", 200, `{"result":"sa`, false},
+		{"opnsense non-2xx", "opnsense", 500, `{"result":"saved"}`, false},
+	}
+	for _, tc := range cases {
+		if got := writeOK(tc.vendor, tc.status, []byte(tc.body)); got != tc.want {
+			t.Errorf("%s: writeOK(%s, %d) = %v, want %v", tc.name, tc.vendor, tc.status, got, tc.want)
+		}
+	}
+}
+
 // TestApplyReport_CompactAtMaxSubnets proves a fully-successful apply at the
 // server's maximum 49 protected subnets (~300 write steps + ~100 collision GETs)
 // produces a report well under the server's result-size cap — the verbose

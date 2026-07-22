@@ -216,7 +216,12 @@ func writeOK(vendor string, status int, body []byte) bool {
 		Validations json.RawMessage `json:"validations"`
 	}
 	if json.Unmarshal(body, &r) != nil {
-		return true // a 2xx we can't parse — rare; don't manufacture a failure
+		// OPNsense's write endpoints ALWAYS answer with a JSON verdict — a 2xx
+		// with no parseable verdict means we don't know the outcome (proxy error
+		// page, wrong endpoint, truncated body). doRequest already guarantees the
+		// body arrived intact, so this is genuinely anomalous: fail safe rather
+		// than manufacture a success.
+		return false
 	}
 	if strings.EqualFold(r.Result, "failed") || strings.EqualFold(r.Result, "error") {
 		return false
