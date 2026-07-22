@@ -59,3 +59,35 @@ func TestRunApply_NoSpec_SkipsGate(t *testing.T) {
 		t.Errorf("no spec → conformance gate skipped, should not abort pre-write: %+v", rep)
 	}
 }
+
+// TestRunApply_MalformedSpec_Aborts proves the conformance gate fails CLOSED: a
+// ValidationSpec that is present but unparseable aborts the apply before any
+// write, instead of silently disabling the gate (which would be
+// indistinguishable from "older server shipped no spec").
+func TestRunApply_MalformedSpec_Aborts(t *testing.T) {
+	f := newFakeOPNsense(t, "fwm-t9")
+	steps := []ApplyStep{{
+		Kind: "http_api", Method: "POST", Path: "/api/ipsec/connections/addConnection",
+		Body: `{"connection":{"proposals":"aes256gcm16-sha384-ecp384"}}`, CaptureAs: "conn",
+	}}
+	p := ApplyPayload{
+		Vendor: "opnsense", Op: "apply", BaseURL: f.srv.URL, APIToken: "key:secret",
+		InsecureTLS: true, Steps: steps, Checksum: checksumSteps(steps),
+		ValidationSpec: []byte(`{"objects": [`), // truncated / invalid JSON
+	}
+
+	rep := RunApply(context.Background(), p)
+
+	if !rep.Aborted {
+		t.Fatalf("malformed spec must abort pre-write (fail closed), got %+v", rep)
+	}
+	if rep.Applied {
+		t.Errorf("must not be applied")
+	}
+	if f.seq != 0 {
+		t.Errorf("no write must reach the device; fake saw %d add(s)", f.seq)
+	}
+	if !strings.Contains(rep.Error, "malformed validation_spec") {
+		t.Errorf("error should name the malformed spec; got %q", rep.Error)
+	}
+}

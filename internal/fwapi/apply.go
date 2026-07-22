@@ -345,20 +345,26 @@ func RunApply(ctx context.Context, p ApplyPayload) ApplyReport {
 	// (2b) Conformance gate — re-validate every step's field VALUES against the
 	// server-shipped spec BEFORE the first write. Reports ALL offending fields at
 	// once (no first-step masking) and aborts without touching the device. Skipped
-	// when no spec is shipped (older server / no spec for this vendor).
+	// only when NO spec is shipped (older server / no spec for this vendor). A
+	// spec that IS shipped but can't be parsed is NOT skipped: it fails closed —
+	// otherwise a single corrupted byte would silently disable the entire gate,
+	// indistinguishable from "no spec shipped".
 	if len(p.ValidationSpec) > 0 {
 		var spec conformanceSpec
-		if err := json.Unmarshal(p.ValidationSpec, &spec); err == nil {
-			if findings := validateStepsAgainstSpec(&spec, p.Steps); len(findings) > 0 {
-				msgs := make([]string, 0, len(findings))
-				for _, f := range findings {
-					rep.record(ApplyStepResult{Op: "validate", Path: f.Path, OK: false, Note: f.String()})
-					msgs = append(msgs, f.String())
-				}
-				rep.Aborted = true
-				rep.Error = "pre-write conformance validation failed (" + strconv.Itoa(len(findings)) + " issue(s)); nothing written: " + strings.Join(msgs, "; ")
-				return rep
+		if err := json.Unmarshal(p.ValidationSpec, &spec); err != nil {
+			rep.Aborted = true
+			rep.Error = "malformed validation_spec in apply payload (" + err.Error() + ") — refusing to write without conformance checking"
+			return rep
+		}
+		if findings := validateStepsAgainstSpec(&spec, p.Steps); len(findings) > 0 {
+			msgs := make([]string, 0, len(findings))
+			for _, f := range findings {
+				rep.record(ApplyStepResult{Op: "validate", Path: f.Path, OK: false, Note: f.String()})
+				msgs = append(msgs, f.String())
 			}
+			rep.Aborted = true
+			rep.Error = "pre-write conformance validation failed (" + strconv.Itoa(len(findings)) + " issue(s)); nothing written: " + strings.Join(msgs, "; ")
+			return rep
 		}
 	}
 

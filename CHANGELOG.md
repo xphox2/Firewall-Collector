@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.24 - 2026-07-22
+
+### Fixed — IPSec apply: conformance gate now fails CLOSED on a malformed spec
+
+The Phase-2 pre-write conformance gate (1.3.23) silently DISABLED itself when the shipped `validation_spec` couldn't be parsed — a single corrupted byte turned "enforce the vendor vocabulary" into "no checking at all", indistinguishable from an older server that legitimately ships no spec.
+
+- A present-but-unparseable `validation_spec` now aborts the apply BEFORE any write with `malformed validation_spec in apply payload — refusing to write without conformance checking`, instead of skipping the gate.
+- A genuinely absent spec still skips the gate (backward compatible with older servers).
+- New `TestRunApply_MalformedSpec_Aborts` pins the fail-closed behavior: aborted, nothing written, error names the malformed spec.
+
 ## 1.3.23 - 2026-07-21
 
 ### Added — IPSec apply: pre-write conformance gate (harness Phase 2)
