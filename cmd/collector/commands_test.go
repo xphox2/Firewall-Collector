@@ -1,6 +1,9 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -120,5 +123,44 @@ func TestCommandExecutor_ExpiredCommandRefused(t *testing.T) {
 	got := sink.all()
 	if len(got) != 1 || got[0].Status != "failed" {
 		t.Fatalf("expired command results = %+v, want one failed report", got)
+	}
+}
+
+// TestCommandExecutor_IPSecStatus proves the ipsec_status handler (C2b-2b) runs
+// the probe against the device API and reports the raw-body JSON envelope.
+func TestCommandExecutor_IPSecStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"rows":[{"status":"established"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	sink := &fakeResultSink{}
+	e := newCommandExecutor(sink)
+	payload := `{"vendor":"opnsense","base_url":"` + srv.URL + `","api_token":"k:s",` +
+		`"steps":[{"method":"GET","path":"/api/ipsec/sessions/searchPhase1"}]}`
+	e.HandleCommands([]relay.PendingCommand{{
+		CommandID: "cmd-status", Type: "ipsec_status", Payload: payload,
+	}})
+
+	got := sink.all()
+	if len(got) != 1 || got[0].Status != "succeeded" {
+		t.Fatalf("ipsec_status results = %+v, want one succeeded report", got)
+	}
+	if !strings.Contains(got[0].Result, `"status":200`) || !strings.Contains(got[0].Result, "established") {
+		t.Errorf("report must carry the step status + raw device body; got %q", got[0].Result)
+	}
+}
+
+// TestCommandExecutor_IPSecStatus_BadPayload proves a malformed payload fails
+// crisply instead of panicking or silently succeeding.
+func TestCommandExecutor_IPSecStatus_BadPayload(t *testing.T) {
+	sink := &fakeResultSink{}
+	e := newCommandExecutor(sink)
+	e.HandleCommands([]relay.PendingCommand{{
+		CommandID: "cmd-status-bad", Type: "ipsec_status", Payload: `{not json`,
+	}})
+	got := sink.all()
+	if len(got) != 1 || got[0].Status != "failed" {
+		t.Fatalf("bad-payload results = %+v, want one failed report", got)
 	}
 }

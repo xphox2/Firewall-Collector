@@ -111,6 +111,24 @@ func newCommandExecutor(sink commandResultSink) *commandExecutor {
 	e.handlers["remove_ipsec"] = func(cmd relay.PendingCommand) (string, error) {
 		return e.runIPSecWrite(cmd, true)
 	}
+	// ipsec_status (C2b-2b): READ-ONLY SA-liveness probe of one deployed tunnel
+	// end. Runs the server-rendered GET steps and returns the raw device
+	// documents; the SERVER parses them (vendor ParseStatus stays server-side).
+	// Read-only — no device mutex (consistent with ipsec_preflight).
+	e.handlers["ipsec_status"] = func(cmd relay.PendingCommand) (string, error) {
+		var p fwapi.StatusPayload
+		if err := json.Unmarshal([]byte(cmd.Payload), &p); err != nil {
+			return "", fmt.Errorf("invalid status payload: %w", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		report := fwapi.RunStatusProbe(ctx, p)
+		out, err := json.Marshal(report)
+		if err != nil {
+			return "", fmt.Errorf("marshal status report: %w", err)
+		}
+		return string(out), nil
+	}
 	return e
 }
 
