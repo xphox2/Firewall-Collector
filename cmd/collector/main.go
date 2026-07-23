@@ -45,7 +45,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.3.27"
+const version = "1.3.28"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -1638,6 +1638,7 @@ func (c *Collector) sendPerformanceStatus(dev relay.DeviceInfo, output string) {
 	status := relay.SystemStatus{
 		DeviceID:       dev.ID,
 		Timestamp:      time.Now(),
+		Source:         relay.SystemStatusSourceSSHPerf, // AUDIT AL-M2: supplementary freshness row
 		CPUUsage:       activeCPU,
 		MemoryUsage:    perf.MemoryUsedPercent,
 		MemoryTotal:    perf.MemoryTotal,
@@ -1818,6 +1819,12 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo, collectTopology bool) {
 	c.recordPollSuccess(dev.ID)
 	status.DeviceID = dev.ID
 	status.Timestamp = time.Now()
+	// AUDIT AL-M2: mark this as the authoritative full SNMP poll so the server's
+	// alert engine trusts a 0 session_count from it as a genuine "idle" reading
+	// (allowing SESSIONS_HIGH to auto-resolve) — unlike the supplementary SSH-perf
+	// row. FortiGate's session OID is a core always-present scalar, so a
+	// successful poll reliably carries a real session count.
+	status.Source = relay.SystemStatusSourceSNMP
 
 	// Compute-then-send: fetch interface stats BEFORE sending the status so
 	// the device-total throughput (derived from per-interface counter deltas,

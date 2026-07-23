@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.28 - 2026-07-23
+
+### Added — `system_status.source` writer stamp (AUDIT AL-M2)
+
+Each `system_status` row now carries a `source` field identifying which writer produced it: `snmp` for the authoritative full SNMP poll, `ssh-perf` for the FortiGate SSH `diagnose sys performance` freshness row. This lets the server's alert engine trust a `session_count` of 0 as a genuine "idle" reading (allowing `SESSIONS_HIGH` to auto-resolve) only from an SNMP poll, never from the supplementary SSH-perf row — the two writers were previously indistinguishable, so an idle device's SESSIONS_HIGH could stay stuck open. Requires the server change (Firewall-Mon v0.11.155) that reads the field; on an older server the extra field is simply ignored.
+
+Residual (accepted): the SNMP poll stamps `source=snmp` on every successful poll; FortiGate's session OID is a core always-present scalar, so a `session_count=0` from an `snmp` row is reliably a real "idle" reading — a transient session-OID dropout on an otherwise-successful poll would briefly resolve then re-fire on the next poll (self-healing).
+
 ## 1.3.27 - 2026-07-22
 
 ### Added — conformance: `ip_mask` rule kind (FortiGate "IP MASK" pair)

@@ -88,7 +88,18 @@ type SystemStatus struct {
 	// Memory breakdown
 	MemoryFree     uint64 `json:"memory_free"`
 	MemoryFreeable uint64 `json:"memory_freeable"`
+	// Source identifies which writer produced this row so the server's alert
+	// engine can trust a 0 session_count as "idle" only from an authoritative
+	// full SNMP poll (AUDIT AL-M2). SystemStatusSourceSNMP for the SNMP poll,
+	// SystemStatusSourceSSHPerf for the FortiGate SSH performance freshness row.
+	Source string `json:"source"`
 }
+
+// system_status writer sources (AUDIT AL-M2), mirrored on the server.
+const (
+	SystemStatusSourceSNMP    = "snmp"
+	SystemStatusSourceSSHPerf = "ssh-perf"
+)
 
 type InterfaceStats struct {
 	Timestamp   time.Time `json:"timestamp"`
