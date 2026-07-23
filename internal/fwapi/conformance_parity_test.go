@@ -33,6 +33,12 @@ var parityCases = []parityCase{
 	{"fortigate", "/api/v2/cmdb/vpn.ipsec/phase2-interface", "proposal", "aes256gcm", true},
 	{"fortigate", "/api/v2/cmdb/vpn.ipsec/phase2-interface", "proposal", "aes256-sha256", true},
 	{"fortigate", "/api/v2/cmdb/vpn.ipsec/phase2-interface", "proposal", "aes256gcm-sha384", false},
+	{"fortigate", "/api/v2/cmdb/system/interface/fwm-t7", "ip", "169.254.1.1 255.255.255.255", true},
+	{"fortigate", "/api/v2/cmdb/system/interface/fwm-t7", "ip", " 255.255.255.255", false},
+	{"fortigate", "/api/v2/cmdb/system/interface/fwm-t7", "ip", "169.254.1.1", false},
+	{"fortigate", "/api/v2/cmdb/system/interface/fwm-t7", "ip", "169.254.1.1 255.255.0.0.0", false},
+	{"fortigate", "/api/v2/cmdb/system/interface/fwm-t7", "ip", "", false},
+	{"fortigate", "/api/v2/cmdb/system/interface/fwm-t7", "remote-ip", "169.254.1.2 255.255.255.252", true},
 }
 
 // parityTokenSets mirror the server's conformance token sets (opnsense.go /
@@ -60,6 +66,7 @@ func paritySpec(vendor string) *conformanceSpec {
 			Objects: map[string]map[string]serRule{
 				"vpn.ipsec/phase1-interface": {"proposal": {Kind: "proposal_ike"}},
 				"vpn.ipsec/phase2-interface": {"proposal": {Kind: "proposal_esp"}},
+				"system/interface":           {"ip": {Kind: "ip_mask"}, "remote-ip": {Kind: "ip_mask"}},
 			},
 			TokenSets: map[string][]string{
 				"enc":  {"des", "3des", "aes128", "aes192", "aes256", "aes128gcm", "aes192gcm", "aes256gcm", "aria128", "aria192", "aria256", "seed", "chacha20poly1305"},
