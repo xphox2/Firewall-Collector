@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.27 - 2026-07-22
+
+### Added — conformance: `ip_mask` rule kind (FortiGate "IP MASK" pair)
+
+The Phase-2 evaluator gains an `ip_mask` rule kind validating FortiOS's two-token `"<ipv4> <dotted-netmask>"` form (system/interface `ip` / `remote-ip`): both tokens dotted-quad IPv4, the mask contiguous (`net.IPMask.Size` bits=32). Empty, single-token, malformed, or non-contiguous-mask values are findings.
+
+Motivation: the fwm-t4 deploy failure — a policy-based render emitted `"ip": " 255.255.255.255"` (empty address) and the device rejected the PUT with HTTP 500. The server's conformance spec can now cover these fields, so the value class is caught pre-dispatch AND pre-write. Six new `ParityCases` pin the kind across both repos (incl. the exact fwm-t4 bug value).
+
+Ships BEFORE the server rule usage so a new kind never reaches an evaluator that doesn't understand it (unknown kinds fail open by design).
+
 ## 1.3.26 - 2026-07-22
 
 ### Added — IPSec SA-liveness probe (`ipsec_status` command, C2b-2b collector half)

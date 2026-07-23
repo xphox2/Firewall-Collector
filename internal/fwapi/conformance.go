@@ -140,6 +140,14 @@ func checkSpecValue(spec *conformanceSpec, ts map[string]map[string]bool, path, 
 				return mk(`not a valid IP/CIDR/hostname (e.g. "%any" is rejected)`)
 			}
 		}
+	case "ip_mask":
+		// FortiGate "IP MASK" pair: exactly two space-separated dotted-quad
+		// tokens (address + contiguous netmask), e.g. "169.254.1.1
+		// 255.255.255.255". Empty / single-token / malformed values are device
+		// rejections (the fwm-t4 HTTP 500 class).
+		if !validIPMaskPair(val) {
+			return mk(`must be "<ipv4> <dotted-netmask>" (two tokens, contiguous mask)`)
+		}
 	case "proposal_ike":
 		if ok, why := evalIKEProposal(spec.Grammar, ts, val); !ok {
 			return mk("invalid IKE proposal: " + why)
@@ -305,6 +313,25 @@ func validAddr(s string) bool {
 		return true
 	}
 	return isHostnameToken(s)
+}
+
+// validIPMaskPair validates FortiOS's "<ipv4> <dotted-netmask>" two-token form
+// (system/interface ip / remote-ip): both tokens dotted-quad IPv4, the mask
+// contiguous (net.IPMask.Size reports bits=32 only for contiguous masks).
+func validIPMaskPair(val string) bool {
+	parts := strings.Fields(val)
+	if len(parts) != 2 {
+		return false
+	}
+	if net.ParseIP(parts[0]).To4() == nil {
+		return false
+	}
+	m := net.ParseIP(parts[1]).To4()
+	if m == nil {
+		return false
+	}
+	_, bits := net.IPMask(m).Size()
+	return bits == 32
 }
 
 func isHostnameToken(s string) bool {
