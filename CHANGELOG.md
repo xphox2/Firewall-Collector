@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.3.29 - 2026-07-24
+
+### Added — IPSec preflight: echo advisory-read bodies back to the server
+
+`PreflightStep` gains `return_body`, and `StepResult` gains `body`. A preflight step marked `return_body` has its response body echoed verbatim in the report so the SERVER can parse it, keeping vendor knowledge in the server's driver — the same split already used by `StatusProbe`/`ParseStatus`, with the collector staying a transport.
+
+Advisory reads are handled in their own branch and deliberately skip collision interpretation: they never set `present`/`collision` and so can never contribute to `conflict`, which is what aborts an apply. Bodies are echoed only on a 2xx and only for steps that asked for one; a non-2xx or a body over the 24 KiB cap is dropped whole (never truncated, which would leave unparseable JSON) with an explanatory note, and the server then simply raises no advisory. The cap keeps the whole report inside the server's 64 KiB command-result column.
+
+Additive and backward-compatible in both directions: an older server never sets `return_body` so no body is ever echoed, and an older collector ignores the field so the server's advisory is skipped rather than wrong.
+
+Enables Firewall-Mon v0.11.163's FortiGate static-route conflict advisory.
+
 ## 1.3.28 - 2026-07-23
 
 ### Added — `system_status.source` writer stamp (AUDIT AL-M2)
