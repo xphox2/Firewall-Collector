@@ -24,12 +24,24 @@ import (
 
 // PreflightStep is one read-only check (mirrors the server's ipsec.PreflightStep
 // JSON contract). ExpectAbsent means a present/200 result is a COLLISION.
+//
+// ReturnBody asks for the response body to be echoed back in the report so the
+// SERVER can parse it (vendor knowledge stays in the server's driver, as with
+// StatusProbe/ParseStatus). Steps carrying it are advisory reads: they never set
+// ExpectAbsent, so they can neither raise a collision nor abort an apply.
 type PreflightStep struct {
 	Check        string `json:"check"`
 	Method       string `json:"method"`
 	Path         string `json:"path"`
 	ExpectAbsent bool   `json:"expect_absent"`
+	ReturnBody   bool   `json:"return_body,omitempty"`
 }
+
+// maxReturnedBody caps an echoed body. The whole report must fit the server's
+// 64 KiB command-result column, and a truncated body would be unparseable JSON
+// that could be misread; so an oversize body is DROPPED entirely (with a note)
+// rather than cut, and the server simply raises no advisory from it.
+const maxReturnedBody = 24 << 10
 
 // PreflightPayload is the decrypted command payload the server enqueues.
 type PreflightPayload struct {
@@ -54,6 +66,10 @@ type StepResult struct {
 	Collision     bool   `json:"collision"`     // ExpectAbsent step whose object is definitely present
 	Indeterminate bool   `json:"indeterminate"` // collision check could not be decided (auth/VDOM/5xx)
 	Note          string `json:"note,omitempty"`
+	// Body is the verbatim response, echoed back only for steps that asked for it
+	// (ReturnBody) and only on a 2xx. It carries device config the operator can
+	// already read via the API — never a token or PSK, which are request-side.
+	Body string `json:"body,omitempty"`
 }
 
 // PreflightReport is the structured result returned to the server as the
@@ -115,13 +131,28 @@ func RunPreflight(ctx context.Context, p PreflightPayload) PreflightReport {
 		} else if status == http.StatusUnauthorized || status == http.StatusForbidden {
 			rep.Reachable = true // we reached it; auth was rejected
 		}
-		switch step.Check {
-		case "auth":
+		switch {
+		case step.Check == "auth":
 			rep.AuthOK = status >= 200 && status < 300
 			if rep.AuthOK {
 				rep.OSVersion = extractVersion(body)
 			} else {
 				sr.Note = "authentication failed"
+			}
+		case step.ReturnBody:
+			// An advisory read. Deliberately skips collision interpretation: it is
+			// not an ExpectAbsent step, so "present" is meaningless for it and
+			// setting it would muddy the report's conflict semantics. Echo the body
+			// for the server to parse; a non-2xx or oversize body yields no body and
+			// the server raises no advisory (never a false all-clear, because an
+			// advisory only ever asserts something it positively observed).
+			switch {
+			case status < 200 || status >= 300:
+				sr.Note = fmt.Sprintf("advisory read returned HTTP %d — check skipped", status)
+			case len(body) > maxReturnedBody:
+				sr.Note = fmt.Sprintf("advisory read returned %d bytes (cap %d) — check skipped", len(body), maxReturnedBody)
+			default:
+				sr.Body = string(body)
 			}
 		default:
 			present, indeterminate := objectPresent(p.Vendor, status, body, p.TunnelName)
