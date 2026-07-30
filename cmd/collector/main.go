@@ -45,7 +45,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.3.30"
+const version = "1.3.31"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -197,6 +197,10 @@ type Collector struct {
 }
 
 func main() {
+	// Report our build to the server on register and every heartbeat, so a
+	// stale collector is one query away rather than something to infer from
+	// side effects in unrelated telemetry.
+	relay.SetAgentVersion(version)
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
 	if isSSHToolSubcommand(os.Args[1:]) {
