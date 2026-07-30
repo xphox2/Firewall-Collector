@@ -45,7 +45,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.3.29"
+const version = "1.3.30"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -1727,6 +1727,12 @@ func (c *Collector) sendVPNStatuses(dev relay.DeviceInfo, phase1Output, phase2Ou
 		if status.RemoteIP == "" {
 			status.RemoteIP = p2.RemoteGateway
 		}
+		// The phase2 traffic selectors, in canonical CIDR. Without these the row
+		// renders no subnet detail on the map AND can never be matched to a
+		// provisioned tunnel by selector — the four named children of a
+		// multi-subnet tunnel would show as one nameless edge.
+		status.LocalSubnet = p2.LocalSubnet
+		status.RemoteSubnet = p2.RemoteSubnet
 		if status.Status == "" {
 			status.Status = "unknown"
 		}

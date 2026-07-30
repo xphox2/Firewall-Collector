@@ -94,6 +94,10 @@ type VPNPhase2Info struct {
 	RemoteGateway string
 	Mode          string
 	Status        string
+	// LocalSubnet/RemoteSubnet are the phase2 traffic selectors, in CANONICAL
+	// CIDR — not the "addr netmask" pair the device prints. See subnetToCIDR.
+	LocalSubnet  string
+	RemoteSubnet string
 }
 
 var processTopRegex = regexp.MustCompile(`^\s*(\S+)\s+(\d+)\s+(\S)\s+(\d+\.?\d*)\s+(\d+\.?\d*)\s+(\d+)`)
@@ -496,7 +500,36 @@ var (
 	phase2RemoteRegex = regexp.MustCompile(`(?i)set\s+remote-gw\s+(\S+)`)
 	phase2ModeRegex   = regexp.MustCompile(`(?i)set\s+mode\s+(\S+)`)
 	phase2StatusRegex = regexp.MustCompile(`(?i)set\s+status\s+(\S+)`)
+	// FortiOS prints selectors as address + DOTTED NETMASK, e.g.
+	//   set src-subnet 192.168.13.0 255.255.255.0
+	phase2SrcSubnetRegex = regexp.MustCompile(`(?i)set\s+src-subnet\s+(\S+)\s+(\S+)`)
+	phase2DstSubnetRegex = regexp.MustCompile(`(?i)set\s+dst-subnet\s+(\S+)\s+(\S+)`)
 )
+
+// subnetToCIDR converts FortiOS's "address netmask" selector form into the
+// canonical CIDR the rest of the system speaks.
+//
+// Storing the device's own text would be useless downstream: netclass.SelectorIP
+// parses CIDR, "a - b" ranges and bare IPs — never a space-separated netmask
+// pair — so SelectorCovered would always return false and these rows could never
+// be matched to a provisioned tunnel. The connection-detail phase2 matcher is
+// exact string equality against the peer's selectors, and strongSwan reports
+// canonical CIDR, so anything else silently fails to pair.
+//
+// Masking the address (rather than trusting it to already be a network address)
+// is what makes both ends converge on the identical string.
+func subnetToCIDR(addr, mask string) string {
+	ip := net.ParseIP(strings.TrimSpace(addr)).To4()
+	m := net.ParseIP(strings.TrimSpace(mask)).To4()
+	if ip == nil || m == nil {
+		return ""
+	}
+	ipMask := net.IPv4Mask(m[0], m[1], m[2], m[3])
+	if _, bits := ipMask.Size(); bits == 0 {
+		return "" // non-contiguous mask: not expressible as CIDR
+	}
+	return (&net.IPNet{IP: ip.Mask(ipMask), Mask: ipMask}).String()
+}
 
 func ParseVPNPhase1(output string) []VPNPhase1Info {
 	var tunnels []VPNPhase1Info
@@ -582,6 +615,12 @@ func ParseVPNPhase2(output string) []VPNPhase2Info {
 		}
 		if modeMatch := phase2ModeRegex.FindStringSubmatch(line); len(modeMatch) >= 2 {
 			current.Mode = modeMatch[1]
+		}
+		if srcMatch := phase2SrcSubnetRegex.FindStringSubmatch(line); len(srcMatch) >= 3 {
+			current.LocalSubnet = subnetToCIDR(srcMatch[1], srcMatch[2])
+		}
+		if dstMatch := phase2DstSubnetRegex.FindStringSubmatch(line); len(dstMatch) >= 3 {
+			current.RemoteSubnet = subnetToCIDR(dstMatch[1], dstMatch[2])
 		}
 		if statusMatch := phase2StatusRegex.FindStringSubmatch(line); len(statusMatch) >= 2 {
 			current.Status = statusMatch[1]
