@@ -115,21 +115,33 @@ func newCommandExecutor(sink commandResultSink) *commandExecutor {
 	// end. Runs the server-rendered GET steps and returns the raw device
 	// documents; the SERVER parses them (vendor ParseStatus stays server-side).
 	// Read-only — no device mutex (consistent with ipsec_preflight).
-	e.handlers["ipsec_status"] = func(cmd relay.PendingCommand) (string, error) {
-		var p fwapi.StatusPayload
-		if err := json.Unmarshal([]byte(cmd.Payload), &p); err != nil {
-			return "", fmt.Errorf("invalid status payload: %w", err)
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-		report := fwapi.RunStatusProbe(ctx, p)
-		out, err := json.Marshal(report)
-		if err != nil {
-			return "", fmt.Errorf("marshal status report: %w", err)
-		}
-		return string(out), nil
-	}
+	e.handlers["ipsec_status"] = runIPSecRead
+	// ipsec_telemetry: the SAME read-only mechanism, but recurring rather than
+	// one-shot, and carrying several GETs whose documents the server correlates
+	// into per-child-SA telemetry rows. It is a distinct type because
+	// ipsec_status is deploy verification — first-result-wins, single step — and
+	// polling must not inherit those semantics.
+	e.handlers["ipsec_telemetry"] = runIPSecRead
 	return e
+}
+
+// runIPSecRead executes server-rendered read-only GET steps and returns the raw
+// device documents. The SERVER parses them: vendor parsing stays server-side, so
+// the collector needs no vendor knowledge and no release when parsing changes.
+// Read-only, so no device mutex (consistent with ipsec_preflight).
+func runIPSecRead(cmd relay.PendingCommand) (string, error) {
+	var p fwapi.StatusPayload
+	if err := json.Unmarshal([]byte(cmd.Payload), &p); err != nil {
+		return "", fmt.Errorf("invalid status payload: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	report := fwapi.RunStatusProbe(ctx, p)
+	out, err := json.Marshal(report)
+	if err != nil {
+		return "", fmt.Errorf("marshal status report: %w", err)
+	}
+	return string(out), nil
 }
 
 // runIPSecWrite executes an apply_ipsec (remove=false) or remove_ipsec
