@@ -528,8 +528,28 @@ const (
 	SchemaVersionMax = 5
 )
 
+// AgentVersion is the collector's own software version, reported on register
+// and every heartbeat.
+//
+// It exists because the server previously had NO way to know which collector
+// build it was talking to — only the negotiated schema_version, which tracks the
+// wire format and not the binary. That gap forced anything version-dependent to
+// infer the build indirectly: the IPSec telemetry gate had to match on the text
+// of a failure the collector returned, and diagnosing a stale collector meant
+// looking for side effects in unrelated telemetry.
+//
+// Set once at startup by the binary that owns the version constant.
+var AgentVersion string
+
+// SetAgentVersion records the collector's version for reporting. Safe to call
+// before any client exists.
+func SetAgentVersion(v string) { AgentVersion = v }
+
 type RegisterRequest struct {
 	RegistrationKey string `json:"registration_key"`
+	// AgentVersion is informational: an older server ignores the unknown field,
+	// so sending it is always backward-compatible.
+	AgentVersion string `json:"agent_version,omitempty"`
 	// SchemaVersion advertises the relay wire-format version this collector
 	// speaks. Pre-handshake servers (< v0.10.382) ignore the unknown field, so
 	// sending it is always backward-compatible; a handshake-aware server
@@ -976,6 +996,7 @@ func (c *Client) Register() error {
 		data := RegisterRequest{
 			RegistrationKey: c.Config.RegistrationKey,
 			SchemaVersion:   advertise,
+			AgentVersion:    AgentVersion,
 		}
 		jsonData, err := json.Marshal(data)
 		if err != nil {
@@ -1189,6 +1210,12 @@ func (c *Client) sendHeartbeatWithStatus(status string) error {
 		"probe_id":  probeID,
 		"status":    status,
 		"timestamp": time.Now().Unix(),
+	}
+	// Reported on every heartbeat, not just register, so an upgrade is visible
+	// within one cadence rather than only after a re-registration that may never
+	// happen.
+	if AgentVersion != "" {
+		data["agent_version"] = AgentVersion
 	}
 	if c.observedHostKeysFn != nil {
 		if keys := c.observedHostKeysFn(); len(keys) > 0 {
