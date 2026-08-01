@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.3.32 - 2026-07-31
+
+### Added — pfSense config backup over SSH
+
+`pfsense` was rejected by the config-backup client factory, so a pfSense device produced no backups at all — the server could recognise the vendor and register a parser for it and still never receive a byte. It now reads `/conf/config.xml` over the FreeBSD shell, the same capture OPNsense uses.
+
+The root element is the whole reason this is a separate client rather than a flag on the OPNsense one: pfSense writes `<pfsense>`, and matching on `<opnsense>` rejects every backup the device produces — a failure that shows up only as "config backup never works for this vendor". The extractor is now parameterised by root, with a test pinning that the two are not interchangeable in either direction.
+
+`PfSenseClient` is also deliberately its own type rather than an `OPNsenseClient` with a different root. The poll path dispatches its extra SSH diagnostics by concrete client type, and an `*OPNsenseClient` additionally gets hardware-sensor and bridge-FDB probing. Those are plausible on pfSense — same FreeBSD underpinnings — but have never been run against one, and inheriting them silently would mean shipping unverified device commands. Config backup is what the server needs; the diagnostics can follow once there is a device to verify them on.
+
+**Unverified against a real pfSense device** — none was available. The capture mechanism is byte-identical to the OPNsense path, which is verified in production; what is untested is that pfSense's shell and file layout behave as documented.
+
 ## 1.3.29 - 2026-07-24
 
 ### Added — IPSec preflight: echo advisory-read bodies back to the server

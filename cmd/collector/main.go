@@ -45,7 +45,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.3.31"
+const version = "1.3.32"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -1202,8 +1202,13 @@ func (c *Collector) checkAndSendConfigRevision(dev relay.DeviceInfo, checksum st
 	}
 	// SSH-driven backups return the running config in cleartext (no masked
 	// passwords), so the quality is "full". FortiGate is left empty so the
-	// server's FortiGate-aware validator can still classify the backup; other
-	// vendors have no such validator, so mark it explicitly.
+	// server's FortiGate-aware validator can classify the backup itself.
+	//
+	// The value we set here is only a default: the server re-validates
+	// OPNsense/pfSense captures on receipt and downgrades a truncated one to
+	// "suspect" regardless of what we claimed. That matters for a single-document
+	// XML config, where a partial capture would otherwise diff as "the entire
+	// configuration was removed".
 	if !isFortiGateVendor(dev.Vendor) {
 		rev.BackupQuality = "full"
 	}
