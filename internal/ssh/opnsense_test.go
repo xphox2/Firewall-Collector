@@ -9,13 +9,14 @@ func TestNewConfigBackupClient_VendorDispatch(t *testing.T) {
 		// wantType is checked via a type switch below.
 		wantFortiGate bool
 		wantOPNsense  bool
+		wantPfSense   bool
 		wantPaloAlto  bool
 	}{
 		{vendor: "fortigate", wantFortiGate: true},
 		{vendor: "", wantFortiGate: true}, // legacy default
 		{vendor: "opnsense", wantOPNsense: true},
 		{vendor: "paloalto", wantPaloAlto: true},
-		{vendor: "pfsense", wantErr: true},
+		{vendor: "pfsense", wantPfSense: true},
 		{vendor: "bogus", wantErr: true},
 	}
 
@@ -40,6 +41,10 @@ func TestNewConfigBackupClient_VendorDispatch(t *testing.T) {
 				if !tt.wantOPNsense {
 					t.Fatalf("vendor %q: got OPNsenseClient, did not expect it", tt.vendor)
 				}
+			case *PfSenseClient:
+				if !tt.wantPfSense {
+					t.Fatalf("vendor %q: got PfSenseClient, did not expect it", tt.vendor)
+				}
 			case *PaloAltoClient:
 				if !tt.wantPaloAlto {
 					t.Fatalf("vendor %q: got PaloAltoClient, did not expect it", tt.vendor)
@@ -56,6 +61,7 @@ func TestNewConfigBackupClient_VendorDispatch(t *testing.T) {
 func TestConfigBackupClient_InterfaceSatisfied(t *testing.T) {
 	var _ ConfigBackupClient = NewFortiGateClient("h", 22, "u", "p")
 	var _ ConfigBackupClient = NewOPNsenseClient("h", 22, "u", "p")
+	var _ ConfigBackupClient = NewPfSenseClient("h", 22, "u", "p")
 }
 
 func TestExtractOPNsenseConfig(t *testing.T) {

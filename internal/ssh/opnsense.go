@@ -106,24 +106,38 @@ func (c *OPNsenseClient) GetConfig() (string, error) {
 	return cfg, nil
 }
 
-// extractOPNsenseConfig isolates the XML document from raw command output. It
-// tolerates any shell/stderr noise before the XML declaration or after the
-// closing root tag (so a login banner or csh warning can't corrupt the stored
-// config), and requires a complete <opnsense>…</opnsense> pair so a truncated
-// capture is rejected rather than silently stored (the server has no OPNsense
-// validator to catch it downstream).
+// extractOPNsenseConfig isolates the OPNsense XML document from raw command
+// output. See extractXMLConfig for the shared logic.
 func extractOPNsenseConfig(out string) (string, error) {
+	return extractXMLConfig(out, "opnsense", opnsenseConfigPath)
+}
+
+// extractXMLConfig isolates a single-root XML configuration document from raw
+// command output.
+//
+// It tolerates any shell/stderr noise before the XML declaration or after the
+// closing root tag (so a login banner or csh warning can't corrupt the stored
+// config), and requires a complete <root>…</root> pair so a truncated capture is
+// rejected here rather than stored and diffed. A truncated single-document
+// config is unusually damaging downstream: the server's object parser would
+// report the ENTIRE configuration as removed.
+//
+// Parameterised by root because OPNsense and pfSense share this capture but not
+// their root element — pfSense writes <pfsense>, and matching on the wrong one
+// rejects every backup from the device.
+func extractXMLConfig(out, root, path string) (string, error) {
+	openTag, closeTag := "<"+root+">", "</"+root+">"
+
 	start := strings.Index(out, "<?xml")
 	if start < 0 {
-		start = strings.Index(out, "<opnsense>")
+		start = strings.Index(out, openTag)
 	}
 	if start < 0 {
-		return "", fmt.Errorf("no OPNsense config in output from %s (missing <opnsense> root — check the SSH account has shell access and read permission)", opnsenseConfigPath)
+		return "", fmt.Errorf("no config in output from %s (missing %s root — check the SSH account has shell access and read permission)", path, openTag)
 	}
-	const closeTag = "</opnsense>"
 	end := strings.LastIndex(out, closeTag)
 	if end < start {
-		return "", fmt.Errorf("incomplete OPNsense config from %s (missing %s — capture may be truncated)", opnsenseConfigPath, closeTag)
+		return "", fmt.Errorf("incomplete config from %s (missing %s — capture may be truncated)", path, closeTag)
 	}
 	return out[start : end+len(closeTag)], nil
 }
