@@ -446,6 +446,28 @@ func ParseRFC5424(data []byte) (*relay.SyslogMessage, error) {
 	msg.Facility = priority.facility
 	msg.Severity = priority.severity
 
+	// FortiOS traffic/event logs are key=value, not RFC 5424, and running them
+	// through the positional parse below shredded every field one column left of
+	// where it belonged: hostname held `devid="..."`, app_name held
+	// `eventtime=<nanoseconds>` (unique per message), process_id held `tz="..."`,
+	// message_id held `logid="..."`, structured_data held `type="..."`, and the
+	// message began mid-record at `subtype=`.
+	//
+	// Not merely cosmetic: app_name being unique per message made it useless as
+	// an aggregation grouping key — syslog_summaries groups on it, so it emitted
+	// one summary row per raw row — and the nanosecond value wasted ~28 bytes on
+	// each of ~92M production rows.
+	//
+	// The gate is STRUCTURAL, not `logid=`. FortiOS writes `date=` immediately
+	// after the PRI with no space, where RFC 5424 has ` VERSION TIMESTAMP`.
+	// Gating on `logid=` would be wrong: a genuine RFC 5424 line may carry
+	// `logid=` in its body — TestParseRFC5424_FortiGateTypical's fixture does
+	// exactly that — and routing it here would break its parse.
+	if body, ok := fortiOSBody(data); ok {
+		parseFortiOSKV(msg, body)
+		return msg, nil
+	}
+
 	version := 1
 	if len(parts) > 1 && len(parts[1]) > 0 {
 		if v := bytesToInt(parts[1]); v > 0 {

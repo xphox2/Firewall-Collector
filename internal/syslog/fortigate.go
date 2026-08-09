@@ -1,7 +1,10 @@
 package syslog
 
 import (
+	"bytes"
+	"strconv"
 	"strings"
+	"time"
 
 	"firewall-collector/internal/relay"
 )
@@ -137,4 +140,93 @@ func parseKVPairs(s string) map[string]string {
 		out[strings.ToLower(key)] = val
 	}
 	return out
+}
+
+// fortiOSBody reports whether a datagram is FortiOS key=value output and, if so,
+// returns everything after the PRI.
+//
+// The discriminator is that FortiOS writes `date=` immediately after the closing
+// `>` with no space, whereas RFC 5424 always has ` VERSION TIMESTAMP` there. It
+// deliberately does NOT test for `logid=`: that token also appears inside the
+// body of genuine RFC 5424 messages, so keying on it would misroute them.
+func fortiOSBody(data []byte) (string, bool) {
+	end := bytes.IndexByte(data, '>')
+	if end < 0 || end+1 >= len(data) {
+		return "", false
+	}
+	body := data[end+1:]
+	if !bytes.HasPrefix(body, []byte("date=")) {
+		return "", false
+	}
+	return string(body), true
+}
+
+// parseFortiOSKV fills a message from a FortiOS key=value record.
+//
+// Message keeps the WHOLE record rather than starting at `subtype=`, so
+// logid/type/devname stop being lost to the header columns. That is additive for
+// every server-side consumer: they scan for key=value tokens across the string
+// (configdiff.ParseFortiAuditEvent) or use strings.Contains (the deny
+// projection), and the fields they look for all sit after `subtype=` and are
+// therefore already present today.
+//
+// The header columns take low-cardinality values, which is what they are for and
+// what makes them usable as aggregation grouping keys:
+//
+//	Hostname   devname (else devid)
+//	AppName    type — "traffic", "event", "utm"
+//	MessageID  logid
+//
+// ProcessID and StructuredData are left empty rather than carrying `tz=` and
+// `type=` fragments. Note the empty StructuredData means DeviceID is not derived
+// here; the server attributes these rows by source IP (ResolveDevicesByIPs),
+// which is what already happens in production because the fragment that landed
+// in StructuredData never yielded an ID either.
+func parseFortiOSKV(msg *relay.SyslogMessage, body string) {
+	kv := parseKVPairs(body)
+
+	msg.Message = body
+	msg.Hostname = kv["devname"]
+	if msg.Hostname == "" {
+		msg.Hostname = kv["devid"]
+	}
+	msg.AppName = kv["type"]
+	msg.MessageID = kv["logid"]
+	msg.ProcessID = ""
+	msg.StructuredData = ""
+
+	// eventtime ONLY. FortiOS `date`/`time` are device-local with the offset in a
+	// separate `tz="-0400"` key, so parsing them without it would silently shift
+	// every row by the UTC offset. eventtime is an unambiguous epoch, and when it
+	// is absent or unparseable the caller's time.Now() default stands — the same
+	// behaviour these lines get today.
+	if ts, ok := parseFortiEventTime(kv["eventtime"]); ok {
+		msg.Timestamp = ts
+	}
+}
+
+// parseFortiEventTime converts FortiOS `eventtime` to a time. FortiOS 6.x emits
+// seconds and 7.x nanoseconds, so the unit is inferred from magnitude rather
+// than assumed: anything at or above 1e15 is treated as nanoseconds. Values that
+// are not plausible epochs are rejected so a malformed field cannot backdate a
+// row into a partition or past a retention cutoff.
+func parseFortiEventTime(raw string) (time.Time, bool) {
+	if raw == "" {
+		return time.Time{}, false
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil || n <= 0 {
+		return time.Time{}, false
+	}
+	var ts time.Time
+	if n >= 1e15 {
+		ts = time.Unix(0, n)
+	} else {
+		ts = time.Unix(n, 0)
+	}
+	// Guard against a garbage field producing an absurd timestamp.
+	if ts.Year() < 2000 || ts.Year() > 2100 {
+		return time.Time{}, false
+	}
+	return ts.UTC(), true
 }

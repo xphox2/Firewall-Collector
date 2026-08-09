@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.3.33 - 2026-08-08
+
+### Fixed — FortiOS key=value logs are no longer shredded by the RFC 5424 parser
+
+FortiOS traffic and event logs are `key=value` records, not RFC 5424, but every datagram went through the positional RFC 5424 parse regardless. There was no format check — `version` silently fell back to 1 when the token wasn't an integer — so each FortiOS field landed one column to the left of where it belonged. A real production row:
+
+| column | held |
+|---|---|
+| `hostname` | `devid="FGT60FTK20081032"` |
+| `app_name` | `eventtime=1786237154998123660` |
+| `process_id` | `tz="-0400"` |
+| `message_id` | `logid="0000000015"` |
+| `structured_data` | `type="traffic"` |
+| `message` | began mid-record at `subtype=` |
+
+This was not merely cosmetic. `app_name` held a **nanosecond timestamp, unique per message** — and `syslog_summaries` groups on `app_name`, so the server's aggregation pipeline emitted one summary row per raw row, compressing nothing. Measured against production data, one day of severity-5 traffic collapsed to 5,619,947 groups from 5,622,049 rows: a ratio of 1.0004:1. The nanosecond value also wasted roughly 28 bytes on each of ~92 million retained rows.
+
+FortiOS records now take a dedicated branch: `hostname` ← `devname` (falling back to `devid`), `app_name` ← `type` (`traffic`/`event`/`utm` — low cardinality, which is what the column is for), `message_id` ← `logid`, and `process_id`/`structured_data` are left empty instead of carrying `tz=` and `type=` fragments. The message keeps the **whole** record rather than starting at `subtype=`, so `logid`/`type`/`devname` stop being lost — strictly additive for the server-side consumers, which scan for key=value tokens across the string and look only for fields that already sit after `subtype=`.
+
+The timestamp now comes from `eventtime`, an unambiguous epoch, with the unit inferred from magnitude (FortiOS 6.x emits seconds, 7.x nanoseconds). `date`/`time` are deliberately **not** used as a fallback: they are device-local with the offset in a separate `tz` key, so parsing them without it would silently shift every row by the UTC offset. When `eventtime` is absent or implausible the existing `time.Now()` behaviour stands, and values outside 2000–2100 are rejected so a malformed field cannot backdate a row past a retention cutoff.
+
+**The branch is gated structurally, not on `logid=`.** FortiOS writes `date=` immediately after the PRI with no space, where RFC 5424 has ` VERSION TIMESTAMP`. Gating on `logid=` would have been wrong — a genuine RFC 5424 message can carry `logid=` in its body, and the existing `TestParseRFC5424_FortiGateTypical` fixture does exactly that. It passes unchanged, and a new test pins that property as intent rather than coincidence.
+
+Existing rows keep their shredded columns and age out with retention; the server already reconstructs the original line from them when extracting fields, and is documented as robust across mixed collector versions.
+
 ## 1.3.32 - 2026-07-31
 
 ### Added — pfSense config backup over SSH
