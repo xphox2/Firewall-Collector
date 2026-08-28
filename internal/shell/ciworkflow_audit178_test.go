@@ -31,6 +31,8 @@ func TestCIWorkflow_PinnedToolsAndPermissions_AUDIT178(t *testing.T) {
 	}
 	if !strings.Contains(body, "\npermissions:") {
 		t.Error("docker.yml has no top-level permissions: block — jobs inherit the repo-default GITHUB_TOKEN write scope neither job needs (AUDIT-178); declare `permissions: contents: read`.")
+	} else if !strings.Contains(body, "contents: read") {
+		t.Error("docker.yml's permissions: block no longer grants only `contents: read` — a widened token scope defeats the least-privilege property this guard exists for (AUDIT-178).")
 	}
 	// AUDIT-224: the gosec gate must exist and stay pinned.
 	if !strings.Contains(body, "gosec/v2/cmd/gosec@v") {

@@ -24,7 +24,8 @@ import (
 // Config controls the on-disk + in-memory behavior of a SpilloverQueue.
 type Config struct {
 	// Path is the BoltDB file path. Created if missing; parent dirs are
-	// created with mode 0o755.
+	// created with mode 0o750 (AUDIT-224: private spillover-queue state —
+	// nothing outside the collector's user/group reads it).
 	Path string
 	// Bucket is the bbolt bucket name within the DB. Required.
 	Bucket string
