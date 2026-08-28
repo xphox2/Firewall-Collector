@@ -751,7 +751,9 @@ func (c *Client) ensureQueues() {
 
 		// Create the directory if it doesn't exist (e.g. a fresh volume mount)
 		// so a valid-but-not-yet-created path doesn't fail the queue open.
-		if err := os.MkdirAll(diskPath, 0o755); err != nil {
+		// AUDIT-224 (gosec G301): 0o750, not 0o755 — this holds queued
+		// telemetry; nothing outside the collector's user/group reads it.
+		if err := os.MkdirAll(diskPath, 0o750); err != nil {
 			log.Printf("[Relay] WARNING: cannot create queue directory %s: %v — spillover queues DISABLED (telemetry dropped during outages). Fix the path/permissions and restart.", diskPath, err)
 			return
 		}
@@ -1427,7 +1429,7 @@ func expBackoff(attempt int) time.Duration {
 // 10s base plus up to 5s of random jitter, so a fleet of probes recovering from
 // a shared server outage doesn't reconnect in lock-step (thundering herd).
 func reregisterBackoff(attempt int) time.Duration {
-	return time.Duration(1<<uint(attempt))*10*time.Second + time.Duration(mrand.Intn(5000))*time.Millisecond
+	return time.Duration(1<<uint(attempt))*10*time.Second + time.Duration(mrand.Intn(5000))*time.Millisecond // #nosec G404 -- reconnect jitter, not a security value
 }
 
 // metricEnvelope is one buffered primary-metric send: the endpoint to POST to

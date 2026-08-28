@@ -24,7 +24,8 @@ import (
 // Config controls the on-disk + in-memory behavior of a SpilloverQueue.
 type Config struct {
 	// Path is the BoltDB file path. Created if missing; parent dirs are
-	// created with mode 0o755.
+	// created with mode 0o750 (AUDIT-224: private spillover-queue state —
+	// nothing outside the collector's user/group reads it).
 	Path string
 	// Bucket is the bbolt bucket name within the DB. Required.
 	Bucket string
@@ -86,7 +87,8 @@ func Open(cfg Config) (*SpilloverQueue, error) {
 		return nil, fmt.Errorf("queue: MaxMem must be > 0")
 	}
 
-	if err := os.MkdirAll(filepath.Dir(cfg.Path), 0o755); err != nil {
+	// AUDIT-224 (gosec G301): 0o750 — private spillover-queue state.
+	if err := os.MkdirAll(filepath.Dir(cfg.Path), 0o750); err != nil {
 		return nil, fmt.Errorf("queue: mkdir %s: %w", filepath.Dir(cfg.Path), err)
 	}
 

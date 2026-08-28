@@ -9,7 +9,15 @@ RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o firewall-collector ./cmd/collector
+# AUDIT-226 (parity with the server's AUDIT-102): reproducible builds.
+# `-trimpath` strips the local build and module-cache paths from the binary
+# (otherwise the same source on two machines yields different bytes), and
+# `-buildvcs=false` keeps VCS stamping out of the binary so a dirty/clean
+# working tree or a different commit context doesn't change the output.
+# Together they make the binary byte-identical across build hosts given the
+# same source + toolchain — an operator can verify a binary on a customer
+# LAN by rebuild-and-compare against the tagged source.
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -o firewall-collector ./cmd/collector
 
 # alpine 3.21 — 3.19 reached end-of-life ~Nov 2025 (2026-06-23 audit, M13). This
 # runtime only needs ca-certificates + bash (no bundled packages to re-pin).

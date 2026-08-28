@@ -97,7 +97,7 @@ func RunPreflight(ctx context.Context, p PreflightPayload) PreflightReport {
 	client := &http.Client{
 		Timeout: 15 * time.Second,
 		Transport: &http.Transport{
-			TLSClientConfig:   &tls.Config{InsecureSkipVerify: p.InsecureTLS}, //nolint:gosec // opt-in per device for self-signed mgmt certs
+			TLSClientConfig:   &tls.Config{InsecureSkipVerify: p.InsecureTLS}, // #nosec G402 -- InsecureTLS is a documented per-device operator opt-in for self-signed management certs (AUDIT-224: was //nolint:gosec, which standalone gosec ignores)
 			ForceAttemptHTTP2: true,
 		},
 	}
