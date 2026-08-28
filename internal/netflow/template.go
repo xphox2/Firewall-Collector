@@ -446,7 +446,9 @@ func (c *cacheSet) SaveTo(path string) error {
 		return fmt.Errorf("marshal flow caches: %w", err)
 	}
 	tmp := path + ".tmp"
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	// AUDIT-224 (gosec G301): 0o750, consistent with the 0o600 cache file
+	// written just below — private template-cache state.
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("create cache dir: %w", err)
 	}
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {

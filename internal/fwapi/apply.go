@@ -166,7 +166,7 @@ func newClient(insecure bool) *http.Client {
 	return &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
-			TLSClientConfig:   &tls.Config{InsecureSkipVerify: insecure}, //nolint:gosec // opt-in per device for self-signed mgmt certs
+			TLSClientConfig:   &tls.Config{InsecureSkipVerify: insecure}, // #nosec G402 -- insecure is a documented per-device operator opt-in for self-signed management certs (AUDIT-224: was //nolint:gosec, which standalone gosec ignores)
 			ForceAttemptHTTP2: true,
 		},
 	}

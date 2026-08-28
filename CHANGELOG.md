@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.3.35 - 2026-08-28
+
+Audit remediation batch (2026-08-27 engineering audit) — CI and toolchain hardening (AUDIT-178, AUDIT-224, AUDIT-226; AUDIT-309 verified already resolved). Every finding was independently re-verified against current master before being fixed.
+
+### Security
+- **New gosec CI gate (AUDIT-224).** The collector parses the most hostile input in the system (unauthenticated UDP syslog/sFlow/NetFlow/TFTP/SNMP) but was never security-scanned, while the server enforces gosec. A pinned `gosec@v2.27.1` job now runs as a peer of the test job, with a collector-appropriate exclude list (G115 NetFlow wire-decoder width conversions, G304 operator-configured file paths, G401/G501 MD5 config-backup fingerprint, G703 dev-only CLI) — each exclusion documented in the workflow; rules with zero collector hits are deliberately left enforced. Getting the gate green surfaced three real fixes shipped here: the spillover-queue and NetFlow template-cache directories are now created `0o750` instead of world-readable `0o755` (they hold queued telemetry; the template cache dir was even looser than the `0o600` file inside it), and the two `InsecureSkipVerify` opt-in suppressions used `//nolint:gosec` — a golangci-lint directive that standalone gosec ignores, so they suppressed nothing — and are now proper `#nosec G402` annotations. The reconnect-jitter `math/rand` use carries `#nosec G404` (thundering-herd jitter, not a security value).
+
+### Fixed
+- **CI gate tools pinned (AUDIT-178).** `staticcheck` and `govulncheck` were installed `@latest`, so a new tool release (or vulnerability-database update) could red CI out from under an unrelated PR — which already happened once (see 1.3.34). Both are now pinned (`staticcheck@v0.7.0`, `govulncheck@v1.6.0`, matching the server), with a `permissions: contents: read` block added — neither job needs the repo-default `GITHUB_TOKEN` write scope. A new guardrail test (establishing the server-style `internal/shell` convention in this repo) pins the pins and the permissions block.
+- **Reproducible Docker builds (AUDIT-226).** The image build now uses `-trimpath -buildvcs=false` (parity with the server), so the shipped binary is byte-identical across build hosts given the same source and toolchain — an operator can verify a collector running on a customer management LAN by rebuild-and-compare against the tagged source. Guardrail test included.
+
+### Verified
+- **AUDIT-309 residual is clean:** under the pinned go1.25.13 toolchain `govulncheck` reports zero reachable vulnerabilities, CI already derives its Go version from `go.mod`, and no live reference to go 1.25.11/1.25.12 remains anywhere in the repo.
+
 ## 1.3.34 - 2026-08-27
 
 ### Security

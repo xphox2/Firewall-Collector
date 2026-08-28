@@ -86,7 +86,8 @@ func Open(cfg Config) (*SpilloverQueue, error) {
 		return nil, fmt.Errorf("queue: MaxMem must be > 0")
 	}
 
-	if err := os.MkdirAll(filepath.Dir(cfg.Path), 0o755); err != nil {
+	// AUDIT-224 (gosec G301): 0o750 — private spillover-queue state.
+	if err := os.MkdirAll(filepath.Dir(cfg.Path), 0o750); err != nil {
 		return nil, fmt.Errorf("queue: mkdir %s: %w", filepath.Dir(cfg.Path), err)
 	}
 
