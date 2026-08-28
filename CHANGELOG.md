@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.36 - 2026-08-28
+
+### Added
+- Roadmap note in `docs/FEATURES.md` (nice-to-have): publish GitHub releases/tags for shipped versions. The repo currently publishes no tags or releases, so the technicallabs.org System Monitor — which resolves each project's live version via the GitHub API (`releases/latest`, then `tags`) — can never resolve this repo and permanently falls back to its stale hardcoded baseline (v1.3.16). A CI step that tags `v<version>` on master when the constant changes would make the website update automatically with every release. Docs-only; no behavior changes.
+
 ## 1.3.35 - 2026-08-28
 
 Audit remediation batch (2026-08-27 engineering audit) — CI and toolchain hardening (AUDIT-178, AUDIT-224, AUDIT-226; AUDIT-309 verified already resolved). Every finding was independently re-verified against current master before being fixed.
