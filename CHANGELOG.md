@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.34 - 2026-08-27
+
+### Added
+- Engineering audit report `docs/audit-2026-08-27-consolidated.md` — the collector and cross-repo subset of the 2026-08-27 dual-repo (Firewall-Mon + Firewall-Collector) adversarial multi-agent review. Findings were adjudicated by three independent verification lenses (reproduce-from-source, exploitability/materiality, mitigation-or-intent), surviving only on two or more confirmations. 49 findings in this copy (43 collector, 6 cross-repo). Documentation + version only; no code behavior changes. Remediation ships in subsequent versioned releases.
+
 ## 1.3.33 - 2026-08-08
 
 ### Fixed — FortiOS key=value logs are no longer shredded by the RFC 5424 parser
