@@ -2,8 +2,11 @@
 
 ## 1.3.34 - 2026-08-27
 
+### Security
+- Bump the Go toolchain 1.25.12 → 1.25.13 (the `go` directive in `go.mod`) to clear five reachable stdlib `govulncheck` findings — GO-2026-6218 (`net/url`), GO-2026-6090 (`crypto/tls`), GO-2026-6089 / GO-2026-5026 (`net/http`), GO-2026-5972 (`encoding/asn1`) — all fixed in go1.25.13 and reachable via `internal/fwapi/fwapi.go:222`. The unpinned `govulncheck@latest` CI gate began flagging these when its vulnerability database updated (this is audit finding AUDIT-259). CI now derives its Go version from `go.mod` (`go-version-file`) instead of a hardcoded `1.25.11`, so the toolchain floor no longer drifts from the module (AUDIT-260).
+
 ### Added
-- Engineering audit report `docs/audit-2026-08-27-consolidated.md` — the collector and cross-repo subset of the 2026-08-27 dual-repo (Firewall-Mon + Firewall-Collector) adversarial multi-agent review. Findings were adjudicated by three independent verification lenses (reproduce-from-source, exploitability/materiality, mitigation-or-intent), surviving only on two or more confirmations. 49 findings in this copy (43 collector, 6 cross-repo). Documentation + version only; no code behavior changes. Remediation ships in subsequent versioned releases.
+- Engineering audit report `docs/audit-2026-08-27-consolidated.md` — the collector and cross-repo subset of the 2026-08-27 dual-repo (Firewall-Mon + Firewall-Collector) adversarial multi-agent review. Findings were adjudicated by three independent verification lenses (reproduce-from-source, exploitability/materiality, mitigation-or-intent), surviving only on two or more confirmations. 49 findings in this copy (43 collector, 6 cross-repo). Remediation of the remaining findings ships in subsequent versioned releases.
 
 ## 1.3.33 - 2026-08-08
 
