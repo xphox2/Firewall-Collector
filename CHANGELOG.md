@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.44 - 2026-08-29
+
+Audit remediation (2026-08-27 engineering audit) — strict source-attribution binding for the sFlow and TFTP ingestion paths, so an allowlisted fleet device can no longer forge telemetry or config revisions in another monitored device's name. Each fix ships with a regression test that fails if the fix is reverted.
+
+- **sFlow source binding (AUDIT-186):** sFlow attributes a sample by the in-band `agent_address` (the datagram body), while the existing spoofing guard only checks the UDP source — so a datagram from any allowlisted source could carry any `agent_address` and be attributed to a different monitored device (forging its flow/counter graphs and gaming the dedup key to suppress the victim's real flows). The real UDP source is now threaded onto every flow and counter sample and bound to the claimed identity before attribution and before the dedup gate.
+- **TFTP source binding (AUDIT-187):** the TFTP config-backup device ID was derived entirely from the attacker-writable WRQ filename (`fgt_<id>_<trigger>_config`) with the client address available but never checked — so an allowlisted device could upload `fgt_<victimID>_..._config` and forge an authoritative config revision for another device. The WRQ client address is now bound to the filename-claimed device; a rejected upload records no `ConfigRevision`.
+- **Asymmetric, deployment-safe enforcement:** the binding is intentionally asymmetric so it never breaks legitimate deployments. When the UDP source resolves to a KNOWN monitored device that DISAGREES with the claimed identity (the detectable intra-fleet forgery), the sample/upload is rejected. When the UDP source is UNRESOLVABLE — a multi-homed FortiGate whose sFlow egress IP isn't cached, or a NAT'd/jump-host TFTP upload — the binding cannot be enforced, so the collector warns and falls back to the claimed identity rather than drop a real device. A source that agrees with the claim is accepted silently.
+- **`PROBE_STRICT_SOURCE_BINDING` toggle (default `true`):** STRICT (reject a known-source-vs-claim mismatch) is the default; an operator can set it to `off`/`false` to downgrade to warn-only (log the mismatch but still attribute by claim) if a deployment surfaces a false positive. Parsed with the case-insensitive on/off/true/false/1/0/yes/no forms and documented in `docs/ENV-VARS.md`.
+- **Observability:** rejects are counted on a new Prometheus counter `firewall_collector_source_binding_rejects_total` (labeled by path `sflow`/`tftp`); sustained non-zero means an allowlisted device is forging another device's telemetry.
+
 ## 1.3.43 - 2026-08-29
 
 Audit remediation (2026-08-27 engineering audit), batch 22 — collector input-hardening for the unauthenticated UDP ingestion paths. Each fix ships with a regression test that fails if the fix is reverted.

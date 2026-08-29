@@ -197,18 +197,24 @@ type FlowSample struct {
 	DeviceID       uint      `json:"device_id"`
 	ProbeID        uint      `json:"probe_id"`
 	SamplerAddress string    `json:"sampler_address"`
-	SequenceNumber uint32    `json:"sequence_number"`
-	SamplingRate   uint32    `json:"sampling_rate"`
-	SrcAddr        string    `json:"src_addr"`
-	DstAddr        string    `json:"dst_addr"`
-	SrcPort        uint16    `json:"src_port"`
-	DstPort        uint16    `json:"dst_port"`
-	Protocol       uint8     `json:"protocol"`
-	Bytes          uint64    `json:"bytes"`
-	Packets        uint64    `json:"packets"`
-	InputIfIndex   uint32    `json:"input_if_index"`
-	OutputIfIndex  uint32    `json:"output_if_index"`
-	TCPFlags       uint8     `json:"tcp_flags"`
+	// SourceIP is the UDP source address the datagram actually arrived from,
+	// used ONLY by the collector's source-attribution binding (AUDIT-186) and
+	// never serialized to the server. For sFlow it commonly differs from
+	// SamplerAddress (the in-band agent_address); for NetFlow/IPFIX they are the
+	// same. json:"-" so the wire contract with the server is unchanged.
+	SourceIP       string `json:"-"`
+	SequenceNumber uint32 `json:"sequence_number"`
+	SamplingRate   uint32 `json:"sampling_rate"`
+	SrcAddr        string `json:"src_addr"`
+	DstAddr        string `json:"dst_addr"`
+	SrcPort        uint16 `json:"src_port"`
+	DstPort        uint16 `json:"dst_port"`
+	Protocol       uint8  `json:"protocol"`
+	Bytes          uint64 `json:"bytes"`
+	Packets        uint64 `json:"packets"`
+	InputIfIndex   uint32 `json:"input_if_index"`
+	OutputIfIndex  uint32 `json:"output_if_index"`
+	TCPFlags       uint8  `json:"tcp_flags"`
 	// Drops is the sFlow v5 sample-pool drops counter (RFC 3176 §3.1.1,
 	// sflow_version_5.txt): the CUMULATIVE number of times the agent
 	// dropped a sample since it (re)started — NOT a per-sample delta.
@@ -303,17 +309,20 @@ type InterfaceCounterSample struct {
 	DeviceID       uint      `json:"device_id"`
 	ProbeID        uint      `json:"probe_id"`
 	SamplerAddress string    `json:"sampler_address"`
-	IfIndex        uint32    `json:"if_index"`
-	IfType         uint32    `json:"if_type,omitempty"`
-	IfSpeed        uint64    `json:"if_speed,omitempty"` // bits/sec (sFlow reports 64-bit ifSpeed)
-	IfDirection    uint32    `json:"if_direction,omitempty"`
-	IfStatus       uint32    `json:"if_status,omitempty"`
-	InOctets       uint64    `json:"in_octets,omitempty"`
-	InErrors       uint64    `json:"in_errors,omitempty"`
-	InDiscards     uint64    `json:"in_discards,omitempty"`
-	OutOctets      uint64    `json:"out_octets,omitempty"`
-	OutErrors      uint64    `json:"out_errors,omitempty"`
-	OutDiscards    uint64    `json:"out_discards,omitempty"`
+	// SourceIP is the UDP source the counter datagram arrived from — collector
+	// -internal source-binding only (AUDIT-186), never sent to the server.
+	SourceIP    string `json:"-"`
+	IfIndex     uint32 `json:"if_index"`
+	IfType      uint32 `json:"if_type,omitempty"`
+	IfSpeed     uint64 `json:"if_speed,omitempty"` // bits/sec (sFlow reports 64-bit ifSpeed)
+	IfDirection uint32 `json:"if_direction,omitempty"`
+	IfStatus    uint32 `json:"if_status,omitempty"`
+	InOctets    uint64 `json:"in_octets,omitempty"`
+	InErrors    uint64 `json:"in_errors,omitempty"`
+	InDiscards  uint64 `json:"in_discards,omitempty"`
+	OutOctets   uint64 `json:"out_octets,omitempty"`
+	OutErrors   uint64 `json:"out_errors,omitempty"`
+	OutDiscards uint64 `json:"out_discards,omitempty"`
 }
 
 type HardwareSensor struct {

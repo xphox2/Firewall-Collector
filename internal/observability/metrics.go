@@ -109,8 +109,9 @@ type Metrics struct {
 
 	syslogParseErrors *prometheus.CounterVec
 
-	netflowEvents       *prometheus.CounterVec
-	flowDedupSuppressed *prometheus.CounterVec
+	netflowEvents        *prometheus.CounterVec
+	flowDedupSuppressed  *prometheus.CounterVec
+	sourceBindingRejects *prometheus.CounterVec
 
 	metricSendFailed *prometheus.CounterVec
 
@@ -248,6 +249,16 @@ func New(cfg Config) *Metrics {
 		Help: "Flow samples suppressed by the dual-export dedup policy, by family (sflow|netflow).",
 	}, []string{"family"})
 
+	// Samples/uploads dropped by the source-attribution binding (AUDIT-186/187):
+	// the UDP source resolved to a KNOWN monitored device that disagreed with the
+	// claimed identity (agent_address for sFlow, filename for TFTP), and
+	// PROBE_STRICT_SOURCE_BINDING was enabled. Sustained non-zero = an
+	// allowlisted device forging another device's telemetry.
+	m.sourceBindingRejects = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "firewall_collector_source_binding_rejects_total",
+		Help: "Samples/uploads rejected by strict source-attribution binding, by path (sflow|tftp).",
+	}, []string{"path"})
+
 	m.pollDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name: "firewall_collector_poll_duration_seconds",
 		Help: "Histogram of SNMP poll cycle durations per device.",
@@ -298,6 +309,7 @@ func New(cfg Config) *Metrics {
 		m.syslogParseErrors,
 		m.netflowEvents,
 		m.flowDedupSuppressed,
+		m.sourceBindingRejects,
 		m.pollDuration,
 		m.pollFailures,
 		m.lastPollPublished,
@@ -389,6 +401,17 @@ func (m *Metrics) IncFlowDedupSuppressed(family string) {
 		return
 	}
 	m.flowDedupSuppressed.WithLabelValues(family).Inc()
+}
+
+// IncSourceBindingReject increments
+// firewall_collector_source_binding_rejects_total for the given ingestion path
+// ("sflow" or "tftp"). Called once per sample/upload dropped by strict
+// source-attribution binding (AUDIT-186/187). Nil-safe like IncRateLimitedDrop.
+func (m *Metrics) IncSourceBindingReject(path string) {
+	if m == nil {
+		return
+	}
+	m.sourceBindingRejects.WithLabelValues(path).Inc()
 }
 
 // IncMetricSendFailed increments firewall_collector_metric_send_failed_total for

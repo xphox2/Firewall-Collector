@@ -105,6 +105,7 @@ var envKeys = []string{
 	"PROBE_SFLOW_ENABLED",
 	"PROBE_PING_ENABLED",
 	"PROBE_NETFLOW_SAMPLING_OVERRIDES",
+	"PROBE_STRICT_SOURCE_BINDING",
 }
 
 func withClearedEnv(t *testing.T) func() {
@@ -260,5 +261,48 @@ func TestConfigLoad_SNMPTrapDisabled_EmptyCommunity_OK(t *testing.T) {
 	}
 	if cfg.Probe.TrapCommunity != "" {
 		t.Errorf("TrapCommunity = %q, want empty", cfg.Probe.TrapCommunity)
+	}
+}
+
+// TestConfigLoad_StrictSourceBinding_AUDIT186_187 pins the new
+// PROBE_STRICT_SOURCE_BINDING knob wired through Load(): STRICT (reject a
+// known-source-vs-claim mismatch) is the default, it parses the case-insensitive
+// on/off forms via parseBool, and an operator can downgrade to warn-only. If the
+// wiring is reverted (or the default flips), this reds the build.
+func TestConfigLoad_StrictSourceBinding_AUDIT186_187(t *testing.T) {
+	// Default: unset => STRICT (true).
+	func() {
+		defer withClearedEnv(t)()
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() error: %v", err)
+		}
+		if !cfg.Probe.StrictSourceBinding {
+			t.Errorf("StrictSourceBinding default = false, want true (STRICT is the approved default)")
+		}
+	}()
+
+	// Truthy forms enable strict.
+	for _, v := range []string{"true", "TRUE", "1", "yes", "on", "On"} {
+		func() {
+			defer withClearedEnv(t)()
+			os.Setenv("PROBE_STRICT_SOURCE_BINDING", v)
+			cfg, _ := Load()
+			if !cfg.Probe.StrictSourceBinding {
+				t.Errorf("PROBE_STRICT_SOURCE_BINDING=%q => StrictSourceBinding=false, want true", v)
+			}
+		}()
+	}
+
+	// Falsy forms downgrade to warn-only.
+	for _, v := range []string{"false", "FALSE", "0", "no", "off", "Off"} {
+		func() {
+			defer withClearedEnv(t)()
+			os.Setenv("PROBE_STRICT_SOURCE_BINDING", v)
+			cfg, _ := Load()
+			if cfg.Probe.StrictSourceBinding {
+				t.Errorf("PROBE_STRICT_SOURCE_BINDING=%q => StrictSourceBinding=true, want false (warn mode)", v)
+			}
+		}()
 	}
 }

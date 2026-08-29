@@ -60,6 +60,12 @@ All `true` by default. Set to `false` / `0` / `no` to disable.
 | `PROBE_PING_ENABLED` | `true` | ICMP ping collector. |
 | `PROBE_TFTP_CONFIG_ENABLED` | `true` | TFTP WRQ-receive (FortiGate config push). |
 
+## Source-attribution binding
+
+| Variable | Default | Description |
+|---|---|---|
+| `PROBE_STRICT_SOURCE_BINDING` | `true` | Binds an ingested sample/upload's CLAIMED device identity to the real UDP sender for the two paths that attribute by a body/filename field instead of the packet source: sFlow (attributes by the in-band `agent_address`) and TFTP config backup (attributes by the WRQ filename). When the UDP source resolves to a **known** monitored device that **disagrees** with the claimed device — the detectable intra-fleet forgery, e.g. an allowlisted device X submitting telemetry or a config revision in device Y's name — the sample/upload is **rejected** (`true`, STRICT) or logged-and-attributed-by-claim (`false`, warn-only). When the UDP source is **unresolvable** — a multi-homed FortiGate whose sFlow egress IP isn't cached, or a NAT'd/jump-host TFTP upload — the binding can't be enforced, so **both** modes warn and fall back to the claimed identity rather than drop a legitimate device. A source that agrees with the claim is accepted silently. Accepts the case-insensitive `true`/`false`/`1`/`0`/`yes`/`no`/`on`/`off` forms. Rejects are counted on `firewall_collector_source_binding_rejects_total` (labeled by path `sflow`/`tftp`). This layers on top of, and does not replace, the fleet source-IP allowlist. |
+
 ## UDP rate limiting
 
 Per-source-IP token-bucket limiting on the sFlow/syslog/trap receivers, so a

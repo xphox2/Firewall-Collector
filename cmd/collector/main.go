@@ -46,7 +46,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.3.43"
+const version = "1.3.44"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -562,8 +562,17 @@ func main() {
 		// suppressing them would silently drop bandwidth telemetry.
 		sflowReceiver.SetCounterHandler(func(cs *relay.InterfaceCounterSample) {
 			cs.ProbeID = probeID
+			// Source-attribution binding (AUDIT-186): the counter sample is
+			// keyed on the in-band agent_address; reject it if a KNOWN UDP
+			// source disagrees (forgery), warn+fall-back if the source is
+			// unresolvable (multi-homed egress).
+			deviceFromClaim := c.resolveDeviceByIP(cs.SamplerAddress)
+			deviceFromSource := c.resolveDeviceByIP(cs.SourceIP)
+			if !c.acceptBoundSource("sFlow", deviceFromSource, deviceFromClaim, cs.SourceIP, cs.SamplerAddress) {
+				return
+			}
 			if cs.DeviceID == 0 {
-				cs.DeviceID = c.resolveDeviceByIP(cs.SamplerAddress)
+				cs.DeviceID = deviceFromClaim
 			}
 			relayClient.SendInterfaceCounterSample(cs)
 		})
@@ -573,8 +582,18 @@ func main() {
 			// IP, and on FortiGate those commonly differ — the tracker must
 			// key on the resolved device identity for the two families to
 			// meet (flowdedup.Key falls back to the raw address if unknown).
+			deviceFromClaim := c.resolveDeviceByIP(sample.SamplerAddress)
+			// Source-attribution binding (AUDIT-186): reject a sample whose
+			// KNOWN UDP source disagrees with the claimed agent_address
+			// (intra-fleet forgery); warn+fall-back if the source can't be
+			// resolved (multi-homed FortiGate egress). Applied BEFORE the dedup
+			// gate so a rejected sample never touches the flowdedup key state.
+			deviceFromSource := c.resolveDeviceByIP(sample.SourceIP)
+			if !c.acceptBoundSource("sFlow", deviceFromSource, deviceFromClaim, sample.SourceIP, sample.SamplerAddress) {
+				return
+			}
 			if sample.DeviceID == 0 {
-				sample.DeviceID = c.resolveDeviceByIP(sample.SamplerAddress)
+				sample.DeviceID = deviceFromClaim
 			}
 			// Dual-export dedup: drop this FLOW sample if NetFlow/IPFIX is
 			// actively exporting from the same device and the policy prefers it.
@@ -1300,9 +1319,8 @@ func (c *Collector) startTFTPServer() {
 	tftpServer.SetWriteHandler(func(filename string, data []byte, clientAddr net.Addr) error {
 		log.Printf("[TFTP] Received WRQ from %s for file: %s (%d bytes)", clientAddr.String(), filename, len(data))
 
-		deviceID, triggerSource := parseUploadFilename(filename)
-		if deviceID == 0 {
-			log.Printf("[TFTP] Invalid filename %s - could not parse device ID", filename)
+		deviceID, triggerSource, allowed := c.tftpUploadAllowed(filename, clientAddr)
+		if !allowed {
 			return nil
 		}
 		log.Printf("[TFTP] Parsed device ID: %d, trigger: %s", deviceID, triggerSource)
@@ -2376,6 +2394,85 @@ func (c *Collector) resolveDeviceByIP(ip string) uint {
 		return id
 	}
 	return 0
+}
+
+// acceptBoundSource applies the source-attribution binding policy
+// (AUDIT-186/187) that layers on top of the fleet source-IP allowlist. sFlow
+// attributes a sample by its in-band agent_address and TFTP by the WRQ
+// filename — neither is the UDP sender — so an allowlisted device can otherwise
+// claim ANOTHER monitored device's identity. The check is deliberately
+// ASYMMETRIC so it never breaks legitimate multi-homed / NAT'd deployments:
+//
+//   - fromSource resolves to a KNOWN device that disagrees with a KNOWN
+//     fromClaim -> the detectable forgery. Rejected in strict mode
+//     (PROBE_STRICT_SOURCE_BINDING=true, the default); logged-but-accepted in
+//     warn mode. Returns false only in the strict-reject case.
+//   - fromSource is UNRESOLVABLE (0) -> the multi-homed FortiGate sFlow egress
+//     IP that isn't cached, or a NAT'd/jump-host TFTP upload. The binding
+//     cannot be enforced, so warn and accept (attribute by claim) rather than
+//     drop a real device.
+//   - fromSource == fromClaim (or fromClaim is unknown) -> the normal case;
+//     accept silently.
+//
+// path is "sFlow"/"TFTP" for logs (and "sflow"/"tftp" for the reject metric,
+// lower-cased here). srcIP/claimIP are the human-readable addresses for the log.
+// Returns true to accept the sample/upload, false to drop it.
+func (c *Collector) acceptBoundSource(path string, fromSource, fromClaim uint, srcIP, claimIP string) bool {
+	if fromSource == 0 {
+		// Source not resolvable to any monitored device: can't enforce a binding
+		// we can't resolve. Only note it when a real claim is being trusted.
+		if fromClaim != 0 {
+			log.Printf("[%s] source-binding: UDP source %q is not a known device; trusting claimed device %d (%q) — cannot enforce binding (multi-homed/NAT)",
+				path, srcIP, fromClaim, claimIP)
+		}
+		return true
+	}
+	if fromClaim != 0 && fromSource != fromClaim {
+		strict := c.cfg == nil || c.cfg.StrictSourceBinding
+		if strict {
+			log.Printf("[%s] source-binding REJECT: UDP source %q resolves to device %d but the sample claims device %d (%q) — dropping as forgery (PROBE_STRICT_SOURCE_BINDING=true)",
+				path, srcIP, fromSource, fromClaim, claimIP)
+			c.metrics.IncSourceBindingReject(strings.ToLower(path))
+			return false
+		}
+		log.Printf("[%s] source-binding WARN: UDP source %q resolves to device %d but the sample claims device %d (%q) — attributing by claim (PROBE_STRICT_SOURCE_BINDING=false)",
+			path, srcIP, fromSource, fromClaim, claimIP)
+		return true
+	}
+	return true
+}
+
+// tftpUploadAllowed parses a TFTP WRQ filename and applies source-attribution
+// binding (AUDIT-187). The device ID is derived entirely from the
+// attacker-writable filename, so it is bound to the WRQ client address:
+//   - filename unparseable (deviceID 0) -> not allowed.
+//   - a KNOWN client that resolves to a DIFFERENT device than the filename
+//     claims -> forgery; not allowed in strict mode (an allowlisted fleet
+//     member uploading fgt_<victimID>_config).
+//   - client unresolvable (NAT'd/jump-host upload) -> warn + allowed, so a real
+//     backup isn't dropped.
+//
+// It returns the parsed (deviceID, triggerSource) and whether the upload may be
+// recorded as a ConfigRevision. When allowed is false, the caller records
+// nothing.
+func (c *Collector) tftpUploadAllowed(filename string, clientAddr net.Addr) (uint, string, bool) {
+	deviceID, triggerSource := parseUploadFilename(filename)
+	if deviceID == 0 {
+		log.Printf("[TFTP] Invalid filename %s - could not parse device ID", filename)
+		return 0, triggerSource, false
+	}
+	var clientIP string
+	if clientAddr != nil {
+		clientIP = clientAddr.String()
+		if host, _, err := net.SplitHostPort(clientIP); err == nil {
+			clientIP = host
+		}
+	}
+	deviceFromSource := c.resolveDeviceByIP(clientIP)
+	if !c.acceptBoundSource("TFTP", deviceFromSource, deviceID, clientIP, filename) {
+		return deviceID, triggerSource, false
+	}
+	return deviceID, triggerSource, true
 }
 
 // cacheInterfaceAddresses stores interface IPs for device resolution.
