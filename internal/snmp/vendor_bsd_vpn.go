@@ -65,6 +65,24 @@ func parseBSDVPNFromInterfaces(pdus []gosnmp.SnmpPDU) []relay.VPNStatus {
 			ifd := getOrCreateBSDIf(interfaces, idx)
 			ifd.bytesOut = uint64(gosnmp.ToBigInt(pdu.Value).Uint64())
 		}
+		// 64-bit HC octet counters from ifXTable (AUDIT-221). A separate if so
+		// they overwrite the 32-bit ifTable values above when present; the walk
+		// order (ifTable then ifXTable) guarantees HC is applied last.
+		if strings.HasPrefix(name, OIDIfHCInOctets+".") {
+			idx := getIndexFromOID(name, OIDIfHCInOctets)
+			if idx < 0 {
+				continue
+			}
+			ifd := getOrCreateBSDIf(interfaces, idx)
+			ifd.bytesIn = uint64(gosnmp.ToBigInt(pdu.Value).Uint64())
+		} else if strings.HasPrefix(name, OIDIfHCOutOctets+".") {
+			idx := getIndexFromOID(name, OIDIfHCOutOctets)
+			if idx < 0 {
+				continue
+			}
+			ifd := getOrCreateBSDIf(interfaces, idx)
+			ifd.bytesOut = uint64(gosnmp.ToBigInt(pdu.Value).Uint64())
+		}
 	}
 
 	now := time.Now()

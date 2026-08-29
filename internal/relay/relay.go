@@ -699,6 +699,23 @@ type Client struct {
 	// primary metric send fails and is buffered to the spillover queue. Wired to
 	// the observability counter firewall_collector_metric_send_failed_total (M12).
 	onMetricSendFailed func(kind string)
+
+	// onQueueDrop / onDataBatchSent (AUDIT-210) surface previously-dead queue
+	// metrics. onQueueDrop is installed onto every SpilloverQueue's OnDrop and
+	// wired to firewall_collector_queue_dropped_total; onDataBatchSent is called
+	// at each metric-send outcome and wired to
+	// firewall_collector_data_batch_sent_total. Both are plain callbacks so the
+	// queue/relay layers never import observability (import-cycle avoidance).
+	onQueueDrop     func(queue string)
+	onDataBatchSent func(queue, outcome string)
+
+	// queuesReady is set true (with the queue-pointer writes happening-before it,
+	// in the same goroutine) once ensureQueues has successfully opened all seven
+	// queues. QueueDepth checks it before reading a queue pointer so a concurrent
+	// /metrics scrape never races the lazy open — the atomic Load/Store pair
+	// provides the memory barrier. Left false on the disabled / partial-open
+	// paths, where QueueDepth correctly reports 0.
+	queuesReady atomic.Bool
 }
 
 // SetObservedHostKeysProvider registers a source of observed SSH host-key
@@ -720,6 +737,68 @@ func (c *Client) SetCommandHandler(fn func([]PendingCommand)) {
 // metrics.IncMetricSendFailed.
 func (c *Client) SetMetricSendFailedHook(fn func(kind string)) {
 	c.onMetricSendFailed = fn
+}
+
+// SetQueueDropHook registers a callback invoked (with the queue name) each time
+// a SpilloverQueue evicts an item because its byte cap is full — typically
+// metrics.IncQueueDropped (AUDIT-210). The callback is read at drop time, so it
+// may be installed before or after the queues are lazily opened.
+func (c *Client) SetQueueDropHook(fn func(queue string)) {
+	c.onQueueDrop = fn
+}
+
+// SetDataBatchSentHook registers a callback invoked (with queue name and
+// "success"|"failure") at each metric-send outcome — typically
+// metrics.OnDataBatchSent (AUDIT-210).
+func (c *Client) SetDataBatchSentHook(fn func(queue, outcome string)) {
+	c.onDataBatchSent = fn
+}
+
+// fireDataBatchSent reports one metric-send outcome, nil-hook-safe.
+func (c *Client) fireDataBatchSent(queue, outcome string) {
+	if c.onDataBatchSent != nil {
+		c.onDataBatchSent(queue, outcome)
+	}
+}
+
+// QueueDepth returns the in-memory depth of the named spillover queue, or 0 for
+// an unknown queue or one not yet opened (AUDIT-210). Names match ensureQueues:
+// traps, pings, syslog, flows, flow-counters, revisions, metrics.
+//
+// NOTE: SpilloverQueue.Depth() counts only the front + in-memory tiers; items
+// spilled to the on-disk BoltDB tier are NOT included, so during a prolonged
+// outage this under-reports the true backlog. Making Depth() include the disk
+// tier is a separate concern and deliberately not changed here.
+func (c *Client) QueueDepth(name string) int {
+	// The queue pointers are written once inside ensureQueues' sync.Once and
+	// published via queuesReady; skip the read entirely until it's set so a
+	// scrape can never race the lazy open.
+	if !c.queuesReady.Load() {
+		return 0
+	}
+	var q *queue.SpilloverQueue
+	switch name {
+	case "traps":
+		q = c.trapQueue
+	case "pings":
+		q = c.pingQueue
+	case "syslog":
+		q = c.syslogQueue
+	case "flows":
+		q = c.flowQueue
+	case "flow-counters":
+		q = c.flowCounterQueue
+	case "revisions":
+		q = c.revisionQueue
+	case "metrics":
+		q = c.metricQueue
+	default:
+		return 0
+	}
+	if q == nil {
+		return 0
+	}
+	return q.Depth()
 }
 
 func NewClient(cfg Config) *Client {
@@ -796,6 +875,15 @@ func (c *Client) ensureQueues() {
 				Bucket:   name,
 				MaxMem:   maxQueueSize,
 				MaxBytes: maxBytes,
+				// AUDIT-210: surface byte-cap drops on
+				// firewall_collector_queue_dropped_total. The closure reads the
+				// hook at drop time, so wiring order with SetQueueDropHook doesn't
+				// matter; the queue package stays observability-free.
+				OnDrop: func() {
+					if c.onQueueDrop != nil {
+						c.onQueueDrop(name)
+					}
+				},
 			})
 			if err != nil {
 				openErr = err
@@ -824,6 +912,12 @@ func (c *Client) ensureQueues() {
 			c.trapQueue, c.pingQueue, c.syslogQueue, c.flowQueue, c.flowCounterQueue, c.revisionQueue, c.metricQueue = nil, nil, nil, nil, nil, nil, nil
 			return
 		}
+
+		// Publish the queue pointers for QueueDepth (AUDIT-210). The writes
+		// above happen-before this Store in program order, and QueueDepth reads
+		// them only after observing queuesReady==true, so a concurrent scrape is
+		// race-free.
+		c.queuesReady.Store(true)
 
 		log.Printf("[Relay] Spillover queues enabled at %s (cap %d MiB per queue) — telemetry survives server outages and restarts.", diskPath, maxBytes>>20)
 	})
@@ -1476,7 +1570,20 @@ type metricEnvelope struct {
 // the durable queue, not inline backoff, is what survives a prolonged outage, so
 // we no longer burn ~7s of per-metric per-device backoff here (audit: "drop
 // doDirectSend retries to 1").
-func (c *Client) doDirectSend(endpoint string, name string, payload interface{}) error {
+func (c *Client) doDirectSend(endpoint string, name string, payload interface{}) (err error) {
+	// AUDIT-210: report the batch outcome on
+	// firewall_collector_data_batch_sent_total. Every success path returns nil;
+	// every buffered/dropped path returns a non-nil error — so err==nil is
+	// exactly "reached the server (2xx)". The queue label is "metrics" (the
+	// spillover queue these sends buffer to).
+	defer func() {
+		outcome := "failure"
+		if err == nil {
+			outcome = "success"
+		}
+		c.fireDataBatchSent("metrics", outcome)
+	}()
+
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("failed to marshal %s: %w", name, err)
@@ -1672,6 +1779,12 @@ func (c *Client) drainMetricQueue(drainChunk int) {
 				continue
 			}
 			ok, permanent := c.postMetricRaw(env.Endpoint, env.Name, env.Payload)
+			// AUDIT-210: a drained resend is a data-batch outcome too.
+			if ok {
+				c.fireDataBatchSent("metrics", "success")
+			} else {
+				c.fireDataBatchSent("metrics", "failure")
+			}
 			if ok || permanent {
 				if permanent {
 					log.Printf("[Relay] drain metrics: %s permanently rejected — dropping", env.Name)

@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.3.41 - 2026-08-29
+
+Audit remediation (2026-08-27 engineering audit), batch 14 — SNMP counter/attribution correctness plus observability wiring (AUDIT-210, 221, 223, 238, 293, 294, 295, 298, 302). Re-verified against master.
+
+### Fixed
+- **The queue drop / depth / data-batch Prometheus metrics are now actually fed.** `firewall_collector_queue_dropped_total`, `firewall_collector_queue_depth`, and `firewall_collector_data_batch_sent_total` were registered but never wired — so the drop counter read a permanent zero even during real on-disk spillover data loss, exactly the condition its own help text says to alert on. Each of the seven spillover queues now reports byte-cap drops through an on-drop callback, the depth gauge is fed from the live queues on every scrape, and metric-send outcomes increment the batch counter. No metric series, help text, or labels changed.
+- **Palo Alto VPN tunnel byte counters now use the 64-bit HC counters.** `GetVPNStatus` walked only the base interface table, so the 64-bit ifXTable HC octet OIDs were never fetched and tunnel byte counts wrapped at 4 GiB. The walk now also fetches ifXTable and merges it, so the HC values win. Same fix applies to the pfSense/OPNsense and Firewalla twins (their VPN parsers gained the HC branches).
+- **Interface packet counters now use the 64-bit HC ucast counters.** Interface `in_packets`/`out_packets` came from the 32-bit ifTable OIDs (wrap at 4 Gpkt); the existing ifXTable walk now also reads `ifHCInUcastPkts`/`ifHCOutUcastPkts` and they override the 32-bit values.
+- **VLAN PVIDs now attach to the correct interface.** `dot1qPvid` is indexed by `dot1dBasePort`, not `ifIndex`; the base port is now resolved through `dot1dBasePortIfIndex` before the native-VLAN id is applied. A device that exposes no bridge port table falls back to the prior behavior; a port missing from the table is skipped rather than mis-attributed.
+- **Firewalla fan sensors are now actually polled.** The hardware-sensor walk used the temperature-only lm-sensors subtree, so the fan parse branches were dead. The walk base is now the common lm-sensors parent, covering both the temperature (`.2.1`) and fan (`.3.1`) subtrees.
+- **Palo Alto nonoperational hardware sensors report "alarm" instead of being dropped as healthy.** A sensor with `entPhySensorOperStatus = 3` (nonoperational) was discarded alongside status 2 (unavailable); status 3 now reaches the alarm path. Mirrors the server-side fix.
+- **The interface-type map gains `gre` (47) and `bridge` (209)** for cross-repo parity with the server (209 is the FortiGate LAN bridge type).
+- **`PROBE_LOG_LEVEL` / `PROBE_LOG_FORMAT` are now actually applied.** `main()` never installed the slog handler, so both environment variables were silently ignored in production; the handler is now configured at startup.
+- **A per-message syslog regex is compiled once** at package init instead of on every message in `extractDeviceID`.
+
 ## 1.3.40 - 2026-08-29
 
 Audit remediation (2026-08-27 engineering audit) — device uptime unit canonicalization (AUDIT-220, collector half of a cross-repo pair). Re-verified against master.

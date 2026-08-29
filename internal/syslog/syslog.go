@@ -21,6 +21,11 @@ import (
 
 const MaxMessageSize = 64 * 1024
 
+// deviceIDBracketRe matches a bracketed numeric device id, e.g. "[12345]", in a
+// syslog structured-data blob (AUDIT-223: hoisted out of extractDeviceID so it
+// compiles once at package init instead of per message).
+var deviceIDBracketRe = regexp.MustCompile(`\[(\d+)\]`)
+
 // maxTCPSyslogConns caps concurrent TCP syslog connections (M16 of the
 // 2026-07-01 audit). Each connection holds a 64 KiB read buffer plus a
 // growable bytes.Buffer and a goroutine, so an unbounded accept loop is a
@@ -612,8 +617,7 @@ func extractDeviceID(hostname, structuredData string) uint {
 			}
 		}
 
-		re := regexp.MustCompile(`\[(\d+)\]`)
-		matches := re.FindStringSubmatch(structuredData)
+		matches := deviceIDBracketRe.FindStringSubmatch(structuredData)
 		if len(matches) > 1 {
 			if id := parseDeviceID(matches[1]); id > 0 {
 				return id
