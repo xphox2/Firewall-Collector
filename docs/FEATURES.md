@@ -25,7 +25,7 @@
 | Feature | Status | Role | First stable |
 |---|---|---|---|
 | SNMP polling (v1 / v2c / v3, MD5/SHA/SHA2, DES/AES/AES192/256) | Stable | [Probe] | 1.0.0 |
-| Per-device vendor OID profile (FortiGate, Palo Alto, SonicWall, pfSense, OPNsense, Firewalla, generic Linux/BSD VPN) | Stable | [Probe] | 1.0.0 |
+| Per-device vendor OID profile (FortiGate, Palo Alto, Cisco ASA, SonicWall, pfSense, OPNsense, Firewalla, generic Linux/BSD VPN) | Stable | [Probe] | 1.0.0 |
 | SNMP trap receiver (UDP/162, V1 enterprise + V2c specific-trap, community filter) | Stable | [Probe] | 1.0.0 |
 | Syslog receiver — TCP + UDP, RFC 5424 + FortiGate hostname/SD device-ID extraction | Stable | [Probe] | 1.0.0 |
 | sFlow v5 receiver (UDP/6343, formats 1 and 3, Ethernet + 802.1Q VLAN, IPv4/IPv6 + TCP/UDP) | Stable | [Probe] | 1.0.0 |
@@ -115,6 +115,7 @@ compile-time `VendorProfile` satisfaction test).
 | **fortigate** (default) | full | ✅ | ✅ | ✅ | ✅ | site-to-site + dialup + SSL |
 | **paloalto** | full | ✅ | ✅ | ✅ | ✅ | site-to-site + SSL |
 | **sonicwall** | full | ✅ | — | — | ✅ | site-to-site |
+| **cisco_asa** | full | ✅ (failover) | — | — | — | — |
 | **pfsense** | full | ✅ (CARP) | — | — | — | IPsec |
 | **opnsense** | full | ✅ (CARP) | — | — | — | IPsec |
 | **firewalla** | basic | — | — | — | — | — |
