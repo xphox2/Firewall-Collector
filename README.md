@@ -10,7 +10,7 @@
 > admin UI, and runbook.
 
 [![CI](https://img.shields.io/badge/CI-passing-brightgreen)](https://github.com/xphox2/Firewall-Collector/actions)
-[![Version](https://img.shields.io/badge/version-1.3.43-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.3.44-blue)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.25.0+-00ADD8)](go.mod)
 

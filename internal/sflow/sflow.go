@@ -270,7 +270,15 @@ func (r *SFlowReceiver) serveConn(conn *net.UDPConn) error {
 		}
 
 		if n > 0 {
-			r.parseSFlowDatagram(buf[:n])
+			// Carry the real UDP source through to attribution: sFlow keys
+			// samples on the in-band agent_address, so the source is the only
+			// evidence that can catch an allowlisted device forging another's
+			// identity (AUDIT-186). An empty string means "unknown source".
+			var srcIP string
+			if remoteAddr != nil {
+				srcIP = remoteAddr.IP.String()
+			}
+			r.parseSFlowDatagramFromSource(buf[:n], srcIP)
 		}
 	}
 	return nil
@@ -297,7 +305,18 @@ func readUint64(data []byte, offset *int) (uint64, bool) {
 	return v, true
 }
 
+// parseSFlowDatagram parses a datagram whose UDP source is unknown. It is the
+// back-compat entry point (the test suite drives the parser directly through
+// it); the live receive path calls parseSFlowDatagramFromSource so the UDP
+// source can be bound to attribution (AUDIT-186).
 func (r *SFlowReceiver) parseSFlowDatagram(data []byte) {
+	r.parseSFlowDatagramFromSource(data, "")
+}
+
+// parseSFlowDatagramFromSource parses a datagram and stamps srcIP (the real UDP
+// source address) onto every emitted flow/counter sample so the collector's
+// source-attribution binding can compare it against the in-band agent_address.
+func (r *SFlowReceiver) parseSFlowDatagramFromSource(data []byte, srcIP string) {
 	if r.handler == nil {
 		return
 	}
@@ -378,10 +397,10 @@ func (r *SFlowReceiver) parseSFlowDatagram(data []byte) {
 
 		if enterprise == 0 && (format == 1 || format == 3) {
 			// Flow sample (format=1) or expanded flow sample (format=3)
-			r.parseFlowSample(data, &offset, format, sampleEnd, agentAddr, dgSequence, now)
+			r.parseFlowSample(data, &offset, format, sampleEnd, agentAddr, srcIP, dgSequence, now)
 		} else if enterprise == 0 && (format == 2 || format == 4) {
 			// Counters sample (format=2) or expanded (format=4)
-			r.parseCountersSample(data, &offset, format, sampleEnd, agentAddr, now)
+			r.parseCountersSample(data, &offset, format, sampleEnd, agentAddr, srcIP, now)
 		}
 
 		// Skip to end of this sample regardless
@@ -389,7 +408,7 @@ func (r *SFlowReceiver) parseSFlowDatagram(data []byte) {
 	}
 }
 
-func (r *SFlowReceiver) parseFlowSample(data []byte, offset *int, format uint32, sampleEnd int, agentAddr string, dgSequence uint32, now time.Time) {
+func (r *SFlowReceiver) parseFlowSample(data []byte, offset *int, format uint32, sampleEnd int, agentAddr, srcIP string, dgSequence uint32, now time.Time) {
 	// Flow sample header: per-source sample sequence number (read to advance
 	// the offset; per-datagram dgSequence is what we relay).
 	if _, ok := readUint32(data, offset); !ok {
@@ -469,6 +488,7 @@ func (r *SFlowReceiver) parseFlowSample(data []byte, offset *int, format uint32,
 	sample := &relay.FlowSample{
 		Timestamp:      now,
 		SamplerAddress: agentAddr,
+		SourceIP:       srcIP,
 		SequenceNumber: dgSequence,
 		SamplingRate:   samplingRate,
 		InputIfIndex:   inputIfIndex,
@@ -653,7 +673,7 @@ func parseExtendedGateway(data []byte, offset *int, recEnd int, sample *relay.Fl
 // counter handler. Header: sequence_number(4) + source_id + num_records(4). In
 // format 2 source_id is one word ((type<<24)|index); in format 4 it is two
 // words (type, index). All reads are bounded; num_records is capped.
-func (r *SFlowReceiver) parseCountersSample(data []byte, offset *int, format uint32, sampleEnd int, agentAddr string, now time.Time) {
+func (r *SFlowReceiver) parseCountersSample(data []byte, offset *int, format uint32, sampleEnd int, agentAddr, srcIP string, now time.Time) {
 	if r.counterHandler == nil {
 		return
 	}
@@ -706,7 +726,7 @@ func (r *SFlowReceiver) parseCountersSample(data []byte, offset *int, format uin
 			// 64-bit octet counters (fake multi-exabyte spikes) — audit L9.
 			rec := data[*offset:recEnd]
 			recOff := 0
-			parseIfCounters(rec, &recOff, ifIndex, agentAddr, now, r.counterHandler)
+			parseIfCounters(rec, &recOff, ifIndex, agentAddr, srcIP, now, r.counterHandler)
 		}
 		*offset = recEnd
 	}
@@ -723,8 +743,8 @@ func (r *SFlowReceiver) parseCountersSample(data []byte, offset *int, format uin
 // ifInDiscards(4) ifInErrors(4) ifInUnknownProtos(4)
 // ifOutOctets(8) ifOutUcastPkts(4) ifOutMulticastPkts(4) ifOutBroadcastPkts(4)
 // ifOutDiscards(4) ifOutErrors(4) ifPromiscuousMode(4).
-func parseIfCounters(data []byte, offset *int, fallbackIfIndex uint32, agentAddr string, now time.Time, emit func(*relay.InterfaceCounterSample)) {
-	cs := &relay.InterfaceCounterSample{Timestamp: now, SamplerAddress: agentAddr}
+func parseIfCounters(data []byte, offset *int, fallbackIfIndex uint32, agentAddr, srcIP string, now time.Time, emit func(*relay.InterfaceCounterSample)) {
+	cs := &relay.InterfaceCounterSample{Timestamp: now, SamplerAddress: agentAddr, SourceIP: srcIP}
 
 	ifIndex, ok := readUint32(data, offset)
 	if !ok {

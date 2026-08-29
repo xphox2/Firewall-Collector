@@ -98,6 +98,20 @@ type ProbeConfig struct {
 	// pairs, e.g. "192.0.2.1=1000,2001:db8::1=512". Default empty = none.
 	NetFlowSamplingOverrides map[string]uint32
 
+	// StrictSourceBinding controls source-attribution binding for the sFlow
+	// and TFTP ingestion paths (AUDIT-186/187). sFlow attributes a sample by
+	// the in-band agent_address and TFTP by the WRQ filename — neither is the
+	// UDP sender. When the UDP source resolves to a KNOWN monitored device that
+	// DISAGREES with the claimed identity, that is the detectable intra-fleet
+	// forgery (an allowlisted device X impersonating device Y):
+	//   true  (default, STRICT) — reject the sample/upload.
+	//   false (WARN)            — log the mismatch but still attribute by claim.
+	// When the UDP source is UNRESOLVABLE (multi-homed FortiGate sFlow whose
+	// egress IP isn't cached, or a NAT'd/jump-host TFTP upload) the binding
+	// cannot be enforced, so both modes warn and fall back to the claim rather
+	// than drop a legitimate device. Set via PROBE_STRICT_SOURCE_BINDING.
+	StrictSourceBinding bool
+
 	// FlowDedupPolicy prevents dual-export double counting when a device
 	// sends BOTH sFlow and NetFlow (FortiGate/VyOS can): prefer-netflow
 	// (default — NetFlow is complete session accounting and Fortinet itself
@@ -182,6 +196,11 @@ func Load() (*Config, error) {
 			NetFlowRateLimitGlobalPPS: parseInt("PROBE_NETFLOW_RATE_LIMIT_GLOBAL_PPS", 30000),
 
 			NetFlowSamplingOverrides: parseSamplingOverrides("PROBE_NETFLOW_SAMPLING_OVERRIDES"),
+
+			// STRICT by default (reject a known-source-vs-claim mismatch). An
+			// operator can downgrade to warn-only if a deployment surfaces a
+			// false positive: PROBE_STRICT_SOURCE_BINDING=off.
+			StrictSourceBinding: parseBool("PROBE_STRICT_SOURCE_BINDING", true),
 
 			FlowDedupPolicy: GetEnv("PROBE_FLOW_DEDUP", "prefer-netflow"),
 		},
