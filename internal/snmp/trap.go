@@ -1,6 +1,7 @@
 package snmp
 
 import (
+	"crypto/subtle"
 	"fmt"
 	"log"
 	"net"
@@ -111,7 +112,11 @@ func (t *TrapReceiver) allowCommunity(community, srcIP string) bool {
 	if t.community == "" {
 		return true // filtering disabled — no community configured (accept any)
 	}
-	if community != t.community {
+	// AUDIT-317: constant-time compare for the shared-secret community, matching
+	// the server twin (AUDIT-012). The timing channel is ~nil over one-way UDP,
+	// but this closes the hygiene/parity gap. Empty-community-means-open is
+	// preserved by the early return above.
+	if subtle.ConstantTimeCompare([]byte(community), []byte(t.community)) != 1 {
 		// The configured community is a shared secret used to authenticate the
 		// trap, and the supplied value is attacker-controlled — neither is logged
 		// (2026-06-23 audit, H-trap). Log only the source IP, which is the useful
@@ -174,8 +179,17 @@ func (t *TrapReceiver) parseTrap(packet *gosnmp.SnmpPacket, addr *net.UDPAddr) *
 			trap.TrapType = "GENERIC"
 			trap.Severity = "info"
 		} else {
-			log.Printf("[SNMP Trap] Unrecognized trap from %s, varbinds:", addr.IP)
-			for _, v := range packet.Variables {
+			// AUDIT-216: cap the per-varbind dump. A crafted trap can carry
+			// thousands of varbinds; logging one line each floods the log from a
+			// single unauthenticated UDP packet. Log a bounded prefix plus a
+			// "+N more" summary so the count is still visible.
+			const maxVarbindLog = 16
+			log.Printf("[SNMP Trap] Unrecognized trap from %s (%d varbinds):", addr.IP, len(packet.Variables))
+			for i, v := range packet.Variables {
+				if i >= maxVarbindLog {
+					log.Printf("[SNMP Trap]   ... +%d more varbinds", len(packet.Variables)-maxVarbindLog)
+					break
+				}
 				log.Printf("[SNMP Trap]   OID=%s Type=%d", v.Name, v.Type)
 			}
 			return nil

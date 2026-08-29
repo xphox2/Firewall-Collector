@@ -1,9 +1,65 @@
 package config
 
 import (
+	"bytes"
+	"log"
 	"os"
+	"strings"
 	"testing"
 )
+
+// TestParseBool_CaseInsensitiveAndDefault_AUDIT263 pins the hardened parseBool:
+// the true/false sets are matched case-insensitively (and trimmed), a value
+// matching NEITHER set falls back to defaultVal WITH a warning, and an empty
+// value returns defaultVal silently. Before the fix the compare was
+// case-sensitive and anything but "true"/"1"/"yes" read as false — so
+// "PROBE_SYSLOG_ENABLED: True" silently disabled a listener that defaults on.
+func TestParseBool_CaseInsensitiveAndDefault_AUDIT263(t *testing.T) {
+	const key = "PROBE_TEST_BOOL_AUDIT263"
+	defer os.Unsetenv(key)
+
+	for _, v := range []string{"true", "TRUE", "True", "1", "yes", "YES", "Yes", "  true  "} {
+		os.Setenv(key, v)
+		if !parseBool(key, false) {
+			t.Errorf("parseBool(%q) = false, want true", v)
+		}
+	}
+	for _, v := range []string{"false", "FALSE", "False", "0", "no", "NO"} {
+		os.Setenv(key, v)
+		if parseBool(key, true) {
+			t.Errorf("parseBool(%q) = true, want false", v)
+		}
+	}
+
+	// Garbage falls back to defaultVal in BOTH directions.
+	os.Setenv(key, "maybe")
+	if !parseBool(key, true) {
+		t.Errorf("garbage value should fall back to default true")
+	}
+	if parseBool(key, false) {
+		t.Errorf("garbage value should fall back to default false")
+	}
+
+	// ...and warns.
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	os.Setenv(key, "maybe")
+	_ = parseBool(key, true)
+	log.SetOutput(prev)
+	if !strings.Contains(buf.String(), "unrecognized boolean") {
+		t.Errorf("expected a warning for a garbage boolean, got: %q", buf.String())
+	}
+
+	// Empty (unset) → default, silently.
+	os.Unsetenv(key)
+	if !parseBool(key, true) {
+		t.Errorf("unset should return default true")
+	}
+	if parseBool(key, false) {
+		t.Errorf("unset should return default false")
+	}
+}
 
 var envKeys = []string{
 	"PROBE_REGISTRATION_KEY",

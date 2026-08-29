@@ -104,11 +104,27 @@ func (r *NetFlowReceiver) parseV9TemplateSet(body []byte, key exporterKey, now t
 			return
 		}
 		fields := make([]templateField, fieldCount)
+		varlen := false
 		for i := 0; i < fieldCount; i++ {
 			fields[i] = templateField{
 				Type:   binary.BigEndian.Uint16(rem[4+i*4 : 6+i*4]),
 				Length: binary.BigEndian.Uint16(rem[6+i*4 : 8+i*4]),
 			}
+			if fields[i].Length == varlenFieldLen {
+				varlen = true
+			}
+		}
+		// AUDIT-284: v9/NetFlow has no variable-length fields (RFC 3954) — the
+		// 0xFFFF sentinel is IPFIX-only. put() exempts 0xFFFF from its
+		// field-width cap for legitimate IPFIX varlen IEs, so a v9 template
+		// carrying it would slip past registration and decodeDataRecord would
+		// read it as a 1-byte varlen length prefix, desyncing every field
+		// offset for that exporter. Quarantine this template (skip the put) but
+		// keep parsing sibling templates in the set.
+		if varlen {
+			r.emitParseEvent(eventMalformed)
+			rem = rem[need:]
+			continue
 		}
 		if reason := r.caches.templates.put(templateKey{key, tid}, fields, 0, false, now); reason != putOK {
 			r.emitParseEvent(reason)
@@ -144,11 +160,23 @@ func (r *NetFlowReceiver) parseV9OptionsTemplateSet(body []byte, key exporterKey
 		scopeCount := scopeLen / 4
 		total := scopeCount + optionLen/4
 		fields := make([]templateField, total)
+		varlen := false
 		for i := 0; i < total; i++ {
 			fields[i] = templateField{
 				Type:   binary.BigEndian.Uint16(rem[6+i*4 : 8+i*4]),
 				Length: binary.BigEndian.Uint16(rem[8+i*4 : 10+i*4]),
 			}
+			if fields[i].Length == varlenFieldLen {
+				varlen = true
+			}
+		}
+		// AUDIT-284: as with v9 data templates, a 0xFFFF field length has no
+		// meaning in v9 (no varlen fields) and would desync record decoding —
+		// quarantine this options template but keep parsing the rest of the set.
+		if varlen {
+			r.emitParseEvent(eventMalformed)
+			rem = rem[need:]
+			continue
 		}
 		if reason := r.caches.templates.put(templateKey{key, tid}, fields, scopeCount, true, now); reason != putOK {
 			r.emitParseEvent(reason)

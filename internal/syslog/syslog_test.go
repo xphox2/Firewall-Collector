@@ -3,14 +3,83 @@ package syslog
 import (
 	"bytes"
 	"fmt"
+	"log"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"firewall-collector/internal/relay"
 )
+
+// syncBuf is a goroutine-safe log sink: the UDP readLoop writes to the global
+// logger from its own goroutine, so a plain bytes.Buffer would race under -race.
+type syncBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// TestUDPSyslogReceiver_MalformedNotLogged_AUDIT305 drives the real UDP path
+// with a malformed datagram and asserts it is COUNTED (ParseErrors) but not
+// logged per-datagram — the TCP path's M16 posture. Before the fix the UDP
+// path did log.Printf("[Syslog UDP] Parse error…") on every malformed datagram,
+// a log-flood vector from any unauthenticated host. On a reverted fix the
+// "Parse error" line reappears in the captured log and this fails.
+func TestUDPSyslogReceiver_MalformedNotLogged_AUDIT305(t *testing.T) {
+	probe, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("probe port: %v", err)
+	}
+	port := probe.LocalAddr().(*net.UDPAddr).Port
+	_ = probe.Close()
+
+	var sb syncBuf
+	prev := log.Writer()
+	log.SetOutput(&sb)
+	defer log.SetOutput(prev)
+
+	r := NewUDPSyslogReceiver("127.0.0.1", port)
+	if err := r.Start(func(*relay.SyslogMessage) {}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer r.Stop()
+
+	conn, err := net.Dial("udp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	// "only-one-part" is rejected by ParseRFC5424 (too few parts).
+	if _, err := conn.Write([]byte("only-one-part")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for r.ParseErrors() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if r.ParseErrors() == 0 {
+		t.Fatal("malformed datagram did not increment ParseErrors() (AUDIT-305)")
+	}
+	if got := sb.String(); strings.Contains(got, "Parse error") {
+		t.Errorf("malformed UDP datagram emitted a per-datagram log line (AUDIT-305): %q", got)
+	}
+}
 
 // TestUDPSyslogReceiver_MultiWorkerReceive exercises the real Start → UDP →
 // readLoop → Stop path with SetWorkers(2): two SO_REUSEPORT sockets on Linux,

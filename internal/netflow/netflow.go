@@ -287,9 +287,9 @@ func (r *NetFlowReceiver) Stop() error {
 }
 
 // maintenanceLoop sweeps expired templates (plus the sampler entries they
-// orphan — see cacheSet.sweep) and persists the caches every
-// cachePersistInterval until Stop. Sweep-then-save order matters: evicted
-// entries must not ride into the cache file.
+// orphan — see cacheSet.sweep) and idle sequence-tracker states, then persists
+// the caches every cachePersistInterval until Stop. Sweep-then-save order
+// matters: evicted entries must not ride into the cache file.
 func (r *NetFlowReceiver) maintenanceLoop() {
 	defer r.wg.Done()
 	ticker := time.NewTicker(cachePersistInterval)
@@ -297,7 +297,12 @@ func (r *NetFlowReceiver) maintenanceLoop() {
 	for {
 		select {
 		case <-ticker.C:
-			r.caches.sweep(time.Now())
+			now := time.Now()
+			r.caches.sweep(now)
+			// AUDIT-283: the sequence tracker is not part of r.caches, so wire
+			// its idle sweep into the same ticker to evict stale spaces and free
+			// cap for live exporters.
+			r.seq.sweep(now)
 			if r.persistPath != "" {
 				if err := r.caches.SaveTo(r.persistPath); err != nil {
 					log.Printf("[NetFlow] periodic template cache save failed: %v", err)

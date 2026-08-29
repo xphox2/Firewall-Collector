@@ -359,6 +359,134 @@ func TestTFTPHandleWRQ_RateLimitDisabledByDefault(t *testing.T) {
 		atomic.LoadInt32(&hitCount))
 }
 
+// TestTFTPHandleRRQ_SourceIPBlocked is the AUDIT-307 read-path allowlist test.
+// handleRRQ gained the SAME allowlist guard handleWRQ has: an RRQ from a source
+// IP not in the allowlist must be refused before the read handler runs. Before
+// the fix the read path had no source check at all.
+func TestTFTPHandleRRQ_SourceIPBlocked(t *testing.T) {
+	server := NewServer(&Config{Addr: "127.0.0.1:0", Timeout: 1 * time.Second})
+	if err := server.ListenAndServe(); err != nil {
+		t.Fatalf("ListenAndServe: %v", err)
+	}
+	defer server.Shutdown()
+
+	var handlerCalled int32
+	server.SetHandler(func(filename string, addr net.Addr) ([]byte, error) {
+		atomic.StoreInt32(&handlerCalled, 1)
+		return []byte("data"), nil
+	})
+	// RFC 5737 TEST-NET-1 — never matches a real loopback peer.
+	server.SetAllowedSourceIPs([]string{"192.0.2.1"})
+
+	serverAddr := server.conn.LocalAddr().(*net.UDPAddr)
+	clientConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP: %v", err)
+	}
+	defer clientConn.Close()
+
+	if _, err := clientConn.WriteToUDP(buildRRQ("fgt_42_config"), serverAddr); err != nil {
+		t.Fatalf("write RRQ: %v", err)
+	}
+
+	clientConn.SetReadDeadline(time.Now().Add(1 * time.Second))
+	buf := make([]byte, 256)
+	if n, sender, err := clientConn.ReadFromUDP(buf); err == nil && n >= 4 {
+		opcode := uint16(buf[0])<<8 | uint16(buf[1])
+		if opcode == opDATA || opcode == opACK {
+			t.Fatal("server served a blocked source IP on the read path — allowlist bypassed")
+		}
+		if opcode != opERROR {
+			t.Fatalf("expected ERROR (opcode 5), got opcode %d", opcode)
+		}
+		// The denial must come from the listen socket — no session was allocated.
+		if sender.Port != serverAddr.Port {
+			t.Errorf("expected reply from listen port %d, got %d", serverAddr.Port, sender.Port)
+		}
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	if atomic.LoadInt32(&handlerCalled) != 0 {
+		t.Fatal("read handler was invoked for a blocked source IP (AUDIT-307)")
+	}
+}
+
+// TestTFTPHandleRRQ_RateLimitRefused is the AUDIT-307 read-path rate-limit
+// test: after one accepted RRQ from a source IP, a second RRQ from the same IP
+// within minWRQInterval is refused, and the read handler runs only once.
+func TestTFTPHandleRRQ_RateLimitRefused(t *testing.T) {
+	server := NewServer(&Config{Addr: "127.0.0.1:0", Timeout: 1 * time.Second})
+	if err := server.ListenAndServe(); err != nil {
+		t.Fatalf("ListenAndServe: %v", err)
+	}
+	defer server.Shutdown()
+
+	var hitCount int32
+	server.SetHandler(func(filename string, addr net.Addr) ([]byte, error) {
+		atomic.AddInt32(&hitCount, 1)
+		return []byte("x"), nil
+	})
+	server.SetMinWRQInterval(60 * time.Second)
+
+	serverAddr := server.conn.LocalAddr().(*net.UDPAddr)
+
+	// RRQ #1 — accepted: the read handler runs and DATA block 1 is streamed from
+	// a fresh ephemeral TID. ACK it so the send loop completes cleanly.
+	client1, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("client1 ListenUDP: %v", err)
+	}
+	defer client1.Close()
+
+	if _, err := client1.WriteToUDP(buildRRQ("fgt_42_config"), serverAddr); err != nil {
+		t.Fatalf("RRQ #1 write: %v", err)
+	}
+	client1.SetReadDeadline(time.Now().Add(1 * time.Second))
+	buf := make([]byte, 600)
+	n, sender1, err := client1.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("RRQ #1: expected DATA, got err: %v", err)
+	}
+	if opcode := uint16(buf[0])<<8 | uint16(buf[1]); opcode != opDATA {
+		t.Fatalf("RRQ #1: expected DATA opcode, got %d", opcode)
+	}
+	if sender1.Port == serverAddr.Port {
+		t.Fatalf("RRQ #1: DATA should come from an ephemeral TID, not the listen port")
+	}
+	_ = n
+	// ACK block 1 so the transfer completes.
+	_, _ = client1.WriteToUDP([]byte{0, byte(opACK), 0, 1}, sender1)
+
+	// RRQ #2 from a different ephemeral port (same source IP) within the window.
+	client2, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("client2 ListenUDP: %v", err)
+	}
+	defer client2.Close()
+
+	if _, err := client2.WriteToUDP(buildRRQ("fgt_42_config"), serverAddr); err != nil {
+		t.Fatalf("RRQ #2 write: %v", err)
+	}
+	client2.SetReadDeadline(time.Now().Add(1 * time.Second))
+	if n, sender2, err := client2.ReadFromUDP(buf); err == nil && n >= 4 {
+		opcode := uint16(buf[0])<<8 | uint16(buf[1])
+		if opcode == opDATA {
+			t.Fatal("RRQ #2: server served DATA despite rate limit")
+		}
+		if opcode != opERROR {
+			t.Errorf("RRQ #2: expected ERROR (opcode 5), got %d", opcode)
+		}
+		if sender2.Port != serverAddr.Port {
+			t.Errorf("RRQ #2: rate-limit denial should come from the listen socket, got port %d", sender2.Port)
+		}
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	if got := atomic.LoadInt32(&hitCount); got != 1 {
+		t.Errorf("read handler ran %d times, want 1 (RRQ #2 must be rate-limited)", got)
+	}
+}
+
 // TestTFTPSetAllowedSourceIPs_NormalizesIPv4Mapped exercises the
 // net.ParseIP(...).String() normalization that lets callers pass either
 // dotted-quad or IPv4-mapped IPv6 forms.

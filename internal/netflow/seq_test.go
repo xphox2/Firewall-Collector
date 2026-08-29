@@ -146,6 +146,56 @@ func TestSeqTracker_StateCap(t *testing.T) {
 	}
 }
 
+// TestSeqTracker_IdleSweepEvicts_AUDIT283: the idle sweep evicts stale spaces
+// so a burst of one-shot forged (IP, domain) pairs cannot pin the map at
+// maxSeqStates forever — which would refuse tracking (and disable gap
+// detection) for every real exporter that arrives afterward. After the map is
+// full, a new space is refused; after a sweep with an advanced clock, all
+// stale states are evicted and the new space is accepted again.
+func TestSeqTracker_IdleSweepEvicts_AUDIT283(t *testing.T) {
+	tr := newSeqTracker()
+	for i := 0; i < maxSeqStates; i++ {
+		tr.observe(seqKey{fmt.Sprintf("10.0.%d.%d", i/256, i%256), 0, 9}, 1, 1, 0, true, true)
+	}
+	if len(tr.states) != maxSeqStates {
+		t.Fatalf("precondition: states=%d, want %d", len(tr.states), maxSeqStates)
+	}
+
+	// While the map is pinned at the cap, a brand-new space is refused (untracked).
+	tr.observe(seqKey{"192.0.2.99", 0, 9}, 1, 1, 0, true, true)
+	if len(tr.states) != maxSeqStates {
+		t.Fatalf("new space accepted before sweep: states=%d, want %d", len(tr.states), maxSeqStates)
+	}
+
+	// Sweep with a clock advanced past the TTL evicts every idle space.
+	removed := tr.sweep(time.Now().Add(seqStateTTL + time.Minute))
+	if removed != maxSeqStates {
+		t.Fatalf("sweep removed %d states, want %d", removed, maxSeqStates)
+	}
+	if len(tr.states) != 0 {
+		t.Fatalf("states after sweep = %d, want 0", len(tr.states))
+	}
+
+	// Cap freed → gap detection re-arms: a new real space is tracked again.
+	tr.observe(seqKey{"192.0.2.99", 0, 9}, 1, 1, 0, true, true)
+	if len(tr.states) != 1 {
+		t.Fatalf("states after post-sweep observe = %d, want 1 (tracking re-armed)", len(tr.states))
+	}
+}
+
+// TestSeqTracker_SweepKeepsFreshStates: the sweep must NOT evict a space seen
+// within the TTL (a live exporter's state survives maintenance sweeps).
+func TestSeqTracker_SweepKeepsFreshStates(t *testing.T) {
+	tr := newSeqTracker()
+	tr.observe(seqKey{"192.0.2.1", 0, 9}, 1, 1, 0, true, true)
+	if removed := tr.sweep(time.Now()); removed != 0 {
+		t.Fatalf("sweep evicted a fresh state: removed=%d, want 0", removed)
+	}
+	if len(tr.states) != 1 {
+		t.Fatalf("fresh state count=%d, want 1", len(tr.states))
+	}
+}
+
 // TestParseV9_SeqGapEndToEnd wires the tracker through the real v9 parser:
 // consecutive datagrams are silent, a skipped packet fires seq_gap, and the
 // gap never touches FlowSample.Drops.

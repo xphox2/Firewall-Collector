@@ -107,6 +107,14 @@ func (r *NetFlowReceiver) parseIPFIX(data []byte, exporterIP string, now time.Ti
 // a 4-byte PEN when the enterprise bit is set) from rem and returns the
 // parsed fields with the bytes consumed, or ok=false on truncation.
 func parseIPFIXFieldSpecs(rem []byte, off, count int) ([]templateField, int, bool) {
+	// AUDIT-282: bound the wire-declared field count by the bytes actually
+	// remaining BEFORE the make. Each field specifier is at least 4 bytes
+	// (type+length; enterprise fields are larger), so a count that cannot fit
+	// in rem is a lie — a fieldCount of 0xFFFF from a ~24-byte datagram would
+	// otherwise force a ~512 KB allocation. Mirrors the v9 `need` check.
+	if count < 0 || off > len(rem) || count > (len(rem)-off)/4 {
+		return nil, 0, false
+	}
 	fields := make([]templateField, 0, count)
 	for i := 0; i < count; i++ {
 		if off+4 > len(rem) {

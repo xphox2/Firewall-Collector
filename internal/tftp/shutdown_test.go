@@ -1,9 +1,61 @@
 package tftp
 
 import (
+	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// TestServer_Shutdown_WaitsForRealWriteHandler drives the REAL handleWRQ path
+// (a full WRQ transfer) with a slow write handler and asserts Shutdown blocks
+// until that in-flight handler finishes. AUDIT-306: handleWRQ spawned the
+// writeHandler callback (SendConfigRevision in prod) in a goroutine WITHOUT
+// s.wg.Add(1), so Shutdown's s.wg.Wait() could return while a config revision
+// was still being sent — losing it on shutdown. The handler sleeps longer than
+// serve()'s 1s read-deadline exit latency, so on a reverted fix Shutdown
+// returns (after serve exits) before the handler completes and this fails.
+func TestServer_Shutdown_WaitsForRealWriteHandler(t *testing.T) {
+	s := NewServer(&Config{Addr: "127.0.0.1:0", Timeout: 2 * time.Second})
+	if err := s.ListenAndServe(); err != nil {
+		t.Fatalf("ListenAndServe: %v", err)
+	}
+
+	handlerStarted := make(chan struct{})
+	var handlerCompleted atomic.Bool
+	s.SetWriteHandler(func(filename string, data []byte, addr net.Addr) error {
+		close(handlerStarted)
+		time.Sleep(2 * time.Second) // slow callback: config revision in flight
+		handlerCompleted.Store(true)
+		return nil
+	})
+
+	serverAddr := s.conn.LocalAddr().(*net.UDPAddr)
+	if err := runWRQ(t, serverAddr, "fgt_42_config", []byte("hello world")); err != nil {
+		t.Fatalf("runWRQ: %v", err)
+	}
+
+	select {
+	case <-handlerStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("write handler never started after a completed WRQ")
+	}
+
+	shutdownReturned := make(chan struct{})
+	go func() {
+		_ = s.Shutdown()
+		close(shutdownReturned)
+	}()
+
+	select {
+	case <-shutdownReturned:
+		if !handlerCompleted.Load() {
+			t.Fatal("Shutdown returned before the in-flight writeHandler completed (AUDIT-306: inner goroutine not tracked on s.wg)")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Shutdown did not return")
+	}
+}
 
 // TestServer_Shutdown_WaitsForInFlightHandler verifies that Shutdown
 // blocks while a tracked handler is in flight, then returns once the
