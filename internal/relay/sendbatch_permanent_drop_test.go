@@ -20,6 +20,7 @@ func TestSendBatch_PermanentVsTransient(t *testing.T) {
 	}{
 		{"2xx delivered", http.StatusOK, true, false},
 		{"400 permanent", http.StatusBadRequest, false, true},
+		{"413 permanent", http.StatusRequestEntityTooLarge, false, true}, // AUDIT-287
 		{"422 permanent", http.StatusUnprocessableEntity, false, true},
 		{"409 permanent", http.StatusConflict, false, true},
 		{"500 transient", http.StatusInternalServerError, false, false},

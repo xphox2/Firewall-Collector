@@ -12,6 +12,7 @@ package queue
 import (
 	"encoding/binary"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -48,19 +49,22 @@ type Config struct {
 	SyncInterval time.Duration
 }
 
-// SpilloverQueue is a two-tier FIFO queue backed by an in-memory slice and
-// a BoltDB bucket. It is safe for concurrent use.
+// SpilloverQueue is a FIFO queue backed by an in-memory slice and a BoltDB
+// bucket, plus a bounded in-memory FRONT tier for head-requeues (AUDIT-175).
+// It is safe for concurrent use.
 //
-// Ordering: items always flow from oldest (head) to newest (tail). The
-// in-memory slice holds the newest MaxMem items; the BoltDB bucket holds
-// the older items that overflowed. Drain reads from the head (disk first,
-// then memory), so the combined store is a strict FIFO regardless of which
-// tier an item lives in.
+// Ordering: items always flow from oldest (head) to newest (tail). The front
+// tier (populated only by PushFront) holds items that were drained but could
+// not be delivered and must be retried FIRST; the BoltDB bucket holds older
+// overflow items; the in-memory slice holds the newest MaxMem items. Drain
+// reads from the head (front tier first, then disk, then memory), so the
+// combined store is a strict FIFO regardless of which tier an item lives in.
 type SpilloverQueue struct {
 	mu           sync.Mutex
 	cfg          Config
 	db           *bolt.DB
 	bucket       []byte
+	front        [][]byte // head-requeue tier (AUDIT-175), drained before disk
 	inMem        [][]byte
 	diskSize     int64
 	dropped      uint64
@@ -263,23 +267,80 @@ func (q *SpilloverQueue) replay() error {
 	return nil
 }
 
-// Push appends an item to the queue. If the in-memory slice would
-// exceed MaxMem, the oldest item is moved to disk. If the on-disk store
-// is at the byte cap, the oldest item on disk is evicted first (and
+// Push appends an item to the queue. If the in-memory tiers (front + tail)
+// would exceed MaxMem, the oldest tail item is moved to disk. If the on-disk
+// store is at the byte cap, the oldest item on disk is evicted first (and
 // counted as Dropped).
 func (q *SpilloverQueue) Push(item []byte) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	return q.pushLocked(item)
+}
 
+// pushLocked is Push's body; the caller holds q.mu (PushFront's overflow
+// fallback reuses it without re-locking).
+func (q *SpilloverQueue) pushLocked(item []byte) error {
 	q.inMem = append(q.inMem, item)
-	if len(q.inMem) <= q.cfg.MaxMem {
+	if len(q.front)+len(q.inMem) <= q.cfg.MaxMem {
 		return nil
 	}
 
-	// Overflow: move oldest from in-memory to disk.
+	// Overflow: move oldest from the in-memory tail to disk. The front tier is
+	// never spilled here — its items are the queue's HEAD and spilling them
+	// behind the existing disk tier would reorder them.
 	evicted := q.inMem[0]
 	q.inMem = q.inMem[1:]
 	return q.appendToDisk(evicted)
+}
+
+// PushFront prepends a whole ordered run of items to the queue's HEAD
+// (AUDIT-175: the relay's head-requeue after a transient send failure). The
+// run is drained again before everything else, in the given order, so the
+// next drain re-chunks from index 0 and a FULL-SIZE failed chunk replays
+// byte-identically — preserving the M19 content-derived idempotency key the
+// server dedupes on (AUDIT-213/214). That narrows the duplicate window, it
+// does not close it: a partial final chunk that gains newly-arrived
+// neighbors on the next drain, the overflow split below, or a restart
+// (see Close) can still regroup a batch under a fresh key. Total in-memory
+// items (front + tail) stay bounded by MaxMem: on overflow the tail of the
+// run falls back to a normal tail Push (spilling to disk as usual) and the
+// split is logged once — order for those overflow items is approximate,
+// delivery is not.
+func (q *SpilloverQueue) PushFront(items [][]byte) error {
+	if len(items) == 0 {
+		return nil
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	room := q.cfg.MaxMem - len(q.front) - len(q.inMem)
+	if room < 0 {
+		room = 0
+	}
+	take := len(items)
+	if take > room {
+		take = room
+	}
+
+	if take > 0 {
+		// Prepend, preserving run order: the run is older (head-most) than any
+		// items already sitting in the front tier from a partial earlier drain.
+		merged := make([][]byte, 0, take+len(q.front))
+		merged = append(merged, items[:take]...)
+		merged = append(merged, q.front...)
+		q.front = merged
+	}
+
+	if take < len(items) {
+		log.Printf("[queue] PushFront overflow: %d of %d items exceeded the in-memory bound (%d); appending the remainder to the tail instead (delivered out of order, not lost)",
+			len(items)-take, len(items), q.cfg.MaxMem)
+		for _, item := range items[take:] {
+			if err := q.pushLocked(item); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // appendToDisk writes an item to BoltDB. If the disk is at the byte
@@ -334,9 +395,10 @@ func (q *SpilloverQueue) appendToDisk(item []byte) error {
 }
 
 // Drain returns up to n items, oldest first, and removes them from the
-// queue. Disk items (the older tier) are drained first; if more items
-// are requested than the disk holds, the remainder come from the
-// in-memory slice.
+// queue. The front tier (head-requeued runs, AUDIT-175) is drained first in
+// its preserved order, then disk items (the older overflow tier); if more
+// items are requested than those hold, the remainder come from the in-memory
+// tail slice.
 func (q *SpilloverQueue) Drain(n int) ([][]byte, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -348,6 +410,19 @@ func (q *SpilloverQueue) Drain(n int) ([][]byte, error) {
 	out := make([][]byte, 0, n)
 
 	need := n
+	// Front tier first — but its removal is COMMITTED only after the fallible
+	// disk transaction below succeeds. Stripping q.front before db.Update
+	// meant a bolt write failure (ENOSPC/IO — exactly the disk-pressure
+	// condition of a long outage) returned the error WITHOUT the stripped
+	// items, destroying up to a full drain of head-requeued data (review of
+	// AUDIT-175).
+	frontTake := need
+	if frontTake > len(q.front) {
+		frontTake = len(q.front)
+	}
+	out = append(out, q.front[:frontTake]...)
+	need -= frontTake
+
 	if err := q.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(q.bucket)
 		c := b.Cursor()
@@ -363,7 +438,16 @@ func (q *SpilloverQueue) Drain(n int) ([][]byte, error) {
 		}
 		return nil
 	}); err != nil {
+		// q.front is untouched (and the transaction rolled back its deletes):
+		// everything survives for the next drain.
 		return nil, err
+	}
+
+	if frontTake > 0 {
+		q.front = q.front[frontTake:]
+		if len(q.front) == 0 {
+			q.front = nil // release the backing array once fully drained
+		}
 	}
 
 	if need > 0 && len(q.inMem) > 0 {
@@ -378,11 +462,12 @@ func (q *SpilloverQueue) Drain(n int) ([][]byte, error) {
 	return out, nil
 }
 
-// Depth returns the number of items currently in the in-memory slice.
+// Depth returns the number of items currently held in memory: the front
+// (head-requeue) tier plus the in-memory tail slice.
 func (q *SpilloverQueue) Depth() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return len(q.inMem)
+	return len(q.front) + len(q.inMem)
 }
 
 // InMem returns a copy of the in-memory items in their current order
@@ -450,6 +535,15 @@ func (q *SpilloverQueue) Dropped() uint64 {
 // items until the next replay (which still works — the cold items
 // survive — but Flush makes the next process's view of the queue
 // complete).
+//
+// The front tier is flushed FIRST so the restart replay order approximates
+// front-first: front items land on disk before the tail items and therefore
+// drain before them. They still land AFTER whatever the disk tier already
+// holds, so a held (head-requeued) batch loses its exact head position across
+// a restart — and with it the byte-identical-replay guarantee for that ONE
+// batch, whose re-chunked replay may then carry a different idempotency key
+// and insert duplicates. That is the deliberate trade: duplicates for one
+// batch across a restart, never loss.
 func (q *SpilloverQueue) Close() error {
 	// M18: stop the background sync loop first so it can't race the final
 	// fsync/close below.
@@ -468,7 +562,11 @@ func (q *SpilloverQueue) Close() error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	mem := q.inMem
+	// Front first (see the doc comment above), then the tail.
+	mem := make([][]byte, 0, len(q.front)+len(q.inMem))
+	mem = append(mem, q.front...)
+	mem = append(mem, q.inMem...)
+	q.front = nil
 	q.inMem = nil
 
 	for _, item := range mem {
