@@ -295,13 +295,17 @@ func (q *SpilloverQueue) pushLocked(item []byte) error {
 
 // PushFront prepends a whole ordered run of items to the queue's HEAD
 // (AUDIT-175: the relay's head-requeue after a transient send failure). The
-// run is drained again before everything else, in the given order, so the next
-// drain re-chunks from index 0 and the failed batch replays byte-identically —
-// preserving the M19 content-derived idempotency key the server dedupes on
-// (AUDIT-213/214). Total in-memory items (front + tail) stay bounded by
-// MaxMem: on overflow the tail of the run falls back to a normal tail Push
-// (spilling to disk as usual) and the split is logged once — order for those
-// overflow items is approximate, delivery is not.
+// run is drained again before everything else, in the given order, so the
+// next drain re-chunks from index 0 and a FULL-SIZE failed chunk replays
+// byte-identically — preserving the M19 content-derived idempotency key the
+// server dedupes on (AUDIT-213/214). That narrows the duplicate window, it
+// does not close it: a partial final chunk that gains newly-arrived
+// neighbors on the next drain, the overflow split below, or a restart
+// (see Close) can still regroup a batch under a fresh key. Total in-memory
+// items (front + tail) stay bounded by MaxMem: on overflow the tail of the
+// run falls back to a normal tail Push (spilling to disk as usual) and the
+// split is logged once — order for those overflow items is approximate,
+// delivery is not.
 func (q *SpilloverQueue) PushFront(items [][]byte) error {
 	if len(items) == 0 {
 		return nil
@@ -406,18 +410,19 @@ func (q *SpilloverQueue) Drain(n int) ([][]byte, error) {
 	out := make([][]byte, 0, n)
 
 	need := n
-	if len(q.front) > 0 {
-		take := need
-		if take > len(q.front) {
-			take = len(q.front)
-		}
-		out = append(out, q.front[:take]...)
-		q.front = q.front[take:]
-		if len(q.front) == 0 {
-			q.front = nil // release the backing array once fully drained
-		}
-		need -= take
+	// Front tier first — but its removal is COMMITTED only after the fallible
+	// disk transaction below succeeds. Stripping q.front before db.Update
+	// meant a bolt write failure (ENOSPC/IO — exactly the disk-pressure
+	// condition of a long outage) returned the error WITHOUT the stripped
+	// items, destroying up to a full drain of head-requeued data (review of
+	// AUDIT-175).
+	frontTake := need
+	if frontTake > len(q.front) {
+		frontTake = len(q.front)
 	}
+	out = append(out, q.front[:frontTake]...)
+	need -= frontTake
+
 	if err := q.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(q.bucket)
 		c := b.Cursor()
@@ -433,7 +438,16 @@ func (q *SpilloverQueue) Drain(n int) ([][]byte, error) {
 		}
 		return nil
 	}); err != nil {
+		// q.front is untouched (and the transaction rolled back its deletes):
+		// everything survives for the next drain.
 		return nil, err
+	}
+
+	if frontTake > 0 {
+		q.front = q.front[frontTake:]
+		if len(q.front) == 0 {
+			q.front = nil // release the backing array once fully drained
+		}
 	}
 
 	if need > 0 && len(q.inMem) > 0 {

@@ -2019,13 +2019,16 @@ func sendBatchesSequential[T any](c *Client, url, name string, items []*T, reque
 
 // requeueItems pushes a failed ordered run back onto the HEAD of its queue in
 // one PushFront call, so the next drain retries it FIRST and re-chunks from
-// index 0 — the failed chunk then replays byte-identically, keeping the M19
-// content-derived idempotency key stable across sync cycles so the server's
-// (probe_id, batch_id) dedup catches the replay (AUDIT-213/214: the old
-// item-at-a-time tail Push regrouped the items into a differently-keyed batch
-// the server could not dedup, re-inserting a committed-but-timed-out batch as
-// duplicates). noun labels the count in the disabled/full warnings; nounLong
-// labels the success line (e.g. "traps" vs "trap events").
+// index 0 — a full-size failed chunk then replays byte-identically, keeping
+// the M19 content-derived idempotency key stable across sync cycles so the
+// server's (probe_id, batch_id) dedup catches the replay (AUDIT-213/214: the
+// old item-at-a-time tail Push regrouped the items into a differently-keyed
+// batch the server could not dedup, re-inserting a committed-but-timed-out
+// batch as duplicates). The window is narrowed, not closed: a partial final
+// chunk that gains newly-arrived neighbors, a PushFront overflow split, or a
+// restart can still regroup one batch under a fresh key. noun labels the
+// count in the disabled/full warnings; nounLong labels the success line
+// (e.g. "traps" vs "trap events").
 func requeueItems[T any](q *queue.SpilloverQueue, items []*T, noun, nounLong string) {
 	if q == nil {
 		log.Printf("[Relay] WARNING: Could not requeue %d %s - queue disabled", len(items), noun)

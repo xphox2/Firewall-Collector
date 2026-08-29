@@ -10,7 +10,9 @@ import (
 )
 
 // Tests for the AUDIT-175 head-requeue + stop-drain fix and the AUDIT-213/214
-// idempotency-key regression it closes.
+// idempotency-key regression it narrows (full-size failed chunks replay
+// byte-identically; partial-chunk regroups, overflow splits, and restarts
+// remain the residual duplicate window).
 
 // TestDrainAndSend_TransientFailureStopsDrain_NothingLost pins AUDIT-175: when
 // the first chunk of a drain fails transiently (503 — server outage), the
@@ -72,12 +74,19 @@ func TestDrainAndSend_TransientFailureStopsDrain_NothingLost(t *testing.T) {
 }
 
 // TestRequeueRedrain_ReplaysIdenticalBatchID is the AUDIT-213/214 regression:
-// a transiently-failed chunk, requeued and re-drained on the next sync, must
-// replay with the IDENTICAL content-derived X-Probe-Batch-ID — even after new
-// items were pushed between syncs — so the server's (probe_id, batch_id) dedup
-// catches a committed-but-timed-out original. Pre-fix, the tail requeue
-// regrouped the items into differently-keyed batches the server could not
-// dedup, inserting every row twice.
+// a transiently-failed FULL-SIZE chunk, head-requeued and re-drained on the
+// next sync, must replay with the IDENTICAL content-derived X-Probe-Batch-ID
+// so the server's (probe_id, batch_id) dedup catches a committed-but-timed-out
+// original. The fixture seeds FIVE items with drainChunk 3, so two items are
+// still queued behind the failed chunk when the requeue lands: pre-fix, the
+// tail requeue put [a b c] BEHIND [d e] and the next drain regrouped them
+// ([d e a] + [b c]) under fresh keys the server could not dedup, inserting
+// every row twice. (With an empty queue at requeue time, even a tail push
+// happens to reproduce the original order, so that fixture cannot catch the
+// bug.) The guarantee pinned here is for full-size chunks — a partial final
+// chunk that gains newly-arrived neighbors, a memory-bound PushFront split,
+// or a restart can still regroup: the duplicate window is narrowed, not
+// closed.
 func TestRequeueRedrain_ReplaysIdenticalBatchID(t *testing.T) {
 	var down atomic.Bool
 	down.Store(true)
@@ -110,11 +119,12 @@ func TestRequeueRedrain_ReplaysIdenticalBatchID(t *testing.T) {
 		noun: "traps", nounLong: "trap events",
 	}
 
-	// Sync 1: one full chunk of 3 fails transiently and is head-requeued.
-	for _, m := range []string{"a", "b", "c"} {
+	// Seed 5 items; drainChunk 3. Sync 1 drains one full chunk [a b c] and
+	// fails it transiently — d and e are still queued when the requeue lands.
+	for _, m := range []string{"a", "b", "c", "d", "e"} {
 		c.SendTrap(&TrapEvent{Message: m})
 	}
-	drainAndSend(c, srv.URL+"/api/probes/42", 100, spec)
+	drainAndSend(c, srv.URL+"/api/probes/42", 3, spec)
 
 	mu.Lock()
 	if len(downIDs) == 0 {
@@ -130,15 +140,11 @@ func TestRequeueRedrain_ReplaysIdenticalBatchID(t *testing.T) {
 	}
 	mu.Unlock()
 
-	// Between syncs, new items arrive.
-	for _, m := range []string{"d", "e"} {
-		c.SendTrap(&TrapEvent{Message: m})
-	}
-
-	// Sync 2: server recovered. The head-requeued run re-chunks from index 0,
-	// so chunk 0 is again exactly [a b c] — byte-identical, identical key.
+	// Sync 2: server recovered. The head-requeued run drains FIRST and
+	// re-chunks from index 0, so chunk 0 is again exactly [a b c] —
+	// byte-identical, identical key — with [d e] following as its own batch.
 	down.Store(false)
-	drainAndSend(c, srv.URL+"/api/probes/42", 100, spec)
+	drainAndSend(c, srv.URL+"/api/probes/42", 3, spec)
 
 	mu.Lock()
 	defer mu.Unlock()

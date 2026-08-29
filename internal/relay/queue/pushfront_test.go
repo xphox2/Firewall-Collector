@@ -3,6 +3,7 @@ package queue
 import (
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // Tests for the AUDIT-175 front tier: PushFront prepends an ordered run to
@@ -117,6 +118,49 @@ func TestQueue_PushFront_OverflowFallsBackToTail(t *testing.T) {
 	}
 	if string(items[0]) != "a" {
 		t.Errorf("drained[0] = %q, want %q (the fitting prefix still holds the head)", items[0], "a")
+	}
+}
+
+// A failed disk transaction inside Drain must NOT destroy the front tier:
+// pre-fix, Drain stripped q.front before the fallible bolt write, so an
+// ENOSPC/IO failure (exactly the disk-pressure condition of a long outage)
+// returned an error with the head-requeued items already gone. The closed
+// bolt handle stands in for the erroring disk.
+func TestQueue_Drain_FrontSurvivesDiskError(t *testing.T) {
+	q, err := Open(Config{
+		Path:   filepath.Join(t.TempDir(), "fronterr.bolt"),
+		Bucket: "fronterr",
+		MaxMem: 10,
+		// Keep the background fsync loop away from the handle we close below.
+		SyncInterval: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = q.Close() })
+
+	if err := q.PushFront([][]byte{[]byte("a"), []byte("b")}); err != nil {
+		t.Fatalf("PushFront: %v", err)
+	}
+
+	// Force the drain's disk transaction to fail: close the bolt handle out
+	// from under the queue (bolt then returns "database not open" from Update).
+	if err := q.db.Close(); err != nil {
+		t.Fatalf("close bolt handle: %v", err)
+	}
+
+	if _, err := q.Drain(10); err == nil {
+		t.Fatal("Drain over a failed bolt handle must return an error")
+	}
+
+	q.mu.Lock()
+	frontLen := len(q.front)
+	q.mu.Unlock()
+	if frontLen != 2 {
+		t.Fatalf("front tier holds %d item(s) after the failed drain, want 2 (head-requeued items destroyed by the error path)", frontLen)
+	}
+	if got := q.Depth(); got != 2 {
+		t.Errorf("Depth = %d after the failed drain, want 2", got)
 	}
 }
 
