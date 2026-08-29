@@ -885,10 +885,11 @@ var (
 	sdwanUnknownStates   = map[int64]bool{}
 )
 
-// logUnknownSDWANState logs an unexpected fgVWLHealthCheckLinkState value once.
-// The 0→"alive" mapping has never executed against a real device — if the enum
-// polarity is actually 1-based (alive=1), the first real deployment will log
-// every alive link's state value here and tell us.
+// logUnknownSDWANState logs a fgVWLHealthCheckLinkState value outside the
+// assumed alive(0)/dead(1) enum once per value. The mapping has never executed
+// against a real device — a device speaking a different enum (e.g. a 1-based
+// alive(1)/dead(2)) would surface here as repeated value-2 logs on its dead
+// links, telling us the polarity.
 func logUnknownSDWANState(v int64) {
 	sdwanUnknownStatesMu.Lock()
 	defer sdwanUnknownStatesMu.Unlock()
@@ -896,7 +897,7 @@ func logUnknownSDWANState(v int64) {
 		return
 	}
 	sdwanUnknownStates[v] = true
-	log.Printf("[SNMP] fortigate SD-WAN health-check state value %d is outside the assumed enum (mapped to \"dead\") — capture `snmpwalk .1.3.6.1.4.1.12356.101.4.9` from this device to confirm the polarity and turn it into a fixture", v)
+	log.Printf("[SNMP] fortigate SD-WAN health-check state value %d is outside the assumed alive(0)/dead(1) enum (mapped to \"dead\") — capture `snmpwalk .1.3.6.1.4.1.12356.101.4.9` from this device to confirm the enum and turn it into a fixture", v)
 }
 
 func (f *FortiGateProfile) ParseSDWANHealth(pdus []gosnmp.SnmpPDU) []relay.SDWANHealth {
@@ -905,6 +906,10 @@ func (f *FortiGateProfile) ParseSDWANHealth(pdus []gosnmp.SnmpPDU) []relay.SDWAN
 	// silently merge distinct rows sharing a trailing arc — so rows are keyed
 	// by the FULL index suffix string instead (AUDIT-177).
 	healthMap := make(map[string]*relay.SDWANHealth)
+	// lossSeen tracks which rows the walk returned a .9 loss column for —
+	// PacketLoss==0 cannot serve as the absence sentinel because 0 is the
+	// normal healthy-link value of that column.
+	lossSeen := map[string]bool{}
 	row := func(name, column string) *relay.SDWANHealth {
 		key := strings.TrimPrefix(name, column+".")
 		if h, exists := healthMap[key]; exists {
@@ -925,9 +930,14 @@ func (f *FortiGateProfile) ParseSDWANHealth(pdus []gosnmp.SnmpPDU) []relay.SDWAN
 		case strings.HasPrefix(name, fgOIDSDWANHealthState+"."):
 			h := row(name, fgOIDSDWANHealthState)
 			stateVal := gosnmp.ToBigInt(pdu.Value).Int64()
-			if stateVal == 0 {
+			switch stateVal {
+			case 0:
 				h.State = "alive"
-			} else {
+			case 1:
+				h.State = "dead"
+			default:
+				// Outside the assumed alive(0)/dead(1) enum — keep the
+				// conservative "dead" mapping and log once per value.
 				h.State = "dead"
 				logUnknownSDWANState(stateVal)
 			}
@@ -939,6 +949,7 @@ func (f *FortiGateProfile) ParseSDWANHealth(pdus []gosnmp.SnmpPDU) []relay.SDWAN
 			row(name, fgOIDSDWANHealthPktRecv).PacketRecv = uint64(gosnmp.ToBigInt(pdu.Value).Uint64())
 		case strings.HasPrefix(name, fgOIDSDWANHealthPktLoss+"."):
 			// The device's own computed loss percentage (DisplayString).
+			lossSeen[strings.TrimPrefix(name, fgOIDSDWANHealthPktLoss+".")] = true
 			row(name, fgOIDSDWANHealthPktLoss).PacketLoss = parseStringFloat(pdu.Value)
 		case strings.HasPrefix(name, fgOIDSDWANHealthIfName+"."):
 			row(name, fgOIDSDWANHealthIfName).Interface = safeString(pdu.Value)
@@ -947,13 +958,16 @@ func (f *FortiGateProfile) ParseSDWANHealth(pdus []gosnmp.SnmpPDU) []relay.SDWAN
 
 	now := time.Now()
 	result := make([]relay.SDWANHealth, 0, len(healthMap))
-	for _, h := range healthMap {
+	for key, h := range healthMap {
 		h.Timestamp = now
-		// Prefer the device's own loss column (.9). Fall back to the send/recv
-		// subtraction only when it is absent, and only when recv <= send —
-		// counter timing skew can report recv > send, and an unguarded uint64
-		// subtraction would underflow to ~1.8e19% (AUDIT-219).
-		if h.PacketLoss == 0 && h.PacketSend > 0 && h.PacketRecv <= h.PacketSend {
+		// The .9 column is authoritative whenever the walk returned it —
+		// INCLUDING "0.000000" on a healthy link. The send/recv subtraction
+		// runs only when .9 was absent: those are CUMULATIVE counters, so on
+		// a link that recovered from a past outage the subtraction reports
+		// phantom loss forever. And only when recv <= send — counter timing
+		// skew can report recv > send, and an unguarded uint64 subtraction
+		// would underflow to ~1.8e19% (AUDIT-219).
+		if !lossSeen[key] && h.PacketSend > 0 && h.PacketRecv <= h.PacketSend {
 			lost := h.PacketSend - h.PacketRecv
 			h.PacketLoss = float64(lost) / float64(h.PacketSend) * 100
 		}

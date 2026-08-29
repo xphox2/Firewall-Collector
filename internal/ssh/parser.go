@@ -181,7 +181,11 @@ var (
 	// text, not the line, so a combined RX+TX line fills both directions
 	// instead of TX overwriting RX (AUDIT-222). Matches both the block shape
 	// "RX bytes 1000000  errors 5  discards 3" and netlink-style
-	// "rx_errors=5 rx_dropped=3" tokens.
+	// "rx_errors=5 rx_dropped=3" tokens. Known hazard: the discards group is
+	// undirected and pairs with the PRECEDING direction match, so a line
+	// missing one direction's discards token (e.g. "RX errors 5 TX errors 7
+	// discards 2") would cross-assign — no known real output has that shape;
+	// every observed form pairs errors+discards per direction.
 	ifaceErrPairRegex = regexp.MustCompile(`(?i)\b(rx|tx)(?:[_ ]?errors|[_ ]?bytes[^e]*errors)[=:\s]+(\d+).*?(?:discards|dropped)[=:\s]+(\d+)`)
 	// Compact netlink stat tokens: "rxe=5 txe=7 rxd=3 txd=2".
 	ifaceCompactErrRegex  = regexp.MustCompile(`(?i)\b(rx|tx)e[=:](\d+)`)
@@ -228,6 +232,13 @@ func ParseInterfaceList(output string) []InterfaceErrorInfo {
 		// netlink "rxe=/txe=/rxd=/txd=" forms, which carry no "errors" word),
 		// and every regex below carries its own direction capture.
 		lower := strings.ToLower(line)
+		// Real FortiOS netlink output follows the cumulative "stat:" line
+		// with a "re:" RATE line carrying the SAME compact tokens
+		// (near-always zeros) — parsing it would clobber the cumulative
+		// counters with current rates. Firmware that omits it is unaffected.
+		if strings.HasPrefix(strings.TrimSpace(lower), "re:") {
+			continue
+		}
 		hasDirection := strings.Contains(lower, "rx") || strings.Contains(lower, "tx")
 		hasErrorToken := strings.Contains(lower, "errors") || strings.Contains(lower, "dropped") ||
 			strings.Contains(lower, "rxe=") || strings.Contains(lower, "txe=") ||

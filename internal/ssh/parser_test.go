@@ -502,6 +502,22 @@ stat: rxp=4986 txp=4459 rxb=331621 txb=879130 rxe=5 txe=7 rxd=3 txd=2 mc=0 colli
 	assertIfaceCounters(t, ifaces[0], 5, 3, 7, 2)
 }
 
+// Real netlink output follows the cumulative "stat:" line with a "re:" RATE
+// line carrying the SAME compact tokens (near-always zeros). Last-match-wins
+// parsing would let the rate line clobber the cumulative counters — every
+// interface with real errors would report all zeros.
+func TestParseInterfaceList_NetlinkRateLineDoesNotClobberStat(t *testing.T) {
+	output := `if=wan1 family=00 type=1 index=3 mtu=1500 link=0 master=0
+stat: rxp=4986 txp=4459 rxb=331621 txb=879130 rxe=1 txe=2 rxd=3 txd=4 mc=0 collision=0
+re: rxp=1 txp=1 rxb=52 txb=64 rxe=0 txe=0 rxd=0 txd=0 mc=0 collision=0
+`
+	ifaces := ParseInterfaceList(output)
+	if len(ifaces) != 1 {
+		t.Fatalf("expected 1 interface, got %d", len(ifaces))
+	}
+	assertIfaceCounters(t, ifaces[0], 1, 3, 2, 4)
+}
+
 // ── ParseLicenseStatus ────────────────────────────────────────────────────────
 
 func TestParseLicenseStatus_ValidEntries(t *testing.T) {

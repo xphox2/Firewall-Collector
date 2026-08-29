@@ -121,6 +121,24 @@ func TestFortiGate_ParseSDWANHealth_PacketLoss(t *testing.T) {
 	if result[0].PacketLoss != 1.25 {
 		t.Errorf("PacketLoss = %v, want 1.25 (.9 column must win over send/recv subtraction)", result[0].PacketLoss)
 	}
+
+	// A HEALTHY link reports .9 = "0.000000" — that zero is the device's
+	// answer, not an absence sentinel. Send/Recv are CUMULATIVE counters, so
+	// on a link that recovered from a past outage the subtraction would
+	// report phantom loss (here 50%) forever if it were allowed to override.
+	pdus = []gosnmp.SnmpPDU{
+		{Name: ".1.3.6.1.4.1.12356.101.4.9.2.1.2.1.1", Type: gosnmp.OctetString, Value: []byte("recovered")},
+		{Name: ".1.3.6.1.4.1.12356.101.4.9.2.1.7.1.1", Type: gosnmp.Counter64, Value: uint64(1000)},
+		{Name: ".1.3.6.1.4.1.12356.101.4.9.2.1.8.1.1", Type: gosnmp.Counter64, Value: uint64(500)},
+		{Name: ".1.3.6.1.4.1.12356.101.4.9.2.1.9.1.1", Type: gosnmp.OctetString, Value: []byte("0.000000")},
+	}
+	result = f.ParseSDWANHealth(pdus)
+	if len(result) != 1 {
+		t.Fatalf("got %d entries, want 1", len(result))
+	}
+	if result[0].PacketLoss != 0 {
+		t.Errorf("PacketLoss = %v, want 0 (.9 value 0 is authoritative; cumulative send/recv must not fabricate loss)", result[0].PacketLoss)
+	}
 }
 
 // ── ParseDialupVPNStatus (AUDIT-217) ─────────────────────────────────────────
@@ -143,8 +161,14 @@ func TestFortiGate_ParseDialupVPNStatus_VdomColumnUnread(t *testing.T) {
 		}
 	}
 
+	// The .8 vdom value is deliberately encoded as an OctetString "3" rather
+	// than the wire-realistic Integer: safeString(Integer) is "", so an
+	// Integer fixture would yield identical output even on the PRE-fix code
+	// (a vacuous test). With "3", the old DstEnd parse produced a bare
+	// "192.0.2.77" (rangeToCIDR's unparseable-end branch) — only the fixed
+	// parser, which never reads .8, emits "192.0.2.77/32".
 	withVdom := append(base(), gosnmp.SnmpPDU{
-		Name: ".1.3.6.1.4.1.12356.101.12.2.1.1.8.1", Type: gosnmp.Integer, Value: 3, // vdom id
+		Name: ".1.3.6.1.4.1.12356.101.12.2.1.1.8.1", Type: gosnmp.OctetString, Value: []byte("3"), // vdom id
 	})
 	got := f.ParseDialupVPNStatus(withVdom)
 	if len(got) != 1 {
