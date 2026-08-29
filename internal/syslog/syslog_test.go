@@ -53,6 +53,10 @@ func TestUDPSyslogReceiver_MalformedNotLogged_AUDIT305(t *testing.T) {
 	defer log.SetOutput(prev)
 
 	r := NewUDPSyslogReceiver("127.0.0.1", port)
+	// The parse-error hook is what carries the count to the metrics surface
+	// (firewall_collector_syslog_parse_errors_total). Assert it fires.
+	var hookFires atomic.Int64
+	r.SetParseErrorHook(func() { hookFires.Add(1) })
 	if err := r.Start(func(*relay.SyslogMessage) {}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -75,6 +79,9 @@ func TestUDPSyslogReceiver_MalformedNotLogged_AUDIT305(t *testing.T) {
 	}
 	if r.ParseErrors() == 0 {
 		t.Fatal("malformed datagram did not increment ParseErrors() (AUDIT-305)")
+	}
+	if hookFires.Load() == 0 {
+		t.Error("parse-error hook never fired — the metrics surface would show nothing (AUDIT-305)")
 	}
 	if got := sb.String(); strings.Contains(got, "Parse error") {
 		t.Errorf("malformed UDP datagram emitted a per-datagram log line (AUDIT-305): %q", got)

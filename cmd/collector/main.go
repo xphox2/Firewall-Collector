@@ -519,6 +519,10 @@ func main() {
 		// M16 of the 2026-07-01 audit: give the TCP path the same per-source
 		// rate limit as UDP (they share the port and the PPS budget).
 		syslogTCP.SetRateLimiter(newLimiter(probeCfg.SyslogRateLimitPPS, probeCfg.SyslogRateLimitGlobalPPS), func() { c.metrics.IncRateLimitedDrop("syslog") })
+		// AUDIT-305: surface malformed-message drops as a metric — the receivers
+		// count these silently now (no per-message log), so this hook is the only
+		// operator signal.
+		syslogTCP.SetParseErrorHook(func() { c.metrics.IncSyslogParseError("tcp") })
 		if err := syslogTCP.Start(func(msg *relay.SyslogMessage) {
 			c.handleSyslogMessage(msg, probeID)
 		}); err != nil {
@@ -531,6 +535,7 @@ func main() {
 
 		syslogUDP := syslog.NewUDPSyslogReceiver(probeCfg.ListenAddr, probeCfg.SyslogPort)
 		syslogUDP.SetRateLimiter(newLimiter(probeCfg.SyslogRateLimitPPS, probeCfg.SyslogRateLimitGlobalPPS), func() { c.metrics.IncRateLimitedDrop("syslog") })
+		syslogUDP.SetParseErrorHook(func() { c.metrics.IncSyslogParseError("udp") })
 		syslogUDP.SetWorkers(probeCfg.UDPWorkers)
 		if err := syslogUDP.Start(func(msg *relay.SyslogMessage) {
 			c.handleSyslogMessage(msg, probeID)

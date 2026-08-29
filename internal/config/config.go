@@ -284,12 +284,12 @@ func parseBool(envKey string, defaultVal bool) bool {
 	// returned false for anything but "true"/"1"/"yes", so YAML capitalization
 	// (PROBE_SYSLOG_ENABLED: True) silently disabled a listener that defaults on.
 	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "true", "1", "yes":
+	case "true", "1", "yes", "on":
 		return true
-	case "false", "0", "no":
+	case "false", "0", "no", "off":
 		return false
 	default:
-		log.Printf("%s: unrecognized boolean %q (want true/false/1/0/yes/no) — using default %v", envKey, v, defaultVal)
+		log.Printf("%s: unrecognized boolean %q (want true/false/1/0/yes/no/on/off) — using default %v", envKey, v, defaultVal)
 		return defaultVal
 	}
 }

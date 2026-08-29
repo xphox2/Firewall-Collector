@@ -18,17 +18,32 @@ func TestParseBool_CaseInsensitiveAndDefault_AUDIT263(t *testing.T) {
 	const key = "PROBE_TEST_BOOL_AUDIT263"
 	defer os.Unsetenv(key)
 
-	for _, v := range []string{"true", "TRUE", "True", "1", "yes", "YES", "Yes", "  true  "} {
+	for _, v := range []string{"true", "TRUE", "True", "1", "yes", "YES", "Yes", "on", "ON", "On", "  true  "} {
 		os.Setenv(key, v)
 		if !parseBool(key, false) {
 			t.Errorf("parseBool(%q) = false, want true", v)
 		}
 	}
-	for _, v := range []string{"false", "FALSE", "False", "0", "no", "NO"} {
+	for _, v := range []string{"false", "FALSE", "False", "0", "no", "NO", "off", "OFF", "Off"} {
 		os.Setenv(key, v)
 		if parseBool(key, true) {
 			t.Errorf("parseBool(%q) = true, want false", v)
 		}
+	}
+
+	// "off" against a default-true enabled flag must DISABLE it, not enable it
+	// with a warning — the regression the on/off additions prevent.
+	os.Setenv(key, "off")
+	var offWarn bytes.Buffer
+	prevOff := log.Writer()
+	log.SetOutput(&offWarn)
+	got := parseBool(key, true)
+	log.SetOutput(prevOff)
+	if got {
+		t.Errorf(`parseBool("off", default true) = true; want false (off must disable)`)
+	}
+	if strings.Contains(offWarn.String(), "unrecognized boolean") {
+		t.Errorf("off/on are recognized values and must not warn, got: %q", offWarn.String())
 	}
 
 	// Garbage falls back to defaultVal in BOTH directions.
