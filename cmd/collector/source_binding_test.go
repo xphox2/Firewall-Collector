@@ -202,9 +202,9 @@ func TestTFTPUploadAllowed_PendingTrigger_AUDIT187_F2(t *testing.T) {
 	// (c) expiry: a pending trigger past its deadline is treated as unsolicited.
 	strict.pendingTFTPMu.Lock()
 	if strict.pendingTFTP == nil {
-		strict.pendingTFTP = map[uint]time.Time{}
+		strict.pendingTFTP = map[uint][]time.Time{}
 	}
-	strict.pendingTFTP[2] = time.Now().Add(-time.Minute) // already expired
+	strict.pendingTFTP[2] = []time.Time{time.Now().Add(-time.Minute)} // already expired
 	strict.pendingTFTPMu.Unlock()
 	if _, _, ok := strict.tftpUploadAllowed("fgt_2_poll_config", hub); ok {
 		t.Error("strict: a stale upload past the trigger deadline must be treated as unsolicited (rejected)")
@@ -214,6 +214,90 @@ func TestTFTPUploadAllowed_PendingTrigger_AUDIT187_F2(t *testing.T) {
 	warn := newBindingCollector(false)
 	if _, _, ok := warn.tftpUploadAllowed("fgt_2_manual_config", hub); !ok {
 		t.Error("warn mode: an unsolicited upload must be RECORDED (attribute by filename), not dropped")
+	}
+}
+
+// TestSFlowBinding_OutsiderForgesClusterVIP_AUDIT186 pins the device-set
+// tightening (review fold-in 2): an ambiguous cluster VIP is not a blanket
+// accept-from-anyone. A KNOWN source that is NOT one of the devices sharing the
+// VIP is an outsider forging the cluster's identity → REJECT in strict. A source
+// that IS a member still accepts (no new false-reject), and in warn mode the
+// outsider is attributed-by-claim, not dropped.
+func TestSFlowBinding_OutsiderForgesClusterVIP_AUDIT186(t *testing.T) {
+	const sharedVIP = "192.0.2.100"
+	build := func(strict bool) *Collector {
+		c := &Collector{
+			cfg: &config.ProbeConfig{StrictSourceBinding: strict},
+			devices: []relay.DeviceInfo{
+				{ID: 1, IPAddress: "192.0.2.1"}, // cluster member A
+				{ID: 2, IPAddress: "192.0.2.2"}, // cluster member B
+				{ID: 3, IPAddress: "192.0.2.3"}, // outsider C (not in the cluster)
+			},
+		}
+		// Only A and B report the shared VIP → sharing set {1,2}; C never does.
+		c.cacheInterfaceAddresses(1, []relay.InterfaceAddress{{IPAddress: sharedVIP}})
+		c.cacheInterfaceAddresses(2, []relay.InterfaceAddress{{IPAddress: sharedVIP}})
+		return c
+	}
+
+	strict := build(true)
+	// Outsider C (its unique mgmt IP) claims the cluster VIP → C ∉ {1,2} → REJECT.
+	if _, ok := strict.bindSFlowSample("sFlow", sharedVIP, "192.0.2.3"); ok {
+		t.Error("strict: outsider device 3 forging the {1,2} cluster VIP must be REJECTED")
+	}
+	// Members A and B still accept (the F1 guarantee is preserved).
+	if _, ok := strict.bindSFlowSample("sFlow", sharedVIP, "192.0.2.1"); !ok {
+		t.Error("strict: cluster member A must still be accepted when claiming the shared VIP")
+	}
+	if _, ok := strict.bindSFlowSample("sFlow", sharedVIP, "192.0.2.2"); !ok {
+		t.Error("strict: cluster member B must still be accepted when claiming the shared VIP")
+	}
+
+	// WARN mode: the outsider is attributed-by-claim, not dropped.
+	warn := build(false)
+	if _, ok := warn.bindSFlowSample("sFlow", sharedVIP, "192.0.2.3"); !ok {
+		t.Error("warn: an outsider claiming the cluster VIP must be attributed-by-claim, not dropped")
+	}
+}
+
+// TestTFTPPendingTrigger_CountValued_AUDIT187 pins the count-valued registry
+// (review required-fix 1): the poll and syslog backup paths can both fire for
+// one device within the window, so N registered triggers must admit N uploads —
+// the second legit upload must NOT be consume-rejected and mislabeled a forgery.
+// A third upload with no remaining trigger still rejects (strict), and expired
+// deadlines are swept.
+func TestTFTPPendingTrigger_CountValued_AUDIT187(t *testing.T) {
+	c := newBindingCollector(true)
+	src := &net.UDPAddr{IP: net.ParseIP("192.0.2.1"), Port: 5000}
+
+	// Two triggers for device 2 (poll + syslog racing).
+	c.registerPendingTFTP(2)
+	c.registerPendingTFTP(2)
+
+	// Both legitimate uploads are recorded.
+	if _, _, ok := c.tftpUploadAllowed("fgt_2_poll_config", src); !ok {
+		t.Error("first of two triggered uploads must be recorded")
+	}
+	if _, _, ok := c.tftpUploadAllowed("fgt_2_syslog_config", src); !ok {
+		t.Error("second of two triggered uploads must be recorded (count-valued registry)")
+	}
+	// A third upload has no remaining trigger → unsolicited → rejected (strict).
+	if _, _, ok := c.tftpUploadAllowed("fgt_2_manual_config", src); ok {
+		t.Error("a third upload with no remaining trigger must be REJECTED (strict)")
+	}
+
+	// Expiry sweep: register two, expire one directly, leave one live → exactly
+	// one upload succeeds, the next is rejected.
+	c.registerPendingTFTP(5)
+	c.registerPendingTFTP(5)
+	c.pendingTFTPMu.Lock()
+	c.pendingTFTP[5] = []time.Time{time.Now().Add(-time.Minute), time.Now().Add(time.Minute)}
+	c.pendingTFTPMu.Unlock()
+	if _, _, ok := c.tftpUploadAllowed("fgt_5_poll_config", src); !ok {
+		t.Error("the one live trigger (after the stale one is swept) must admit one upload")
+	}
+	if _, _, ok := c.tftpUploadAllowed("fgt_5_poll_config", src); ok {
+		t.Error("no live trigger remains after the live one is consumed → reject")
 	}
 }
 

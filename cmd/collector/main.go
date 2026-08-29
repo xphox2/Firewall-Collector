@@ -139,25 +139,29 @@ type Collector struct {
 	cfgBackupMu     sync.Mutex
 	deviceMu        sync.RWMutex
 	ifaceIPMap      map[string]uint // interface IP → device ID cache
-	// ifaceIPAmbiguous flags interface IPs the cache has seen reported by 2+
-	// DIFFERENT devices — HA/CARP shared VIPs, A-P cluster synced interfaces, or
-	// a live IP-reassignment window. resolveDeviceByIP still returns a
-	// (last-writer) device for these so flow/trap/syslog attribution keeps
-	// working, but source-attribution BINDING must treat them as unresolvable
-	// (never the basis for a reject) — the two HA members legitimately share the
-	// IP (AUDIT-186 HA/CARP false-reject fix).
-	ifaceIPAmbiguous map[string]bool
+	// ifaceIPAmbiguous maps an interface IP the cache has seen reported by 2+
+	// DIFFERENT devices to the SET of device IDs that share it — HA/CARP shared
+	// VIPs, A-P cluster synced interfaces, or a live IP-reassignment window.
+	// resolveDeviceByIP still returns a (last-writer) device for these so
+	// flow/trap/syslog attribution keeps working, but source-attribution BINDING
+	// uses the sharing set to accept a legit member (source ∈ set) while still
+	// rejecting an OUTSIDER that forges the cluster IP (known source ∉ set) —
+	// the two HA members legitimately share the IP (AUDIT-186 HA/CARP fix).
+	ifaceIPAmbiguous map[string]map[uint]struct{}
 	ifaceIPMu        sync.RWMutex
 
 	// pendingTFTP tracks collector-INITIATED config backups awaiting their TFTP
-	// upload: device ID → expiry deadline. The collector composes every backup
-	// filename and drives the upload over SSH, so a genuine upload always has a
-	// live pending trigger for the claimed device. The WRQ handler accepts an
-	// upload whose claimed device has a live trigger REGARDLESS of the WRQ
-	// source IP (so a branch device SNATing through a monitored NAT/hub isn't
-	// false-rejected) and treats an upload with no live trigger as unsolicited
-	// (a forged cross-device claim) — the AUDIT-187 forgery guard, NAT-safe.
-	pendingTFTP   map[uint]time.Time
+	// upload: device ID → a slice of live expiry deadlines (one per outstanding
+	// trigger). The collector composes every backup filename and drives the
+	// upload over SSH, so a genuine upload always has a live pending trigger for
+	// the claimed device. It is COUNT-VALUED so a benign double-trigger (the
+	// poll and syslog paths both firing within the window) admits both legit
+	// uploads. The WRQ handler accepts an upload whose claimed device has a live
+	// trigger REGARDLESS of the WRQ source IP (so a branch device SNATing through
+	// a monitored NAT/hub isn't false-rejected) and treats an upload with ZERO
+	// live triggers as unsolicited (a forged cross-device claim) — the AUDIT-187
+	// forgery guard, NAT-safe.
+	pendingTFTP   map[uint][]time.Time
 	pendingTFTPMu sync.Mutex
 	stopChan      chan struct{}
 	stopOnce      sync.Once
@@ -1265,10 +1269,16 @@ func (c *Collector) checkAndSendConfigRevision(dev relay.DeviceInfo, checksum st
 // collector encoded into the TFTP filename. Two formats are supported:
 //
 //	"fgt_<id>_<trigger>_config" — current format, encodes provenance
-//	"fgt_<id>_config"           — legacy (older collectors / manual uploads)
+//	"fgt_<id>_config"           — legacy (older collectors)
 //
 // Returns (deviceID, triggerSource). triggerSource defaults to "poll" for
 // the legacy path so older inflight backups continue to land cleanly.
+//
+// Parsing a device ID out of the filename does NOT authorize recording it:
+// tftpUploadAllowed binds the upload to a collector-issued pending trigger
+// (AUDIT-187), so an upload the collector did not initiate — an ad-hoc/manual
+// push straight to the TFTP port with no pending trigger for that device — is
+// rejected in strict mode (recorded + logged in warn mode).
 func parseUploadFilename(filename string) (uint, string) {
 	parts := strings.Split(filename, "_")
 	if len(parts) < 2 {
@@ -2112,11 +2122,21 @@ func (c *Collector) pruneIfaceIPMap(devices []relay.DeviceInfo) {
 			delete(c.ifaceIPMap, ip)
 		}
 	}
-	// Drop ambiguity flags for IPs no longer cached, so a shared VIP that stops
-	// being shared (one member decommissioned) can re-resolve authoritatively
-	// rather than staying "ambiguous" (accept+warn) forever.
-	for ip := range c.ifaceIPAmbiguous {
-		if _, ok := c.ifaceIPMap[ip]; !ok {
+	// Prune the shared-IP sets: drop decommissioned devices from each sharing
+	// set and any IP no longer cached. When a set shrinks to a single device (or
+	// none), the IP is no longer shared, so remove the ambiguity entirely — it
+	// can then re-resolve authoritatively rather than staying "ambiguous" forever.
+	for ip, set := range c.ifaceIPAmbiguous {
+		if _, cached := c.ifaceIPMap[ip]; !cached {
+			delete(c.ifaceIPAmbiguous, ip)
+			continue
+		}
+		for id := range set {
+			if !keep[id] {
+				delete(set, id)
+			}
+		}
+		if len(set) <= 1 {
 			delete(c.ifaceIPAmbiguous, ip)
 		}
 	}
@@ -2419,45 +2439,59 @@ func (c *Collector) resolveDeviceByIP(ip string) uint {
 	return 0
 }
 
-// resolveDeviceByIPForBinding resolves ip for source-attribution binding,
-// distinguishing an AUTHORITATIVE match (a per-device-unique management IP) from
-// an AMBIGUOUS one (an interface IP reported by 2+ devices — an HA/CARP VIP, an
-// A-P cluster synced interface, or a live IP-reassignment window). Returns
-// (deviceID, ambiguous). An ambiguous resolution must never drive a reject: the
-// caller treats it like an unresolved source (accept + warn), because two
-// healthy members legitimately share the address (AUDIT-186 HA false-reject fix).
-func (c *Collector) resolveDeviceByIPForBinding(ip string) (uint, bool) {
+// resolveForBinding resolves ip for source-attribution binding. It returns
+// (deviceID, sharers): a per-device-unique management IP or a singly-owned
+// interface IP resolves to (id, nil) — AUTHORITATIVE; an interface IP the cache
+// has seen from 2+ devices resolves to (0, <the sharing set>) — AMBIGUOUS, the
+// device is unknowable but the set of devices legitimately sharing it is not
+// (HA/CARP VIP, A-P synced interface). Management IPs win even if the same IP
+// also appears ambiguously in an interface table.
+func (c *Collector) resolveForBinding(ip string) (uint, map[uint]struct{}) {
 	if ip == "" {
-		return 0, false
+		return 0, nil
 	}
-	// Management IPs are per-device unique and therefore authoritative — they
-	// win even if the same IP also appears (ambiguously) in an interface table.
 	c.deviceMu.RLock()
 	for _, d := range c.devices {
 		if d.IPAddress == ip {
 			c.deviceMu.RUnlock()
-			return d.ID, false
+			return d.ID, nil
 		}
 	}
 	c.deviceMu.RUnlock()
 
 	c.ifaceIPMu.RLock()
 	defer c.ifaceIPMu.RUnlock()
-	if c.ifaceIPAmbiguous[ip] {
-		return 0, true // shared across devices — cannot bind
+	if set, ok := c.ifaceIPAmbiguous[ip]; ok && len(set) > 1 {
+		// Return a copy so the caller can read it without holding the lock.
+		sharers := make(map[uint]struct{}, len(set))
+		for id := range set {
+			sharers[id] = struct{}{}
+		}
+		return 0, sharers
 	}
 	if id, ok := c.ifaceIPMap[ip]; ok {
-		return id, false
+		return id, nil
 	}
-	return 0, false
+	return 0, nil
+}
+
+// resolveDeviceByIPForBinding is the (deviceID, ambiguous) view of
+// resolveForBinding. An ambiguous resolution must never by itself drive a reject
+// (AUDIT-186 HA false-reject fix); the sharing set (resolveForBinding) is what
+// lets binding still reject an outsider forging a cluster IP.
+func (c *Collector) resolveDeviceByIPForBinding(ip string) (uint, bool) {
+	id, sharers := c.resolveForBinding(ip)
+	return id, sharers != nil
 }
 
 // acceptBoundSource is the sFlow source-attribution gate (AUDIT-186): sFlow
 // attributes a sample by its in-band agent_address, not the UDP sender, so an
 // allowlisted device could otherwise claim ANOTHER monitored device's identity.
 // The check is deliberately ASYMMETRIC so it never breaks legitimate multi-homed
-// or HA deployments (callers pass fromSource/fromClaim = 0 for an ambiguous
-// shared/HA interface IP — see resolveDeviceByIPForBinding):
+// or HA deployments. bindSFlowSample handles shared/HA cluster IPs upstream (via
+// the sharing set) and calls this with fromSource = 0 whenever the source can't
+// be uniquely attributed, so this gate only ever decides the unique-vs-unique
+// case:
 //
 //   - fromSource resolves to a KNOWN, uniquely-attributable device that
 //     disagrees with a KNOWN fromClaim -> a source/claim mismatch. Rejected in
@@ -2504,27 +2538,54 @@ func (c *Collector) acceptBoundSource(path string, fromSource, fromClaim uint, s
 
 // bindSFlowSample resolves and binds a flow/counter sample's claimed identity
 // (its in-band agent_address = samplerAddress) to the real UDP source (AUDIT-186)
-// and returns the device to attribute plus whether to keep the sample. Both
-// sides resolve through resolveDeviceByIPForBinding, so an HA/CARP shared IP is
-// treated as unresolvable (never a reject). Callers apply this BEFORE the
-// flowdedup gate so a rejected (forged) sample never mutates the dedup key state.
+// and returns the device to attribute plus whether to keep the sample. Callers
+// apply this BEFORE the flowdedup gate so a rejected (forged) sample never
+// mutates the dedup key state.
+//
+// When the CLAIM is a shared/HA IP (an ambiguous cluster VIP), the sharing set
+// tightens the guard: a source that is a MEMBER of the set is a legit HA member
+// (accept); a KNOWN source that is NOT in the set is an outsider forging the
+// cluster identity (reject strict); an unresolvable/ambiguous source can't be
+// judged (accept + warn). Otherwise the standard unique-source-vs-unique-claim
+// gate applies, and an ambiguous SOURCE resolves to device 0 so it never drives
+// a reject.
 func (c *Collector) bindSFlowSample(path, samplerAddress, sourceIP string) (uint, bool) {
-	fromClaim, claimAmbiguous := c.resolveDeviceByIPForBinding(samplerAddress)
-	fromSource, sourceAmbiguous := c.resolveDeviceByIPForBinding(sourceIP)
-	src := fromSource
-	if sourceAmbiguous {
-		src = 0
+	_, claimSharers := c.resolveForBinding(samplerAddress)
+	srcDevice, _ := c.resolveForBinding(sourceIP)
+
+	if claimSharers != nil {
+		// The claim is a shared/HA cluster IP. resolveDeviceByIP gives the
+		// last-writer member, which is always one of the sharing devices —
+		// use it as the representative claim for logs/attribution.
+		claimDevice := c.resolveDeviceByIP(samplerAddress)
+		if srcDevice != 0 {
+			if _, member := claimSharers[srcDevice]; member {
+				log.Printf("[%s] source-binding: UDP source %q (device %d) is a member of shared cluster IP %q — accepting",
+					path, sourceIP, srcDevice, samplerAddress)
+				return claimDevice, true
+			}
+			// Known source that does NOT share the claimed cluster IP: an
+			// outsider forging the cluster identity. Route through
+			// acceptBoundSource for consistent strict-reject/warn handling.
+			if !c.acceptBoundSource(path, srcDevice, claimDevice, sourceIP, samplerAddress) {
+				return 0, false
+			}
+			return claimDevice, true
+		}
+		// Source unresolvable or itself ambiguous: cannot enforce; accept+warn.
+		if !c.acceptBoundSource(path, 0, claimDevice, sourceIP, samplerAddress) {
+			return 0, false
+		}
+		return claimDevice, true
 	}
-	claim := fromClaim
-	if claimAmbiguous {
-		claim = 0
-	}
-	if !c.acceptBoundSource(path, src, claim, sourceIP, samplerAddress) {
+
+	// Non-ambiguous claim: standard unique-vs-unique gate. srcDevice is already 0
+	// when the source is unknown or ambiguous, so it can never drive a reject.
+	claimDevice, _ := c.resolveForBinding(samplerAddress)
+	if !c.acceptBoundSource(path, srcDevice, claimDevice, sourceIP, samplerAddress) {
 		return 0, false
 	}
-	// Attribute by the claim, preserving the historical behavior (and the
-	// dedup key). Use the plain resolver so an ambiguous/HA claim still lands on
-	// a device rather than 0.
+	// Attribute by the claim, preserving the historical behavior (and dedup key).
 	return c.resolveDeviceByIP(samplerAddress), true
 }
 
@@ -2558,36 +2619,57 @@ const tftpBackupWindow = 5 * time.Minute
 
 // registerPendingTFTP records that the collector has just initiated a config
 // backup for deviceID, arming the WRQ handler to accept the resulting upload
-// regardless of its (possibly NATed) source IP.
+// regardless of its (possibly NATed) source IP. It APPENDS a deadline (rather
+// than replacing) so a benign double-trigger — the poll and syslog paths both
+// firing for one device within the window — admits both legitimate uploads.
 func (c *Collector) registerPendingTFTP(deviceID uint) {
 	if deviceID == 0 {
 		return
 	}
 	c.pendingTFTPMu.Lock()
 	if c.pendingTFTP == nil {
-		c.pendingTFTP = make(map[uint]time.Time)
+		c.pendingTFTP = make(map[uint][]time.Time)
 	}
-	c.pendingTFTP[deviceID] = time.Now().Add(tftpBackupWindow)
+	c.pendingTFTP[deviceID] = append(c.pendingTFTP[deviceID], time.Now().Add(tftpBackupWindow))
 	c.pendingTFTPMu.Unlock()
 }
 
-// consumePendingTFTP reports whether deviceID has a live (unexpired) pending
-// backup trigger, removing it (so each trigger authorizes at most one upload)
-// and opportunistically sweeping expired entries to bound the map.
+// consumePendingTFTP reports whether deviceID has at least one live (unexpired)
+// pending backup trigger, removing the earliest such trigger (so N registered
+// triggers authorize N uploads within the window) and sweeping expired
+// deadlines across all devices to bound the map.
 func (c *Collector) consumePendingTFTP(deviceID uint) bool {
 	now := time.Now()
 	c.pendingTFTPMu.Lock()
 	defer c.pendingTFTPMu.Unlock()
-	deadline, ok := c.pendingTFTP[deviceID]
-	if ok {
-		delete(c.pendingTFTP, deviceID)
-	}
-	for id, dl := range c.pendingTFTP { // sweep stale entries
-		if now.After(dl) {
+
+	// Sweep expired deadlines everywhere, keeping live ones in time order.
+	for id, deadlines := range c.pendingTFTP {
+		kept := deadlines[:0]
+		for _, dl := range deadlines {
+			if !now.After(dl) {
+				kept = append(kept, dl)
+			}
+		}
+		if len(kept) == 0 {
 			delete(c.pendingTFTP, id)
+		} else {
+			c.pendingTFTP[id] = kept
 		}
 	}
-	return ok && !now.After(deadline)
+
+	deadlines := c.pendingTFTP[deviceID]
+	if len(deadlines) == 0 {
+		return false
+	}
+	// All remaining deadlines are live post-sweep and were appended in time
+	// order, so index 0 is the earliest — remove it (one trigger, one upload).
+	if len(deadlines) == 1 {
+		delete(c.pendingTFTP, deviceID)
+	} else {
+		c.pendingTFTP[deviceID] = deadlines[1:]
+	}
+	return true
 }
 
 // tftpUploadAllowed parses a TFTP WRQ filename and applies expectation-based
@@ -2636,10 +2718,11 @@ func (c *Collector) tftpUploadAllowed(filename string, clientAddr net.Addr) (uin
 
 // cacheInterfaceAddresses stores interface IPs for device resolution. The map is
 // last-writer-wins (attribution tolerates that), but any IP reported by 2+
-// DIFFERENT devices is additionally flagged ambiguous so source-attribution
-// binding never rejects on it — HA/CARP shared VIPs and A-P cluster synced
-// interfaces legitimately appear in both members' interface tables
-// (AUDIT-186 HA false-reject fix).
+// DIFFERENT devices is additionally recorded in ifaceIPAmbiguous as the SET of
+// devices that share it, so source-attribution binding accepts a legit HA
+// member (source ∈ set) while still rejecting an outsider forging the cluster IP
+// (AUDIT-186 HA fix). HA/CARP shared VIPs and A-P cluster synced interfaces
+// legitimately appear in both members' interface tables.
 func (c *Collector) cacheInterfaceAddresses(deviceID uint, addrs []relay.InterfaceAddress) {
 	c.ifaceIPMu.Lock()
 	defer c.ifaceIPMu.Unlock()
@@ -2650,13 +2733,22 @@ func (c *Collector) cacheInterfaceAddresses(deviceID uint, addrs []relay.Interfa
 		if a.IPAddress != "" && a.IPAddress != "0.0.0.0" && a.IPAddress != "127.0.0.1" {
 			if prev, ok := c.ifaceIPMap[a.IPAddress]; ok && prev != deviceID {
 				// Same interface IP reported by two different devices: a shared
-				// cluster/VIP address. Flag it so binding treats it as
-				// unresolvable rather than picking the last poller and rejecting
-				// the other healthy member.
+				// cluster/VIP address. Record BOTH the previous owner and this
+				// device in the sharing set so binding can tell a member from an
+				// outsider rather than picking the last poller and rejecting the
+				// other healthy member.
 				if c.ifaceIPAmbiguous == nil {
-					c.ifaceIPAmbiguous = make(map[string]bool)
+					c.ifaceIPAmbiguous = make(map[string]map[uint]struct{})
 				}
-				c.ifaceIPAmbiguous[a.IPAddress] = true
+				set, existed := c.ifaceIPAmbiguous[a.IPAddress]
+				if !existed {
+					set = make(map[uint]struct{})
+					c.ifaceIPAmbiguous[a.IPAddress] = set
+					log.Printf("[binding] interface IP %q now reported by 2+ devices (at least %d, %d) — treating as a shared/HA address (accept members, reject outsiders)",
+						a.IPAddress, prev, deviceID)
+				}
+				set[prev] = struct{}{}
+				set[deviceID] = struct{}{}
 			}
 			c.ifaceIPMap[a.IPAddress] = deviceID
 		}
