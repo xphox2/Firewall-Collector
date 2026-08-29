@@ -473,11 +473,10 @@ func (m *Metrics) wrapMetricsHandler() http.Handler {
 // callback (if installed) and updates the corresponding Prometheus
 // gauges. Cheap when the source is nil.
 //
-// The dropped counter is intentionally not auto-refreshed: a
-// Counter in Prometheus is monotonic, and overwriting it with Set is
-// not allowed by the client_golang API. Production code should call
-// IncQueueDropped at each drop site; this callback is provided for
-// symmetry and may be wired in a future revision.
+// The dropped counter is intentionally not auto-refreshed: a Counter in
+// Prometheus is monotonic, and overwriting it with Set is not allowed by the
+// client_golang API. It is instead fed at each drop site via IncQueueDropped
+// (the queue's OnDrop callback, wired through the relay in AUDIT-210).
 func (m *Metrics) refreshDynamic() {
 	if m.queueDepthSource != nil {
 		for _, q := range allQueueNames {

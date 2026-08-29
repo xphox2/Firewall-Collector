@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -91,5 +92,40 @@ func TestAudit210_DataBatchSentWired(t *testing.T) {
 	}
 	if !strings.Contains(body, `firewall_collector_data_batch_sent_total{outcome="failure",queue="metrics"} 1`) {
 		t.Errorf("scrape missing failure batch series:\n%s", body)
+	}
+}
+
+// TestAudit210_DataBatchSent_EventQueue is the follow-up-review regression: the
+// batch counter must be fed for the SIX non-metrics queues too, not only the
+// direct-metric path. It drives the shared event-queue send path (sendBatch via
+// sendBatchesSequential) for the "traps" queue and asserts the labeled series
+// increments. Before the follow-up fix this stayed permanently zero.
+func TestAudit210_DataBatchSent_EventQueue(t *testing.T) {
+	metrics := observability.New(observability.Config{Version: "test", Vendor: "test"})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := &Client{
+		Config:     Config{ServerURL: srv.URL, RegistrationKey: "test-key"},
+		httpClient: srv.Client(),
+	}
+	c.probeID = 7
+	c.approved.Store(true)
+	c.SetDataBatchSentHook(metrics.OnDataBatchSent)
+
+	type trap struct {
+		V int `json:"v"`
+	}
+	items := []*trap{{1}, {2}}
+	// name "traps" is the queue label the event-queue drain uses (spec.sendName).
+	if stopped := sendBatchesSequential(c, srv.URL+"/traps", "traps", items, func([]*trap) {}); stopped {
+		t.Fatal("send unexpectedly stopped (server returned 200)")
+	}
+
+	body := scrapeMetrics(t, metrics)
+	if !strings.Contains(body, `firewall_collector_data_batch_sent_total{outcome="success",queue="traps"} 1`) {
+		t.Errorf("scrape missing traps success batch series (event-queue path not wired):\n%s", body)
 	}
 }

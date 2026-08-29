@@ -2111,18 +2111,23 @@ func sendBatchesSequential[T any](c *Client, url, name string, items []*T, reque
 		}
 		delivered, permanent := c.sendBatch(url, name, chunk)
 		if delivered {
+			// AUDIT-210: report the batch outcome. name is the queue label
+			// (traps|pings|syslog|flows|flow-counters), matching allQueueNames.
+			c.fireDataBatchSent(name, "success")
 			log.Printf("[Relay] Sent %s batch chunk %d/%d (%d items)", name, i+1, totalChunks, len(chunk))
 			continue
 		}
 		if permanent {
 			// Drop the poison chunk (a requeue would retry it forever and evict
 			// good data at the byte cap) and keep going — later chunks may deliver.
+			c.fireDataBatchSent(name, "failure")
 			log.Printf("[Relay] Dropping %s batch chunk %d/%d (%d items): permanent server rejection", name, i+1, totalChunks, len(chunk))
 			continue
 		}
 		// Transient failure: requeue this chunk plus the whole unattempted tail
 		// (chunkSlice is contiguous from index 0, so items[i*actualBatchSize:]
 		// is exactly chunk i onward) and stop the drain until the next sync.
+		c.fireDataBatchSent(name, "failure")
 		requeue(items[i*actualBatchSize:])
 		log.Printf("[Relay] Failed to send %s batch chunk %d/%d (transient); requeued it plus the %d-chunk remainder and stopped this drain", name, i+1, totalChunks, totalChunks-i-1)
 		return true
@@ -2546,6 +2551,12 @@ func (c *Client) sendRevisionBatch(url string, raw [][]byte) {
 			continue
 		}
 		delivered, permanent := c.sendOneRevisionWithRetry(url, rev)
+		// AUDIT-210: report the batch outcome under the "revisions" queue label.
+		if delivered {
+			c.fireDataBatchSent("revisions", "success")
+		} else {
+			c.fireDataBatchSent("revisions", "failure")
+		}
 		if !delivered && !permanent {
 			// Only requeue transient failures. A permanent rejection (400/422/…)
 			// is dropped — requeuing it would retry the same poison payload every
