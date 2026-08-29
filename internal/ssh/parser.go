@@ -533,10 +533,11 @@ func ParsePerformanceStatus(output string) *PerformanceInfo {
 		}
 
 		if uptimeMatch := uptimeRegex.FindStringSubmatch(line); len(uptimeMatch) >= 2 {
-			// PerformanceInfo.Uptime is HUNDREDTHS of a second (AUDIT-220: canonicalized to the SNMP timeticks unit). (The cross-source unit
-			// mismatch with SNMP's TimeTicks hundredths is AUDIT-220's scope,
-			// deliberately not touched here.) Unmatched optional groups scan
-			// as "" → ParseUint error → 0, matching the old error handling.
+			// PerformanceInfo.Uptime is HUNDREDTHS of a second (AUDIT-220:
+			// canonicalized to the SNMP timeticks unit, so the SSH-perf row and
+			// the SNMP row carry the same unit and the server consumer's single
+			// /100 renders both correctly). Unmatched optional groups scan as
+			// "" → ParseUint error → 0, matching the old error handling.
 			days, _ := strconv.ParseUint(uptimeMatch[1], 10, 64)
 			var hours, mins uint64
 			if len(uptimeMatch) >= 3 {

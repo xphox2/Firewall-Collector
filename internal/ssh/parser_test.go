@@ -164,7 +164,7 @@ func TestParsePerformanceStatus_MemoryKilobyteToBytes(t *testing.T) {
 }
 
 // Uptime is emitted in HUNDREDTHS of a second (AUDIT-220: canonical SNMP timeticks unit; days × 8640000).
-func TestParsePerformanceStatus_UptimeDaysToSeconds(t *testing.T) {
+func TestParsePerformanceStatus_UptimeDaysToHundredths(t *testing.T) {
 	output := `Uptime: 42 days`
 	info := ParsePerformanceStatus(output)
 	want := uint64(42 * 86400 * 100)
