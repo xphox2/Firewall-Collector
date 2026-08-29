@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"firewall-collector/internal/relay/queue"
+	"firewall-collector/internal/safego"
 )
 
 const maxReregisterAttempts = 5
@@ -38,6 +39,11 @@ var (
 	maxQueueSize = 10000
 	maxBatchSize = 1000
 )
+
+// flowCountersOffWindow is how long a 404 on /flow-counters suppresses that
+// one endpoint (AUDIT-288 — see Client.flowCountersOffUntil). A var, not a
+// const, so tests can shrink it to exercise self-expiry.
+var flowCountersOffWindow = 30 * time.Minute
 
 func ConfigureLimits(queueSize, batchSize int) {
 	if queueSize > 0 {
@@ -642,6 +648,18 @@ type Client struct {
 	// send path to gate v2-only telemetry (counter samples); written in Register.
 	negotiatedSchema atomic.Int32
 
+	// flowCountersOffUntil (AUDIT-288) suppresses ONLY the /flow-counters
+	// endpoint until the stored UnixNano deadline, set when that endpoint
+	// answers 404. A 404 on ONE route is endpoint-level evidence, not
+	// protocol-version evidence: the old response — negotiatedSchema.Store(1)
+	// — also killed the unrelated v3 disk/load sends, the v4 command channel
+	// (including IPSec deploys), and the v5 topology gates until a collector
+	// restart. Self-expiring, so a transient 404 (proxy blip, rolling deploy)
+	// recovers without a restart at the cost of one 404 per window; cleared
+	// immediately by a successful re-registration (fresh evidence), mirroring
+	// the heartbeatQuiescedUntil reset.
+	flowCountersOffUntil atomic.Int64
+
 	// AUDIT-054 (v2): config-revision retry queue. Same SpilloverQueue
 	// primitive as the 4 event queues above. Marshaled *ConfigRevision
 	// JSON is pushed on transport error or non-2xx response, then
@@ -1085,6 +1103,10 @@ func (c *Client) finishRegister(resp *http.Response) error {
 		negotiated = 1
 	}
 	c.negotiatedSchema.Store(int32(negotiated))
+	// AUDIT-288: a successful (re-)registration is fresh endpoint evidence —
+	// lift any /flow-counters 404 suppression immediately (mirrors the
+	// heartbeatQuiescedUntil reset above).
+	c.flowCountersOffUntil.Store(0)
 
 	if !result.Approved {
 		log.Printf("Probe registered (schema_version %d) but waiting for approval in admin panel...", negotiated)
@@ -1294,7 +1316,10 @@ func (c *Client) handlePendingCommands(resp *http.Response) {
 		return
 	}
 	log.Printf("[Relay] Heartbeat delivered %d pending command(s)", len(hb.PendingCommands))
-	go c.commandHandlerFn(hb.PendingCommands)
+	// AUDIT-212: safego, not a bare go — a panicking command executor must not
+	// kill the collector (the server redelivers the command at-least-once, so a
+	// bare go turned one poison command into a process crash loop).
+	safego.Go("relay:commandHandler", func() { c.commandHandlerFn(hb.PendingCommands) })
 }
 
 // SendCommandResult reports the outcome of one executed server command to
@@ -1393,13 +1418,15 @@ func (c *Client) SendFlowSample(sample *FlowSample) {
 }
 
 // SendInterfaceCounterSample enqueues an sFlow interface counter sample. It is
-// gated on schema v2: if the server negotiated v1 (or registration hasn't
-// completed yet) the sample is dropped silently rather than queued, so we never
-// POST the /flow-counters endpoint to a server that doesn't have it (which would
-// 404 and trip the re-registration path). Once the server is upgraded and the
-// probe re-registers at v2, counters start flowing — no probe restart needed.
+// gated on schema v2 plus the AUDIT-288 404-suppression window: if the server
+// negotiated v1 (or registration hasn't completed yet), or /flow-counters
+// recently answered 404, the sample is dropped silently rather than queued, so
+// we never POST the /flow-counters endpoint to a server that doesn't have it
+// (which would 404 and trip the re-registration path). Once the server is
+// upgraded and the probe re-registers at v2 — or the suppression window lapses
+// — counters start flowing; no probe restart needed.
 func (c *Client) SendInterfaceCounterSample(cs *InterfaceCounterSample) {
-	if c.negotiatedSchema.Load() < 2 {
+	if !c.flowCountersEnabled() {
 		return
 	}
 	c.ensureQueues()
@@ -1506,7 +1533,7 @@ func (c *Client) doDirectSend(endpoint string, name string, payload interface{})
 		c.enqueueMetric(endpoint, name, jsonData)
 		return fmt.Errorf("send %s returned status %d (buffered)", name, resp.StatusCode)
 	}
-	return fmt.Errorf("send %s returned permanent status %d (dropped)", name, resp.StatusCode)
+	return fmt.Errorf("send %s returned permanent status %d (dropped)%s", name, resp.StatusCode, permanentDropHint(resp.StatusCode))
 }
 
 // doSnapshotSend sends a state-snapshot batch (L2 topology) immediately and
@@ -1754,6 +1781,13 @@ func (c *Client) TopologySupported() bool {
 	return c.negotiatedSchema.Load() >= 5
 }
 
+// flowCountersEnabled reports whether interface counter samples may be queued
+// and drained: the negotiated schema must carry the v2 /flow-counters endpoint
+// AND the endpoint must not be under an AUDIT-288 404-suppression window.
+func (c *Client) flowCountersEnabled() bool {
+	return c.negotiatedSchema.Load() >= 2 && time.Now().UnixNano() >= c.flowCountersOffUntil.Load()
+}
+
 // --- FetchDevices ---
 
 func (c *Client) FetchDevices() ([]DeviceInfo, error) {
@@ -1859,13 +1893,15 @@ func (c *Client) syncData() {
 		noun: "flow samples", nounLong: "flow samples", interChunkDelay: 0,
 	})
 	// sFlow interface counters are a schema-v2-only endpoint. Only drain them
-	// when the server CURRENTLY negotiates v2. SendInterfaceCounterSample gates
-	// new pushes on v2, but a backlog queued while the server was v2 survives a
-	// server ROLLBACK to v1 — and POSTing it to the now-absent /flow-counters
-	// endpoint 404s, which sendBatch would misread as "probe deleted", flapping
-	// the probe's approval and forcing a re-register every sync (audit L13).
-	// Discard the undeliverable backlog instead, so it neither 404s nor grows.
-	if c.negotiatedSchema.Load() >= 2 {
+	// when the server CURRENTLY negotiates v2 AND the endpoint is not under an
+	// AUDIT-288 404-suppression window. SendInterfaceCounterSample gates new
+	// pushes the same way, but a backlog queued while the endpoint was live
+	// survives a server ROLLBACK to v1 — and POSTing it to the now-absent
+	// /flow-counters endpoint 404s, which sendBatch would misread as "probe
+	// deleted", flapping the probe's approval and forcing a re-register every
+	// sync (audit L13). Discard the undeliverable backlog instead, so it
+	// neither 404s nor grows.
+	if c.flowCountersEnabled() {
 		drainAndSend(c, baseURL, drainChunk, queueDrainSpec[InterfaceCounterSample]{
 			queue: c.flowCounterQueue, endpoint: "/flow-counters", sendName: "flow-counters",
 			drainLabel: "flow-counters", unmarshalLabel: "interface counter",
@@ -1939,11 +1975,15 @@ func chunkSlice[T any](items []T, size int) [][]T {
 }
 
 // sendBatchesSequential sends items in MaxBatchSize chunks, pausing briefly
-// between chunks. On the first failed chunk it hands that chunk's items to
-// requeue and stops; any later chunks of this drain are left for the next sync
-// (unchanged from the previous per-type implementation). Generic over the
-// payload type so every event queue shares one path.
-func sendBatchesSequential[T any](c *Client, url, name string, items []*T, requeue func([]*T)) {
+// between chunks. On the first TRANSIENT failure it hands that chunk AND every
+// not-yet-attempted item after it to requeue and reports stopped=true so the
+// caller halts the drain — the server is unreachable, so continuing would just
+// fail chunk after chunk while the pre-fix code dropped this drain's unsent
+// tail on the floor (AUDIT-175: one syncData cycle during an outage collapsed
+// an arbitrarily large disk spool to the single requeued chunk). A PERMANENT
+// rejection still drops only that poison chunk and keeps going (M3). Generic
+// over the payload type so every event queue shares one path.
+func sendBatchesSequential[T any](c *Client, url, name string, items []*T, requeue func([]*T)) (stopped bool) {
 	actualBatchSize := c.Config.MaxBatchSize
 	if actualBatchSize <= 0 {
 		actualBatchSize = maxBatchSize
@@ -1967,39 +2007,48 @@ func sendBatchesSequential[T any](c *Client, url, name string, items []*T, reque
 			log.Printf("[Relay] Dropping %s batch chunk %d/%d (%d items): permanent server rejection", name, i+1, totalChunks, len(chunk))
 			continue
 		}
-		// Transient failure: requeue this chunk and leave the rest for next sync.
-		requeue(chunk)
-		log.Printf("[Relay] Failed to send %s batch chunk %d/%d (transient); requeued", name, i+1, totalChunks)
-		return
+		// Transient failure: requeue this chunk plus the whole unattempted tail
+		// (chunkSlice is contiguous from index 0, so items[i*actualBatchSize:]
+		// is exactly chunk i onward) and stop the drain until the next sync.
+		requeue(items[i*actualBatchSize:])
+		log.Printf("[Relay] Failed to send %s batch chunk %d/%d (transient); requeued it plus the %d-chunk remainder and stopped this drain", name, i+1, totalChunks, totalChunks-i-1)
+		return true
 	}
+	return false
 }
 
-// requeueItems pushes failed items back onto their queue (the newest tier) so
-// the next sync retries them. noun labels the count in the disabled/full
-// warnings; nounLong labels the success line (e.g. "traps" vs "trap events").
+// requeueItems pushes a failed ordered run back onto the HEAD of its queue in
+// one PushFront call, so the next drain retries it FIRST and re-chunks from
+// index 0 — the failed chunk then replays byte-identically, keeping the M19
+// content-derived idempotency key stable across sync cycles so the server's
+// (probe_id, batch_id) dedup catches the replay (AUDIT-213/214: the old
+// item-at-a-time tail Push regrouped the items into a differently-keyed batch
+// the server could not dedup, re-inserting a committed-but-timed-out batch as
+// duplicates). noun labels the count in the disabled/full warnings; nounLong
+// labels the success line (e.g. "traps" vs "trap events").
 func requeueItems[T any](q *queue.SpilloverQueue, items []*T, noun, nounLong string) {
 	if q == nil {
 		log.Printf("[Relay] WARNING: Could not requeue %d %s - queue disabled", len(items), noun)
 		return
 	}
-	requeued := 0
+	run := make([][]byte, 0, len(items))
 	for _, it := range items {
 		data, err := json.Marshal(it)
 		if err != nil {
 			log.Printf("[Relay] Failed to marshal %s for requeue: %v", noun, err)
 			continue
 		}
-		if err := q.Push(data); err != nil {
-			log.Printf("[Relay] Re-queue %s: %v", noun, err)
-			continue
-		}
-		requeued++
+		run = append(run, data)
 	}
-	if requeued > 0 {
-		log.Printf("[Relay] Re-queued %d %s", requeued, nounLong)
-	} else {
-		log.Printf("[Relay] WARNING: Could not requeue %d %s - queue full", len(items), noun)
+	if len(run) == 0 {
+		log.Printf("[Relay] WARNING: Could not requeue %d %s - nothing marshalable", len(items), noun)
+		return
 	}
+	if err := q.PushFront(run); err != nil {
+		log.Printf("[Relay] Re-queue %s: %v", noun, err)
+		return
+	}
+	log.Printf("[Relay] Re-queued %d %s at the queue head", len(run), nounLong)
 }
 
 // queueDrainSpec describes how one event queue is drained and forwarded.
@@ -2015,8 +2064,10 @@ type queueDrainSpec[T any] struct {
 }
 
 // drainAndSend repeatedly drains a queue in bounded chunks (AUDIT-058) and
-// forwards each chunk, requeuing on failure. Shared by every event queue so the
-// per-queue loops no longer copy-paste the pipeline.
+// forwards each chunk, requeuing on failure. A transient send failure stops
+// the whole drain (AUDIT-175): the failed run is already head-requeued and the
+// server is unreachable, so draining further would only churn. Shared by every
+// event queue so the per-queue loops no longer copy-paste the pipeline.
 func drainAndSend[T any](c *Client, baseURL string, drainChunk int, spec queueDrainSpec[T]) {
 	if spec.queue == nil {
 		return // queue not opened (spillover disabled, or a v2-gated queue on a v1 server)
@@ -2031,9 +2082,11 @@ func drainAndSend[T any](c *Client, baseURL string, drainChunk int, spec queueDr
 			break
 		}
 		items := unmarshalQueued[T](raw, spec.unmarshalLabel)
-		sendBatchesSequential(c, baseURL+spec.endpoint, spec.sendName, items, func(chunk []*T) {
+		if sendBatchesSequential(c, baseURL+spec.endpoint, spec.sendName, items, func(chunk []*T) {
 			requeueItems(spec.queue, chunk, spec.noun, spec.nounLong)
-		})
+		}) {
+			break // transient stop: retry from the queue head next sync
+		}
 		if len(raw) < drainChunk {
 			break
 		}
@@ -2067,7 +2120,7 @@ func discardQueue(q *queue.SpilloverQueue, chunk int, label string) {
 		}
 	}
 	if total > 0 {
-		log.Printf("[Relay] discarded %d buffered %s (server schema < 2; endpoint unavailable)", total, label)
+		log.Printf("[Relay] discarded %d buffered %s (endpoint unavailable: server schema too low, or suppressed after a 404)", total, label)
 	}
 }
 
@@ -2080,11 +2133,32 @@ func isRetryableStatus(statusCode int) bool {
 	// loops already pace with expBackoff (1s/2s/4s), which is the correct
 	// response to backpressure. The 4xx codes below are genuine permanent
 	// rejections (bad request, auth, not-found, conflict, gone, unprocessable).
-	case 400, 401, 403, 404, 405, 409, 410, 422:
+	//
+	// AUDIT-287: 413 (Payload Too Large) and 414 (URI Too Long) are PERMANENT
+	// too — every retry replays the byte-identical body (the M19 idempotency
+	// contract depends on that), so a body too large once is too large on
+	// every retry; treating them as transient requeued the oversized batch
+	// forever. The collector already clamps batches to the server's own
+	// 1000-item ingestion cap (serverMaxBatchItems in internal/config), so a
+	// 413 in practice means a proxy in FRONT of the server caps request
+	// bodies below the server's limit — an operator-side fix, named in the
+	// drop log (lower PROBE_MAX_BATCH_SIZE or raise the proxy's
+	// client_max_body_size).
+	case 400, 401, 403, 404, 405, 409, 410, 413, 414, 422:
 		return false
 	default:
 		return true
 	}
+}
+
+// permanentDropHint returns the operator remedy for permanent rejections that
+// have one (AUDIT-287: 413/414 imply a proxy request-size cap below the
+// server's own 1000-item batch limit), or "" for statuses that don't.
+func permanentDropHint(statusCode int) string {
+	if statusCode == 413 || statusCode == 414 {
+		return " — a proxy in front of the server rejects request bodies below the server's own batch cap; lower PROBE_MAX_BATCH_SIZE or raise the proxy's client_max_body_size"
+	}
+	return ""
 }
 
 // sendBatch delivers one batch and reports (delivered, permanent):
@@ -2127,15 +2201,19 @@ func (c *Client) sendBatch(url, name string, data interface{}) (delivered bool, 
 			return true, false
 		}
 
-		// A 404 on the schema-v2-only /flow-counters endpoint means the endpoint
-		// is UNSUPPORTED (a pre-v2 or rolled-back server), NOT that the probe was
-		// deleted — so drop this batch instead of deapproving + re-registering,
-		// and reflect the downgrade so syncData stops draining v2 counters next
-		// cycle (audit L13). A genuinely deleted probe still surfaces as a 404 on
-		// the core endpoints (/flows, /pings, …), which keep the re-register path.
+		// A 404 on the schema-v2-only /flow-counters endpoint means THAT ENDPOINT
+		// is unavailable (a pre-v2 or rolled-back server, or a proxy blip), NOT
+		// that the probe was deleted — so drop this batch instead of deapproving
+		// + re-registering, and suppress just that endpoint so syncData stops
+		// draining v2 counters (audit L13). AUDIT-288: the suppression is
+		// endpoint-scoped and self-expiring (flowCountersOffUntil), never a
+		// negotiatedSchema collapse — the old Store(1) also disabled the
+		// unrelated v3/v4/v5 features until restart. A genuinely deleted probe
+		// still surfaces as a 404 on the core endpoints (/flows, /pings, …),
+		// which keep the re-register path.
 		if resp.StatusCode == 404 && name == "flow-counters" {
-			log.Printf("[Relay] /flow-counters unsupported by server (404); dropping batch and disabling counter sync until re-negotiation")
-			c.negotiatedSchema.Store(1)
+			log.Printf("[Relay] /flow-counters unsupported by server (404); dropping batch and suppressing counter sync for %v (self-expiring; also cleared by re-registration)", flowCountersOffWindow)
+			c.flowCountersOffUntil.Store(time.Now().Add(flowCountersOffWindow).UnixNano())
 			return true, false // treat as consumed so the batch is not requeued
 		}
 
@@ -2156,7 +2234,7 @@ func (c *Client) sendBatch(url, name string, data interface{}) (delivered bool, 
 		}
 
 		if !isRetryableStatus(resp.StatusCode) {
-			log.Printf("[Relay] Non-retryable status %d for %s batch (dropping, permanent): %s", resp.StatusCode, name, string(bodyBytes))
+			log.Printf("[Relay] Non-retryable status %d for %s batch (dropping, permanent)%s: %s", resp.StatusCode, name, permanentDropHint(resp.StatusCode), string(bodyBytes))
 			return false, true
 		}
 
@@ -2273,7 +2351,7 @@ func (c *Client) SendConfigRevision(rev *ConfigRevision) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal config revision: %w", err)
 	}
-	url := c.Config.ServerURL + "/api/probes/" + fmt.Sprint(c.probeID) + "/config-revision"
+	url := c.Config.ServerURL + "/api/probes/" + fmt.Sprint(c.GetProbeID()) + "/config-revision"
 	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
 	if err != nil {
 		// AUDIT-054: enqueue on transport errors (TLS handshake, DNS,
@@ -2335,13 +2413,14 @@ func (c *Client) enqueueRevisionBytes(data []byte) {
 //
 // AUDIT-054 (v2) design note: the v1 attempt (closed PR #45) used
 // requeueRevisions with prepend-to-front semantics so re-failed items
-// would be retried first. With a SpilloverQueue (strict FIFO), the
-// only requeue primitive is Push, which appends to the tail. For the
-// revision use case the ordering is acceptable: revisions are
-// infrequent (one per config-change event), so "failed again at the
-// back of the line" still means a retry within one syncData cycle
-// (default 30s). If strict priority matters, a future change can
-// extend SpilloverQueue with a PushFront primitive.
+// would be retried first. At the time the SpilloverQueue's only requeue
+// primitive was the tail Push used here; SpilloverQueue.PushFront now
+// exists (added for the AUDIT-175 event-queue head-requeue), but the
+// revision path deliberately keeps the tail Push: revisions are
+// infrequent (one per config-change event) and each is retried
+// individually, so "failed again at the back of the line" still means
+// a retry within one syncData cycle (default 30s) and there is no
+// multi-item batch whose idempotency key a regroup could change.
 func (c *Client) sendRevisionBatch(url string, raw [][]byte) {
 	var failed [][]byte
 	for _, data := range raw {
@@ -2433,7 +2512,7 @@ func (c *Client) sendOneRevisionWithRetry(url string, rev *ConfigRevision) (deli
 		}
 
 		if !isRetryableStatus(resp.StatusCode) {
-			log.Printf("[Relay] SendConfigRevision non-retryable status %d for device %d (dropping, permanent): %s", resp.StatusCode, rev.DeviceID, string(bodyBytes))
+			log.Printf("[Relay] SendConfigRevision non-retryable status %d for device %d (dropping, permanent)%s: %s", resp.StatusCode, rev.DeviceID, permanentDropHint(resp.StatusCode), string(bodyBytes))
 			return false, true
 		}
 
@@ -2455,7 +2534,7 @@ func (c *Client) SendProcessSnapshot(snap *ProcessSnapshot) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal process snapshot: %w", err)
 	}
-	url := c.Config.ServerURL + "/api/probes/" + fmt.Sprint(c.probeID) + "/process-snapshot"
+	url := c.Config.ServerURL + "/api/probes/" + fmt.Sprint(c.GetProbeID()) + "/process-snapshot"
 	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
 	if err != nil {
 		return fmt.Errorf("failed to send process snapshot: %w", err)
@@ -2475,7 +2554,7 @@ func (c *Client) SendInterfaceErrorSnapshot(snap *InterfaceErrorSnapshot) error 
 	if err != nil {
 		return fmt.Errorf("failed to marshal interface error snapshot: %w", err)
 	}
-	url := c.Config.ServerURL + "/api/probes/" + fmt.Sprint(c.probeID) + "/interface-errors"
+	url := c.Config.ServerURL + "/api/probes/" + fmt.Sprint(c.GetProbeID()) + "/interface-errors"
 	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
 	if err != nil {
 		return fmt.Errorf("failed to send interface error snapshot: %w", err)
@@ -2498,7 +2577,7 @@ func (c *Client) SendInterfaceErrorSnapshots(snaps []InterfaceErrorSnapshot) err
 	if err != nil {
 		return fmt.Errorf("failed to marshal interface error snapshots: %w", err)
 	}
-	url := c.Config.ServerURL + "/api/probes/" + fmt.Sprint(c.probeID) + "/interface-errors"
+	url := c.Config.ServerURL + "/api/probes/" + fmt.Sprint(c.GetProbeID()) + "/interface-errors"
 	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
 	if err != nil {
 		return fmt.Errorf("failed to send interface error snapshots: %w", err)
@@ -2521,7 +2600,7 @@ func (c *Client) SendSensorDetails(sensors []SensorDetail) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal sensor details: %w", err)
 	}
-	url := c.Config.ServerURL + "/api/probes/" + fmt.Sprint(c.probeID) + "/sensor-details"
+	url := c.Config.ServerURL + "/api/probes/" + fmt.Sprint(c.GetProbeID()) + "/sensor-details"
 	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
 	if err != nil {
 		return fmt.Errorf("failed to send sensor details: %w", err)
@@ -2544,7 +2623,7 @@ func (c *Client) SendLicenseDetails(licenses []LicenseDetail) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal license details: %w", err)
 	}
-	url := c.Config.ServerURL + "/api/probes/" + fmt.Sprint(c.probeID) + "/license-details"
+	url := c.Config.ServerURL + "/api/probes/" + fmt.Sprint(c.GetProbeID()) + "/license-details"
 	resp, err := c.doAuthenticatedRequest("POST", url, jsonData)
 	if err != nil {
 		return fmt.Errorf("failed to send license details: %w", err)

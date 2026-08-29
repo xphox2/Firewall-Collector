@@ -83,18 +83,22 @@ func TestDoDirectSend_BuffersOnOutage_AndDrainsOnRecovery(t *testing.T) {
 
 // TestDoDirectSend_PermanentRejection_NotBuffered verifies a permanent 4xx is
 // dropped (and NOT queued), so a malformed batch can never wedge the queue.
+// 413 (AUDIT-287) is included: an oversized body is oversized on every
+// byte-identical replay, so buffering it would wedge drainMetricQueue forever.
 func TestDoDirectSend_PermanentRejection_NotBuffered(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadRequest) // 400 — permanent
-	}))
-	defer srv.Close()
+	for _, status := range []int{http.StatusBadRequest, http.StatusRequestEntityTooLarge} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status) // permanent
+		}))
 
-	c := newMetricQueueClient(t, srv)
-	if err := c.SendInterfaceStats([]InterfaceStats{{DeviceID: 1}}); err == nil {
-		t.Fatal("expected an error on a 400 response")
-	}
-	if d := c.metricQueue.Depth(); d != 0 {
-		t.Errorf("metric queue depth = %d, want 0 (permanent rejection must not be buffered)", d)
+		c := newMetricQueueClient(t, srv)
+		if err := c.SendInterfaceStats([]InterfaceStats{{DeviceID: 1}}); err == nil {
+			t.Fatalf("expected an error on a %d response", status)
+		}
+		if d := c.metricQueue.Depth(); d != 0 {
+			t.Errorf("status %d: metric queue depth = %d, want 0 (permanent rejection must not be buffered)", status, d)
+		}
+		srv.Close()
 	}
 }
 

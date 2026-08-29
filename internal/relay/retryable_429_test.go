@@ -13,8 +13,10 @@ func TestIsRetryableStatus_429IsRetryable(t *testing.T) {
 		t.Error("429 (Too Many Requests) must be retryable — it is server backpressure, not a permanent rejection")
 	}
 
-	// Permanent rejections must remain non-retryable.
-	for _, code := range []int{400, 401, 403, 404, 405, 409, 410, 422} {
+	// Permanent rejections must remain non-retryable. 413/414 (AUDIT-287): a
+	// body too large once is too large on every byte-identical retry, so
+	// treating them as transient requeued an oversized batch forever.
+	for _, code := range []int{400, 401, 403, 404, 405, 409, 410, 413, 414, 422} {
 		if isRetryableStatus(code) {
 			t.Errorf("status %d must remain non-retryable", code)
 		}

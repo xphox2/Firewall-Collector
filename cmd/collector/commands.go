@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -224,6 +225,16 @@ func (e *commandExecutor) handleOne(cmd relay.PendingCommand) {
 	}
 	e.inFlight[cmd.CommandID] = true
 	e.mu.Unlock()
+	// AUDIT-212: clear inFlight via defer so no exit path — panic included —
+	// can leave the CommandID wedged as forever-in-flight (a wedged entry made
+	// every redelivery of that command a silent no-op). The completed[...]
+	// cache write below stays a plain statement on the normal path: it must
+	// record only real outcomes.
+	defer func() {
+		e.mu.Lock()
+		delete(e.inFlight, cmd.CommandID)
+		e.mu.Unlock()
+	}()
 
 	status := "succeeded"
 	var resultText string
@@ -239,7 +250,7 @@ func (e *commandExecutor) handleOne(cmd relay.PendingCommand) {
 		if !ok {
 			status = "failed"
 			resultText = fmt.Sprintf("unknown command type %q", cmd.Type)
-		} else if out, err := handler(cmd); err != nil {
+		} else if out, err := callHandler(handler, cmd); err != nil {
 			status = "failed"
 			resultText = err.Error()
 		} else {
@@ -254,7 +265,6 @@ func (e *commandExecutor) handleOne(cmd relay.PendingCommand) {
 	}
 
 	e.mu.Lock()
-	delete(e.inFlight, cmd.CommandID)
 	e.completed[cmd.CommandID] = completedCommand{result: res, at: time.Now()}
 	e.mu.Unlock()
 
@@ -267,6 +277,24 @@ func (e *commandExecutor) handleOne(cmd relay.PendingCommand) {
 		// the cached-result branch above re-POSTs without re-executing.
 		log.Printf("[Commands] result POST for %s failed: %v", cmd.CommandID, err)
 	}
+}
+
+// callHandler invokes one command handler, converting a panic into an
+// ordinary error (AUDIT-212). Combined with the safego dispatch in the relay,
+// this means a poison command yields a `failed` result the server can consume
+// — ending its at-least-once redelivery on attempt 1 of 5 instead of
+// crash-looping the collector — and the rest of the batch still runs. The
+// stack is logged LOCALLY only; neither the stack nor the command payload
+// ever goes into the returned error, because the error text is stored
+// server-side (and payloads may carry credentials — never log them).
+func callHandler(h func(relay.PendingCommand) (string, error), cmd relay.PendingCommand) (out string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[Commands] PANIC in %s handler for command %s (recovered):\n%s", cmd.Type, cmd.CommandID, debug.Stack())
+			err = fmt.Errorf("command handler panicked: %v", r)
+		}
+	}()
+	return h(cmd)
 }
 
 // pruneCompletedLocked drops completed-result cache entries older than

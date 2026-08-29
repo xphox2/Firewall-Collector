@@ -39,8 +39,13 @@ func TestSendBatch_FlowCounters404DropsNotDeapprove_L13(t *testing.T) {
 	if !c.approved.Load() {
 		t.Error("probe was deapproved on a /flow-counters 404 — that's the L13 approval flap")
 	}
-	if got := c.negotiatedSchema.Load(); got != 1 {
-		t.Errorf("negotiatedSchema = %d, want 1 (downgrade recorded so counter sync stops)", got)
+	// AUDIT-288: the 404 must be recorded as an ENDPOINT suppression, never a
+	// schema collapse — Store(1) also disabled the unrelated v3/v4/v5 features.
+	if got := c.negotiatedSchema.Load(); got != 2 {
+		t.Errorf("negotiatedSchema = %d, want 2 (a /flow-counters 404 must not collapse the negotiated schema)", got)
+	}
+	if c.flowCountersEnabled() {
+		t.Error("flowCountersEnabled() = true after a /flow-counters 404 — counter sync must be suppressed")
 	}
 	if got := atomic.LoadInt32(&calls); got != 1 {
 		t.Errorf("server calls = %d, want 1 (no retry/re-register storm on the 404)", got)

@@ -275,16 +275,15 @@ func TestTryReregister_CooldownAfterMaxAttempts(t *testing.T) {
 	}
 }
 
-// ── requeueTraps (AUDIT-058) ──────────────────────────────────────────────────
+// ── requeueTraps (AUDIT-058 / AUDIT-175) ─────────────────────────────────────
 
-// requeueTraps puts failed items back into the queue. The new
-// SpilloverQueue model means failed items join the in-memory tier
-// (the "newest" tier), so they are sent AFTER the items that
-// overflowed to disk. The previous "prepend to front" behavior would
-// have retried the failed items first; that priority shift is
-// acceptable because the on-disk items have been waiting longer
-// anyway.
-func TestRequeueTraps_AppendsToQueue(t *testing.T) {
+// requeueItems puts a failed run back at the HEAD of the queue (PushFront),
+// so the next drain retries it FIRST and re-chunks from index 0 — replaying
+// the failed batch byte-identically under the same content-derived idempotency
+// key (AUDIT-213/214). The pre-fix tail Push sent the failed items AFTER
+// anything queued since, regrouping them into differently-keyed batches the
+// server could not dedup.
+func TestRequeueTraps_PushesToQueueHead(t *testing.T) {
 	orig := maxQueueSize
 	defer func() { maxQueueSize = orig }()
 	ConfigureLimits(100, 100)
@@ -300,7 +299,7 @@ func TestRequeueTraps_AppendsToQueue(t *testing.T) {
 		t.Fatalf("Drain: %v", err)
 	}
 	if len(items) != 2 {
-		t.Fatalf("total drained = %d, want 2 (newer + failed)", len(items))
+		t.Fatalf("total drained = %d, want 2 (failed + newer)", len(items))
 	}
 	var m0, m1 TrapEvent
 	if err := json.Unmarshal(items[0], &m0); err != nil {
@@ -309,11 +308,10 @@ func TestRequeueTraps_AppendsToQueue(t *testing.T) {
 	if err := json.Unmarshal(items[1], &m1); err != nil {
 		t.Fatalf("unmarshal 1: %v", err)
 	}
-	// Order: "newer" was pushed first, then "failed" via requeue.
-	// The SpilloverQueue's in-memory tier appends, so the new
-	// "failed" item sits at the end.
-	if m0.Message != "newer" || m1.Message != "failed" {
-		t.Errorf("order = [%q, %q], want [newer, failed]", m0.Message, m1.Message)
+	// Order: the requeued "failed" run drains FIRST — it is the queue's head —
+	// then "newer", which was pushed while it was out for delivery.
+	if m0.Message != "failed" || m1.Message != "newer" {
+		t.Errorf("order = [%q, %q], want [failed, newer] (head-requeue)", m0.Message, m1.Message)
 	}
 }
 
