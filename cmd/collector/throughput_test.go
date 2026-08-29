@@ -360,8 +360,8 @@ func TestSendPerformanceStatus_UsesCachedSNMPThroughput(t *testing.T) {
 	if got.SessionCount != 8542 {
 		t.Errorf("SessionCount = %d, want 8542", got.SessionCount)
 	}
-	if got.Uptime != 42*86400 {
-		t.Errorf("Uptime = %d, want %d", got.Uptime, 42*86400)
+	if got.Uptime != 42*86400*100 { // AUDIT-220: hundredths
+		t.Errorf("Uptime = %d, want %d", got.Uptime, 42*86400*100)
 	}
 }
 

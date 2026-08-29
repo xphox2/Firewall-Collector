@@ -163,11 +163,11 @@ func TestParsePerformanceStatus_MemoryKilobyteToBytes(t *testing.T) {
 	}
 }
 
-// Uptime days must be converted to seconds (days × 86400).
+// Uptime is emitted in HUNDREDTHS of a second (AUDIT-220: canonical SNMP timeticks unit; days × 8640000).
 func TestParsePerformanceStatus_UptimeDaysToSeconds(t *testing.T) {
 	output := `Uptime: 42 days`
 	info := ParsePerformanceStatus(output)
-	want := uint64(42 * 86400)
+	want := uint64(42 * 86400 * 100)
 	if info.Uptime != want {
 		t.Errorf("Uptime = %d, want %d", info.Uptime, want)
 	}
@@ -179,15 +179,15 @@ func TestParsePerformanceStatus_UptimeDaysToSeconds(t *testing.T) {
 func TestParsePerformanceStatus_UptimeDaysHoursMinutes(t *testing.T) {
 	output := `Uptime: 20 days, 3 hours, 26 minutes`
 	info := ParsePerformanceStatus(output)
-	want := uint64(20*86400 + 3*3600 + 26*60) // 1740360
+	want := uint64((20*86400 + 3*3600 + 26*60) * 100) // 174036000 (AUDIT-220: hundredths)
 	if info.Uptime != want {
 		t.Errorf("Uptime = %d, want %d", info.Uptime, want)
 	}
 
 	// Fresh boot: less than a day up must not round down to zero.
 	info = ParsePerformanceStatus(`Uptime: 0 days, 0 hours, 5 minutes`)
-	if info.Uptime != 300 {
-		t.Errorf("fresh-boot Uptime = %d, want 300", info.Uptime)
+	if info.Uptime != 30000 { // AUDIT-220: 300s × 100
+		t.Errorf("fresh-boot Uptime = %d, want 30000", info.Uptime)
 	}
 }
 

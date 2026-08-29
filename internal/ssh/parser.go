@@ -533,7 +533,7 @@ func ParsePerformanceStatus(output string) *PerformanceInfo {
 		}
 
 		if uptimeMatch := uptimeRegex.FindStringSubmatch(line); len(uptimeMatch) >= 2 {
-			// PerformanceInfo.Uptime is SECONDS. (The cross-source unit
+			// PerformanceInfo.Uptime is HUNDREDTHS of a second (AUDIT-220: canonicalized to the SNMP timeticks unit). (The cross-source unit
 			// mismatch with SNMP's TimeTicks hundredths is AUDIT-220's scope,
 			// deliberately not touched here.) Unmatched optional groups scan
 			// as "" → ParseUint error → 0, matching the old error handling.
@@ -545,7 +545,7 @@ func ParsePerformanceStatus(output string) *PerformanceInfo {
 			if len(uptimeMatch) >= 4 {
 				mins, _ = strconv.ParseUint(uptimeMatch[3], 10, 64)
 			}
-			info.Uptime = days*86400 + hours*3600 + mins*60
+			info.Uptime = (days*86400 + hours*3600 + mins*60) * 100 // AUDIT-220: hundredths, matching the SNMP timeticks unit the server consumer divides by 100 (was seconds → SSH-perf rows rendered 100x too small, incl. FortiGate's dual-writer flicker)
 			continue
 		}
 	}

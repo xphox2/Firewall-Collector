@@ -50,8 +50,8 @@ func TestGeneric_ParseSystemStatus(t *testing.T) {
 	if status.Version != "Acme Router OS 4.2 build 1234" {
 		t.Errorf("Version = %q", status.Version)
 	}
-	if status.Uptime != 86400 {
-		t.Errorf("Uptime = %d, want 86400", status.Uptime)
+	if status.Uptime != 8640000 { // AUDIT-220: raw hundredths, not seconds
+		t.Errorf("Uptime = %d, want 8640000", status.Uptime)
 	}
 	if status.MemoryTotal != 4096 {
 		t.Errorf("MemoryTotal = %d MB, want 4096", status.MemoryTotal)

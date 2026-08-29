@@ -93,7 +93,7 @@ func (o *OPNsenseProfile) ParseSystemStatus(pdus []gosnmp.SnmpPDU) *relay.System
 			status.Version = extractOPNsenseVersion(safeString(pdu.Value))
 		case onsOIDSysUpTime:
 			ticks := gosnmp.ToBigInt(pdu.Value).Uint64()
-			status.Uptime = ticks / 100
+			status.Uptime = ticks // AUDIT-220: store RAW hundredths (the consumer FormatUptime divides by 100 once; pre-dividing here made non-FortiGate uptime render 100x too small).
 		case onsOIDCpuUser:
 			cpuUser = gosnmp.ToBigInt(pdu.Value).Int64()
 		case onsOIDCpuSystem:
