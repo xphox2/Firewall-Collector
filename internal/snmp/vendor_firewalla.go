@@ -41,7 +41,9 @@ var (
 	fwOIDLaLoad15 = ".1.3.6.1.4.1.2021.10.1.3.3" // laLoad 15-min (string)
 
 	// --- lmSensors via NET-SNMP (1.3.6.1.4.1.2021.13.16) ---
-	fwBaseOIDLmTempSensor  = ".1.3.6.1.4.1.2021.13.16.2.1"
+	// Common parent of the temperature (.2.1) and fan (.3.1) subtrees, so one
+	// WalkAll covers both (AUDIT-298).
+	fwBaseOIDLmSensor      = ".1.3.6.1.4.1.2021.13.16"
 	fwOIDLmTempSensorDescr = ".1.3.6.1.4.1.2021.13.16.2.1.2" // lmTempSensorsDevice
 	fwOIDLmTempSensorValue = ".1.3.6.1.4.1.2021.13.16.2.1.3" // lmTempSensorsValue (milli°C)
 
@@ -166,7 +168,12 @@ func (f *FirewallaProfile) ParseVPNStatus(pdus []gosnmp.SnmpPDU) []relay.VPNStat
 // Hardware sensors: use lm-sensors via NET-SNMP extension MIB.
 // Only available if lm-sensors is installed and snmpd is configured to expose it.
 
-func (f *FirewallaProfile) HWSensorBaseOID() string { return fwBaseOIDLmTempSensor }
+// HWSensorBaseOID returns the lm-sensors parent OID so the single sensor walk
+// covers BOTH the temperature (.2.1) and fan (.3.1) subtrees (AUDIT-298).
+// Returning the temp-only subtree meant fan PDUs were never fetched and the fan
+// parse branches below were dead. Non-temp/fan PDUs under the parent are ignored
+// because the parse only matches the temp/fan Descr/Value OID prefixes.
+func (f *FirewallaProfile) HWSensorBaseOID() string { return fwBaseOIDLmSensor }
 
 func (f *FirewallaProfile) ParseHardwareSensors(pdus []gosnmp.SnmpPDU) []relay.HardwareSensor {
 	sensorMap := make(map[int]*relay.HardwareSensor)

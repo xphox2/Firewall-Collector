@@ -276,7 +276,11 @@ func (p *PaloAltoProfile) ParseHardwareSensors(pdus []gosnmp.SnmpPDU) []relay.Ha
 	var result []relay.HardwareSensor
 
 	for idx, sd := range sensors {
-		if sd.status == 2 || sd.status == 3 { // unavailable or nonoperational
+		// AUDIT-302: only status 2 (unavailable — sensor absent/unreadable) is
+		// dropped. status 3 (nonoperational) is a real fault and must reach the
+		// alarmStatus="alarm" branch below rather than being silently discarded
+		// as healthy. Mirrors the server-side fix.
+		if sd.status == 2 {
 			continue
 		}
 

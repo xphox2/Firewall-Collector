@@ -55,15 +55,20 @@ var (
 	OIDIfOutErrors    = ".1.3.6.1.2.1.2.2.1.20"
 
 	// ifXTable (RFC 2863)
-	BaseOIDIfXTable  = ".1.3.6.1.2.1.31.1.1.1"
-	OIDIfName        = ".1.3.6.1.2.1.31.1.1.1.1"
-	OIDIfHCInOctets  = ".1.3.6.1.2.1.31.1.1.1.6"
-	OIDIfHCOutOctets = ".1.3.6.1.2.1.31.1.1.1.10"
-	OIDIfHighSpeed   = ".1.3.6.1.2.1.31.1.1.1.15"
-	OIDIfAlias       = ".1.3.6.1.2.1.31.1.1.1.18"
+	BaseOIDIfXTable     = ".1.3.6.1.2.1.31.1.1.1"
+	OIDIfName           = ".1.3.6.1.2.1.31.1.1.1.1"
+	OIDIfHCInUcastPkts  = ".1.3.6.1.2.1.31.1.1.1.7"
+	OIDIfHCInOctets     = ".1.3.6.1.2.1.31.1.1.1.6"
+	OIDIfHCOutOctets    = ".1.3.6.1.2.1.31.1.1.1.10"
+	OIDIfHCOutUcastPkts = ".1.3.6.1.2.1.31.1.1.1.11"
+	OIDIfHighSpeed      = ".1.3.6.1.2.1.31.1.1.1.15"
+	OIDIfAlias          = ".1.3.6.1.2.1.31.1.1.1.18"
 
 	// Q-BRIDGE-MIB (native VLAN)
 	OIDdot1qPvid = ".1.3.6.1.2.1.17.7.1.4.5.1.1"
+	// BRIDGE-MIB dot1dBasePortIfIndex maps a dot1dBasePort (the index used by
+	// dot1qPvid) to an ifIndex (AUDIT-295).
+	OIDdot1dBasePortIfIndex = ".1.3.6.1.2.1.17.1.4.1.2"
 )
 
 // IfTypeNames maps IANA ifType values to human-readable names
@@ -71,12 +76,14 @@ var IfTypeNames = map[int]string{
 	1:   "other",
 	6:   "ethernet",
 	24:  "loopback",
+	47:  "gre",
 	53:  "propVirtual",
 	131: "tunnel",
 	135: "l2vlan",
 	136: "l3ipvlan",
 	150: "mplsTunnel",
 	161: "lag",
+	209: "bridge",
 	351: "vxlan",
 }
 
@@ -382,54 +389,18 @@ func (s *SNMPClient) GetInterfaceStats() ([]relay.InterfaceStats, error) {
 
 	// Walk ifXTable for extended counters and metadata
 	if xPdus, err := s.client.WalkAll(BaseOIDIfXTable); err == nil {
-		for _, pdu := range xPdus {
-			name := pdu.Name
-			if strings.HasPrefix(name, OIDIfName+".") {
-				idx := getIndexFromOID(name, OIDIfName)
-				if iface, ok := interfaces[idx]; ok {
-					ifName := safeString(pdu.Value)
-					if ifName != "" {
-						iface.Name = ifName
-					}
-					interfaces[idx] = iface
-				}
-			} else if strings.HasPrefix(name, OIDIfAlias+".") {
-				idx := getIndexFromOID(name, OIDIfAlias)
-				if iface, ok := interfaces[idx]; ok {
-					iface.Alias = safeString(pdu.Value)
-					interfaces[idx] = iface
-				}
-			} else if strings.HasPrefix(name, OIDIfHighSpeed+".") {
-				idx := getIndexFromOID(name, OIDIfHighSpeed)
-				if iface, ok := interfaces[idx]; ok {
-					iface.HighSpeed = uint64(gosnmp.ToBigInt(pdu.Value).Uint64())
-					interfaces[idx] = iface
-				}
-			} else if strings.HasPrefix(name, OIDIfHCInOctets+".") {
-				idx := getIndexFromOID(name, OIDIfHCInOctets)
-				if iface, ok := interfaces[idx]; ok {
-					iface.InBytes = uint64(gosnmp.ToBigInt(pdu.Value).Uint64())
-					interfaces[idx] = iface
-				}
-			} else if strings.HasPrefix(name, OIDIfHCOutOctets+".") {
-				idx := getIndexFromOID(name, OIDIfHCOutOctets)
-				if iface, ok := interfaces[idx]; ok {
-					iface.OutBytes = uint64(gosnmp.ToBigInt(pdu.Value).Uint64())
-					interfaces[idx] = iface
-				}
-			}
-		}
+		applyIfXTablePDUs(interfaces, xPdus)
 	}
 
-	// Walk Q-BRIDGE-MIB for VLAN IDs (not all devices support this)
+	// Walk Q-BRIDGE-MIB for VLAN IDs (not all devices support this). The PVID
+	// index must be resolved through dot1dBasePortIfIndex (AUDIT-295) — see
+	// applyPVIDs.
 	if vlanPdus, err := s.client.WalkAll(OIDdot1qPvid); err == nil {
-		for _, pdu := range vlanPdus {
-			idx := getIndexFromOID(pdu.Name, OIDdot1qPvid)
-			if iface, ok := interfaces[idx]; ok {
-				iface.VLANID = int(gosnmp.ToBigInt(pdu.Value).Int64())
-				interfaces[idx] = iface
-			}
+		var bpPdus []gosnmp.SnmpPDU
+		if p, bpErr := s.client.WalkAll(OIDdot1dBasePortIfIndex); bpErr == nil {
+			bpPdus = p
 		}
+		applyPVIDs(interfaces, vlanPdus, bpPdus)
 	}
 
 	// Resolve type names
@@ -447,6 +418,101 @@ func (s *SNMPClient) GetInterfaceStats() ([]relay.InterfaceStats, error) {
 	}
 
 	return result, nil
+}
+
+// applyIfXTablePDUs folds ifXTable (RFC 2863) PDUs into the interface map keyed
+// by ifIndex. The 64-bit HC octet AND ucast-packet counters overwrite the
+// 32-bit ifTable values set from the base walk (AUDIT-294), so busy links don't
+// report counters wrapped at 4 Gi. Only interfaces already present from the base
+// walk are updated. Extracted from GetInterfaceStats so it is unit-testable
+// without a live SNMP agent.
+func applyIfXTablePDUs(interfaces map[int]relay.InterfaceStats, xPdus []gosnmp.SnmpPDU) {
+	for _, pdu := range xPdus {
+		name := pdu.Name
+		if strings.HasPrefix(name, OIDIfName+".") {
+			idx := getIndexFromOID(name, OIDIfName)
+			if iface, ok := interfaces[idx]; ok {
+				ifName := safeString(pdu.Value)
+				if ifName != "" {
+					iface.Name = ifName
+				}
+				interfaces[idx] = iface
+			}
+		} else if strings.HasPrefix(name, OIDIfAlias+".") {
+			idx := getIndexFromOID(name, OIDIfAlias)
+			if iface, ok := interfaces[idx]; ok {
+				iface.Alias = safeString(pdu.Value)
+				interfaces[idx] = iface
+			}
+		} else if strings.HasPrefix(name, OIDIfHighSpeed+".") {
+			idx := getIndexFromOID(name, OIDIfHighSpeed)
+			if iface, ok := interfaces[idx]; ok {
+				iface.HighSpeed = uint64(gosnmp.ToBigInt(pdu.Value).Uint64())
+				interfaces[idx] = iface
+			}
+		} else if strings.HasPrefix(name, OIDIfHCInOctets+".") {
+			idx := getIndexFromOID(name, OIDIfHCInOctets)
+			if iface, ok := interfaces[idx]; ok {
+				iface.InBytes = uint64(gosnmp.ToBigInt(pdu.Value).Uint64())
+				interfaces[idx] = iface
+			}
+		} else if strings.HasPrefix(name, OIDIfHCOutOctets+".") {
+			idx := getIndexFromOID(name, OIDIfHCOutOctets)
+			if iface, ok := interfaces[idx]; ok {
+				iface.OutBytes = uint64(gosnmp.ToBigInt(pdu.Value).Uint64())
+				interfaces[idx] = iface
+			}
+		} else if strings.HasPrefix(name, OIDIfHCInUcastPkts+".") {
+			// AUDIT-294: 64-bit HC ucast packet counter overwrites the 32-bit
+			// ifTable value set above, which wraps at 4 Gpkt on busy links.
+			idx := getIndexFromOID(name, OIDIfHCInUcastPkts)
+			if iface, ok := interfaces[idx]; ok {
+				iface.InPackets = uint64(gosnmp.ToBigInt(pdu.Value).Uint64())
+				interfaces[idx] = iface
+			}
+		} else if strings.HasPrefix(name, OIDIfHCOutUcastPkts+".") {
+			idx := getIndexFromOID(name, OIDIfHCOutUcastPkts)
+			if iface, ok := interfaces[idx]; ok {
+				iface.OutPackets = uint64(gosnmp.ToBigInt(pdu.Value).Uint64())
+				interfaces[idx] = iface
+			}
+		}
+	}
+}
+
+// applyPVIDs attaches native-VLAN (dot1qPvid) values to interfaces. AUDIT-295:
+// dot1qPvid is indexed by dot1dBasePort, NOT ifIndex, so each base port is first
+// resolved to its ifIndex via the dot1dBasePortIfIndex PDUs. When the mapping
+// table is present but a specific base port is absent, the PVID is skipped
+// rather than mis-attributed. When the device exposes no mapping table at all,
+// it falls back to treating the PVID index as the ifIndex (the pre-fix behavior,
+// correct on agents where the two numbering spaces coincide). Extracted from
+// GetInterfaceStats for unit testing.
+func applyPVIDs(interfaces map[int]relay.InterfaceStats, vlanPdus, basePortPdus []gosnmp.SnmpPDU) {
+	basePortToIfIndex := make(map[int]int)
+	for _, pdu := range basePortPdus {
+		basePort := getIndexFromOID(pdu.Name, OIDdot1dBasePortIfIndex)
+		if basePort < 0 {
+			continue
+		}
+		basePortToIfIndex[basePort] = int(gosnmp.ToBigInt(pdu.Value).Int64())
+	}
+	haveMapping := len(basePortToIfIndex) > 0
+	for _, pdu := range vlanPdus {
+		basePort := getIndexFromOID(pdu.Name, OIDdot1qPvid)
+		ifIdx := basePort
+		if haveMapping {
+			resolved, ok := basePortToIfIndex[basePort]
+			if !ok {
+				continue
+			}
+			ifIdx = resolved
+		}
+		if iface, ok := interfaces[ifIdx]; ok {
+			iface.VLANID = int(gosnmp.ToBigInt(pdu.Value).Int64())
+			interfaces[ifIdx] = iface
+		}
+	}
 }
 
 func formatMAC(v interface{}) string {
@@ -483,6 +549,18 @@ func (s *SNMPClient) GetVPNStatus(vendor ...string) ([]relay.VPNStatus, error) {
 		pdus, err := s.client.WalkAll(baseOID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to walk VPN tunnel table: %w", err)
+		}
+		// AUDIT-221: profiles that derive VPN status from the interface table
+		// (Palo Alto, pfSense/OPNsense, Firewalla) also read 64-bit HC octet
+		// counters from ifXTable — but those OIDs live in a different subtree
+		// that the base walk never covers, so the HC branches never matched and
+		// byte counters wrapped at 4 GiB. Append the ifXTable walk AFTER the base
+		// walk so, for a given ifIndex, the HC assignment overwrites the 32-bit
+		// one during parsing.
+		if baseOID == BaseOIDInterface {
+			if xPdus, xErr := s.client.WalkAll(BaseOIDIfXTable); xErr == nil {
+				pdus = append(pdus, xPdus...)
+			}
 		}
 		statuses = profile.ParseVPNStatus(pdus)
 	}

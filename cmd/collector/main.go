@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/md5"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"net"
@@ -45,7 +46,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.3.40"
+const version = "1.3.41"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -202,6 +203,10 @@ func main() {
 	// side effects in unrelated telemetry.
 	relay.SetAgentVersion(version)
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	// AUDIT-238: install the slog handler honoring PROBE_LOG_LEVEL /
+	// PROBE_LOG_FORMAT. Without this call, main() never configured slog and both
+	// env vars were silently ignored in production (only the test invoked it).
+	setupLoggerWith(os.Stderr)
 
 	if isSSHToolSubcommand(os.Args[1:]) {
 		os.Exit(sshtool.Run(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
@@ -301,6 +306,12 @@ func main() {
 			return listenerBound[name]
 		},
 	})
+	// AUDIT-210: feed the firewall_collector_queue_depth gauge from the live
+	// relay queues. Installed BEFORE the metrics server starts serving so no
+	// scrape can race the source assignment. QueueDepth returns 0 until the
+	// queues are lazily opened on the first Send*, which is fine.
+	metrics.SetQueueDepthSource(relayClient.QueueDepth)
+
 	metricsServer := observability.NewServer(metrics, metricsAddr)
 	if err := metricsServer.Start(); err != nil {
 		// Bind failure is fatal in production (operator forgot to
@@ -363,9 +374,13 @@ func main() {
 	// (parse side and result-POST side), so nothing happens against a v3
 	// server. PR-1 ships only the `noop` command type.
 	c.relayClient.SetCommandHandler(newCommandExecutor(c.relayClient).HandleCommands)
-	// Count primary-metric send failures (M12).
+	// Count primary-metric send failures (M12). Also wire the previously-dead
+	// queue drop and data-batch-outcome metrics (AUDIT-210): both are installed
+	// before the send goroutines start, so the drop path never races the hook.
 	if c.metrics != nil {
 		c.relayClient.SetMetricSendFailedHook(c.metrics.IncMetricSendFailed)
+		c.relayClient.SetQueueDropHook(c.metrics.IncQueueDropped)
+		c.relayClient.SetDataBatchSentHook(c.metrics.OnDataBatchSent)
 	}
 	// Dual-export dedup (Tranche 3): one tracker shared by the sFlow and
 	// NetFlow flow-sample callbacks below. The onChange hook fires once per
@@ -2413,9 +2428,9 @@ func isSSHToolSubcommand(args []string) bool {
 }
 
 // setupLoggerWith configures the process-wide slog default logger to
-// write into buf (handy for tests; production passes os.Stderr) using
-// the level/format chosen by the PROBE_LOG_LEVEL and PROBE_LOG_FORMAT
-// environment variables.
+// write into w (production passes os.Stderr; tests pass a *bytes.Buffer,
+// which satisfies io.Writer) using the level/format chosen by the
+// PROBE_LOG_LEVEL and PROBE_LOG_FORMAT environment variables.
 //
 // Level allow-list: debug | info | warn | warning | error. Anything else
 // is silently clamped to info and a one-shot warning is written to
@@ -2424,7 +2439,7 @@ func isSSHToolSubcommand(args []string) bool {
 //
 // Format allow-list: text | json. Unknown values are silently treated
 // as text.
-func setupLoggerWith(buf *bytes.Buffer) {
+func setupLoggerWith(w io.Writer) {
 	lvl := slog.LevelInfo
 	levelStr := strings.ToLower(strings.TrimSpace(os.Getenv("PROBE_LOG_LEVEL")))
 	switch levelStr {
@@ -2444,9 +2459,9 @@ func setupLoggerWith(buf *bytes.Buffer) {
 	handlerOpts := &slog.HandlerOptions{Level: lvl}
 	var handler slog.Handler
 	if strings.EqualFold(os.Getenv("PROBE_LOG_FORMAT"), "json") {
-		handler = slog.NewJSONHandler(buf, handlerOpts)
+		handler = slog.NewJSONHandler(w, handlerOpts)
 	} else {
-		handler = slog.NewTextHandler(buf, handlerOpts)
+		handler = slog.NewTextHandler(w, handlerOpts)
 	}
 	slog.SetDefault(slog.New(handler))
 }

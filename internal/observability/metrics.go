@@ -134,8 +134,7 @@ type Metrics struct {
 	// pull the current queue depth into the gauge. This lets production
 	// code wire a closure that reads from the relay client's internal
 	// state without the observability package needing to import relay.
-	queueDepthSource   func(queue string) int
-	queueDroppedSource func(queue string) uint64
+	queueDepthSource func(queue string) int
 
 	// scrapes counts how many times /metrics has been served. Exposed
 	// for tests as a cheap health signal (one scrape == one record).
@@ -303,15 +302,6 @@ func New(cfg Config) *Metrics {
 // SetQueueDepth is called directly (used by tests).
 func (m *Metrics) SetQueueDepthSource(fn func(queue string) int) {
 	m.queueDepthSource = fn
-}
-
-// SetQueueDroppedSource installs a callback for refreshing the
-// firewall_collector_queue_dropped_total counter from live state. The
-// counter is cumulative so this is normally a no-op; provided for
-// symmetry with the depth source so production code can route both
-// values through the same wiring point.
-func (m *Metrics) SetQueueDroppedSource(fn func(queue string) uint64) {
-	m.queueDroppedSource = fn
 }
 
 // OnHeartbeatSuccess increments the heartbeat success counter. Call
@@ -483,11 +473,10 @@ func (m *Metrics) wrapMetricsHandler() http.Handler {
 // callback (if installed) and updates the corresponding Prometheus
 // gauges. Cheap when the source is nil.
 //
-// The dropped counter is intentionally not auto-refreshed: a
-// Counter in Prometheus is monotonic, and overwriting it with Set is
-// not allowed by the client_golang API. Production code should call
-// IncQueueDropped at each drop site; this callback is provided for
-// symmetry and may be wired in a future revision.
+// The dropped counter is intentionally not auto-refreshed: a Counter in
+// Prometheus is monotonic, and overwriting it with Set is not allowed by the
+// client_golang API. It is instead fed at each drop site via IncQueueDropped
+// (the queue's OnDrop callback, wired through the relay in AUDIT-210).
 func (m *Metrics) refreshDynamic() {
 	if m.queueDepthSource != nil {
 		for _, q := range allQueueNames {
@@ -550,7 +539,11 @@ func (m *Metrics) handleReadyz(w http.ResponseWriter, r *http.Request) {
 // allQueueNames is the fixed set of queue names the metrics know
 // about. Order matches the relay package's queue slice fields so the
 // label values are stable across scrapes.
-var allQueueNames = []string{"traps", "pings", "syslog", "flows"}
+// These must match the queue names the relay's ensureQueues opens (relay.go)
+// and the keys QueueDepth resolves, so the depth source and drop callback key
+// the same series. AUDIT-210 expanded this from the original 4 to all 7 real
+// spillover queues.
+var allQueueNames = []string{"traps", "pings", "syslog", "flows", "flow-counters", "revisions", "metrics"}
 
 // heartbeatFresh returns true if `t` is within 2× interval of now.
 // A zero time (never sent) is considered stale.

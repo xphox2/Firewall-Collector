@@ -36,6 +36,14 @@ type Config struct {
 	// MaxBytes is the on-disk byte cap (sum of stored key+value bytes).
 	// 0 disables byte-cap enforcement.
 	MaxBytes int64
+	// OnDrop, if set, is invoked once per item dropped from disk because of the
+	// byte cap (AUDIT-210) — the two q.dropped++ sites in appendToDisk. It lets
+	// the relay layer surface silent spillover data loss on the
+	// firewall_collector_queue_dropped_total metric WITHOUT this package
+	// importing observability (that would be an import cycle): the relay
+	// installs a plain callback. It is called while q.mu is held, so it must be
+	// cheap and non-blocking and must never call back into the queue.
+	OnDrop func()
 	// SyncInterval bounds how often the spillover file is fsync'd. The BoltDB is
 	// opened with NoSync so the hot Push path never blocks on a per-write fsync
 	// (the 2026-06-23 audit M7 stall, which dropped sFlow under load); durability
@@ -70,6 +78,7 @@ type SpilloverQueue struct {
 	dropped      uint64
 	seq          uint64
 	syncInterval time.Duration
+	onDrop       func()      // AUDIT-210: called per byte-cap drop (see Config.OnDrop)
 	dirty        atomic.Bool // set on write, cleared by the background sync (M18)
 
 	syncStop chan struct{}
@@ -158,6 +167,7 @@ func openAndReplay(cfg Config, syncInterval time.Duration) (*SpilloverQueue, err
 		db:           db,
 		bucket:       []byte(cfg.Bucket),
 		syncInterval: syncInterval,
+		onDrop:       cfg.OnDrop,
 	}
 	if err := q.replay(); err != nil {
 		_ = db.Close()
@@ -349,6 +359,7 @@ func (q *SpilloverQueue) PushFront(items [][]byte) error {
 // dropped and counted.
 func (q *SpilloverQueue) appendToDisk(item []byte) error {
 	addSize := int64(8 + len(item))
+	var dropped int // AUDIT-210: items dropped this call, surfaced via onDrop below
 
 	if err := q.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(q.bucket)
@@ -357,6 +368,7 @@ func (q *SpilloverQueue) appendToDisk(item []byte) error {
 			// Item cannot fit at all — drop it before touching the bucket.
 			if addSize > q.cfg.MaxBytes {
 				q.dropped++
+				dropped++
 				return nil
 			}
 			for q.diskSize+addSize > q.cfg.MaxBytes {
@@ -370,6 +382,7 @@ func (q *SpilloverQueue) appendToDisk(item []byte) error {
 				}
 				q.diskSize -= int64(len(k)) + int64(len(v))
 				q.dropped++
+				dropped++
 			}
 		}
 
@@ -383,6 +396,15 @@ func (q *SpilloverQueue) appendToDisk(item []byte) error {
 		return nil
 	}); err != nil {
 		return err
+	}
+
+	// AUDIT-210: fire the drop callback after the transaction, once per dropped
+	// item. Kept off the bolt transaction but still under q.mu (the caller holds
+	// it), so onDrop must stay cheap/non-blocking — see Config.OnDrop.
+	if dropped > 0 && q.onDrop != nil {
+		for i := 0; i < dropped; i++ {
+			q.onDrop()
+		}
 	}
 
 	// M18: the commit above did not fsync (NoSync). Just mark the queue dirty;
