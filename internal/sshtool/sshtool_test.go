@@ -627,8 +627,10 @@ Uptime: 7 days, 3 hours, 12 minutes
 	if perf.SessionCount != 42 {
 		t.Errorf("SessionCount = %d, want 42", perf.SessionCount)
 	}
-	if perf.Uptime != 7*86400 {
-		t.Errorf("Uptime = %d, want %d", perf.Uptime, 7*86400)
+	// Full days+hours+minutes — the old assertion pinned the AUDIT-303
+	// truncation bug (days only).
+	if want := uint64(7*86400 + 3*3600 + 12*60); perf.Uptime != want {
+		t.Errorf("Uptime = %d, want %d", perf.Uptime, want)
 	}
 }
 

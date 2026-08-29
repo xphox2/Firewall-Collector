@@ -172,8 +172,24 @@ func ParseProcessTop(output string) []ProcessInfo {
 }
 
 var (
-	ifaceNameRegex  = regexp.MustCompile(`(?i)^name:\s*(\S+)`)
-	ifaceErrorRegex = regexp.MustCompile(`(?i)errors[:\s]+(\d+).*?discards[:\s]+(\d+)`)
+	// Interface header: the "Name: wan1" block form AND the real FortiOS
+	// `diagnose netlink interface list` header "if=wan1 family=00 ..."
+	// (AUDIT-222). No verbatim device capture exists in either repo yet —
+	// when one becomes available it should be turned into a fixture.
+	ifaceNameRegex = regexp.MustCompile(`(?i)^(?:name:|if=)\s*(\S+)`)
+	// Direction-tagged errors+discards pair. Direction comes from the MATCH
+	// text, not the line, so a combined RX+TX line fills both directions
+	// instead of TX overwriting RX (AUDIT-222). Matches both the block shape
+	// "RX bytes 1000000  errors 5  discards 3" and netlink-style
+	// "rx_errors=5 rx_dropped=3" tokens. Known hazard: the discards group is
+	// undirected and pairs with the PRECEDING direction match, so a line
+	// missing one direction's discards token (e.g. "RX errors 5 TX errors 7
+	// discards 2") would cross-assign — no known real output has that shape;
+	// every observed form pairs errors+discards per direction.
+	ifaceErrPairRegex = regexp.MustCompile(`(?i)\b(rx|tx)(?:[_ ]?errors|[_ ]?bytes[^e]*errors)[=:\s]+(\d+).*?(?:discards|dropped)[=:\s]+(\d+)`)
+	// Compact netlink stat tokens: "rxe=5 txe=7 rxd=3 txd=2".
+	ifaceCompactErrRegex  = regexp.MustCompile(`(?i)\b(rx|tx)e[=:](\d+)`)
+	ifaceCompactDiscRegex = regexp.MustCompile(`(?i)\b(rx|tx)d[=:](\d+)`)
 )
 
 func ParseInterfaceList(output string) []InterfaceErrorInfo {
@@ -209,24 +225,59 @@ func ParseInterfaceList(output string) []InterfaceErrorInfo {
 			continue
 		}
 
-		line = strings.ToLower(line)
-		if strings.Contains(line, "rx") && strings.Contains(line, "errors") {
-			matches := ifaceErrorRegex.FindAllStringSubmatch(line, -1)
-			for _, m := range matches {
-				if len(m) >= 3 {
-					if v, err := strconv.ParseUint(m[1], 10, 64); err == nil {
-						if strings.Contains(line, "rx") {
-							currentInErrors = v
-						} else if strings.Contains(line, "tx") {
-							currentOutErrors = v
-						}
+		// The old gate required "rx" AND "errors" on the line and then chose
+		// the direction from the LINE text, so TX-only lines never parsed and
+		// combined lines overwrote RX with TX (AUDIT-222). The gate now admits
+		// either direction with any error/discard token (including the compact
+		// netlink "rxe=/txe=/rxd=/txd=" forms, which carry no "errors" word),
+		// and every regex below carries its own direction capture.
+		lower := strings.ToLower(line)
+		// Real FortiOS netlink output follows the cumulative "stat:" line
+		// with a "re:" RATE line carrying the SAME compact tokens
+		// (near-always zeros) — parsing it would clobber the cumulative
+		// counters with current rates. Firmware that omits it is unaffected.
+		if strings.HasPrefix(strings.TrimSpace(lower), "re:") {
+			continue
+		}
+		hasDirection := strings.Contains(lower, "rx") || strings.Contains(lower, "tx")
+		hasErrorToken := strings.Contains(lower, "errors") || strings.Contains(lower, "dropped") ||
+			strings.Contains(lower, "rxe=") || strings.Contains(lower, "txe=") ||
+			strings.Contains(lower, "rxd=") || strings.Contains(lower, "txd=")
+		if hasDirection && hasErrorToken {
+			for _, m := range ifaceErrPairRegex.FindAllStringSubmatch(lower, -1) {
+				if len(m) < 4 {
+					continue
+				}
+				if v, err := strconv.ParseUint(m[2], 10, 64); err == nil {
+					if m[1] == "rx" {
+						currentInErrors = v
+					} else {
+						currentOutErrors = v
 					}
-					if v, err := strconv.ParseUint(m[2], 10, 64); err == nil {
-						if strings.Contains(line, "rx") {
-							currentInDiscards = v
-						} else if strings.Contains(line, "tx") {
-							currentOutDiscards = v
-						}
+				}
+				if v, err := strconv.ParseUint(m[3], 10, 64); err == nil {
+					if m[1] == "rx" {
+						currentInDiscards = v
+					} else {
+						currentOutDiscards = v
+					}
+				}
+			}
+			for _, m := range ifaceCompactErrRegex.FindAllStringSubmatch(lower, -1) {
+				if v, err := strconv.ParseUint(m[2], 10, 64); err == nil {
+					if m[1] == "rx" {
+						currentInErrors = v
+					} else {
+						currentOutErrors = v
+					}
+				}
+			}
+			for _, m := range ifaceCompactDiscRegex.FindAllStringSubmatch(lower, -1) {
+				if v, err := strconv.ParseUint(m[2], 10, 64); err == nil {
+					if m[1] == "rx" {
+						currentInDiscards = v
+					} else {
+						currentOutDiscards = v
 					}
 				}
 			}
@@ -420,7 +471,11 @@ var (
 	networkUsageRegex = regexp.MustCompile(`Average network usage:\s+([\d.]+)\s+/\s+([\d.]+)\s+kbps\s+in\s+(\d+)\s+minute`)
 	sessionCountRegex = regexp.MustCompile(`Current sessions:\s+(\d+)`)
 	sessionRateRegex  = regexp.MustCompile(`Maximal sessions:\s+(\d+)\s+sessions\s+in\s+(\d+)\s+minute`)
-	uptimeRegex       = regexp.MustCompile(`Uptime:\s+(\d+)\s+days`)
+	// FortiOS prints "Uptime: 20 days, 3 hours, 26 minutes" — the hours and
+	// minutes segments are optional in the regex (and were formerly discarded
+	// entirely, so a fresh-booted device reported Uptime=0 for a whole day —
+	// AUDIT-303).
+	uptimeRegex = regexp.MustCompile(`Uptime:\s+(\d+)\s+days?(?:,\s*(\d+)\s+hours?)?(?:,\s*(\d+)\s+minutes?)?`)
 )
 
 func ParsePerformanceStatus(output string) *PerformanceInfo {
@@ -478,8 +533,19 @@ func ParsePerformanceStatus(output string) *PerformanceInfo {
 		}
 
 		if uptimeMatch := uptimeRegex.FindStringSubmatch(line); len(uptimeMatch) >= 2 {
+			// PerformanceInfo.Uptime is SECONDS. (The cross-source unit
+			// mismatch with SNMP's TimeTicks hundredths is AUDIT-220's scope,
+			// deliberately not touched here.) Unmatched optional groups scan
+			// as "" → ParseUint error → 0, matching the old error handling.
 			days, _ := strconv.ParseUint(uptimeMatch[1], 10, 64)
-			info.Uptime = days * 86400
+			var hours, mins uint64
+			if len(uptimeMatch) >= 3 {
+				hours, _ = strconv.ParseUint(uptimeMatch[2], 10, 64)
+			}
+			if len(uptimeMatch) >= 4 {
+				mins, _ = strconv.ParseUint(uptimeMatch[3], 10, 64)
+			}
+			info.Uptime = days*86400 + hours*3600 + mins*60
 			continue
 		}
 	}
