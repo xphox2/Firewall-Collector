@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.3.39 - 2026-08-28
+
+Audit remediation batch 5 (2026-08-27 engineering audit) — FortiGate SNMP and SSH parser correctness (AUDIT-177, AUDIT-217, AUDIT-218, AUDIT-219, AUDIT-222, AUDIT-299, AUDIT-300, AUDIT-303). Every finding was independently re-verified against current master before being fixed.
+
+### Fixed
+- **SD-WAN health metrics were ALL silently zero/garbage (AUDIT-177, High).** The fgVWLHealthCheckLinkTable column OIDs omitted the table-entry level (`.2.1`), so the "name" constant was the table node itself and its prefix branch swallowed every walked PDU: a dead SD-WAN link reported 0% packet loss with an empty state, indistinguishable from a healthy one. All seven column OIDs are corrected, and rows are now keyed by the full index suffix so a composite-indexed table (health-check id + member id) can no longer silently merge distinct links into one row. An SD-WAN state value outside the assumed enum is logged once per value so the first real deployment confirms the alive/dead polarity.
+- **SD-WAN packet loss now comes from the device's own computed column (AUDIT-219).** The parser reads fgVWLHealthCheckLinkPacketLoss directly; the old send/recv subtraction remains only as a fallback and is now underflow-guarded — counter timing skew where received exceeds sent previously produced a loss figure around 18 quintillion percent.
+- **Dialup VPN remote subnet no longer derives from mis-parsing the vdom column (AUDIT-217).** fgVpnDialUpTable's `.7` is the single destination address and `.8` is the vdom INTEGER — the old code read them as a begin/end IP pair. Emitted output is byte-identical (a `/32`, or `/0` for 0.0.0.0); this is a provenance fix pinned by a fixture test proving the vdom column is unread.
+- **Non-aligned selector ranges render as explicit ranges instead of wrong CIDR blocks (AUDIT-299).** `rangeToCIDR` verified only that the host bits were contiguous, not that the range started on the block boundary, so e.g. 10.0.1.255-10.0.2.0 was emitted as a wrong CIDR. Such ranges (and non-contiguous ones, previously joined without spaces) now use the spaced `begin - end` form — the exact shape the server's flow-attribution parser splits on; the unspaced form fell through to single-IP parsing there and silently dropped the pair.
+- **FortiGate voltage sensors report V, not mV (AUDIT-300).** fgHwSensorEntValue is a DisplayString in volts (e.g. "12.070000"); the unit label was a 1000x mislabel. Collector side only — the server twin is tracked separately (AUDIT-301).
+- **SSH uptime keeps hours and minutes (AUDIT-303).** `get system performance status` prints "Uptime: N days, N hours, N minutes" but only whole days were parsed, so a fresh-booted device reported uptime 0 for its first 24 hours.
+- **SSH TX interface error/discard counters were structurally unparseable (AUDIT-222).** The line gate required "rx", making the TX branch dead code, and a combined RX/TX line let the TX values overwrite RX. Direction is now captured from the matched token itself, and the parser additionally recognizes real FortiOS `diagnose netlink interface list` output: the `if=<name>` header form plus both the `rx_errors=/rx_dropped=` and compact `rxe=/txe=/rxd=/txd=` token shapes.
+
+### Added
+- **Parser fixture tests for the production-default vendor (AUDIT-218).** FortiGate — the default vendor profile — had roughly 700 parser lines with no test coverage beyond one hardware-sensor regression. New fixture suites cover the SD-WAN, dialup-VPN, site-to-site VPN, SSL-VPN, HA, security-stats, license, system-status and hardware-sensor parsers plus the range-to-CIDR table, including NoSuchInstance/NoSuchObject skip behavior; the SD-WAN and dialup fixtures use literal OID strings so a wrong constant can never pass its own test tautologically.
+
 ## 1.3.38 - 2026-08-28
 
 ### Added

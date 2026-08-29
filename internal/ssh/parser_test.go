@@ -173,6 +173,24 @@ func TestParsePerformanceStatus_UptimeDaysToSeconds(t *testing.T) {
 	}
 }
 
+// The full FortiOS form carries hours and minutes; they were formerly
+// discarded, so a fresh-booted device reported Uptime=0 for a whole day
+// (AUDIT-303).
+func TestParsePerformanceStatus_UptimeDaysHoursMinutes(t *testing.T) {
+	output := `Uptime: 20 days, 3 hours, 26 minutes`
+	info := ParsePerformanceStatus(output)
+	want := uint64(20*86400 + 3*3600 + 26*60) // 1740360
+	if info.Uptime != want {
+		t.Errorf("Uptime = %d, want %d", info.Uptime, want)
+	}
+
+	// Fresh boot: less than a day up must not round down to zero.
+	info = ParsePerformanceStatus(`Uptime: 0 days, 0 hours, 5 minutes`)
+	if info.Uptime != 300 {
+		t.Errorf("fresh-boot Uptime = %d, want 300", info.Uptime)
+	}
+}
+
 // Network kbps values are parsed as floats from the output line.
 func TestParsePerformanceStatus_NetworkKbpsParsed(t *testing.T) {
 	output := `Average network usage: 0.5 / 1000.0 kbps in 5 minute`
@@ -405,6 +423,83 @@ Name: dmz
 	if ifaces[2].Name != "dmz" {
 		t.Errorf("ifaces[2].Name = %q, want dmz", ifaces[2].Name)
 	}
+}
+
+// assertIfaceCounters pins all four error/discard counters of one interface.
+func assertIfaceCounters(t *testing.T, got InterfaceErrorInfo, inErr, inDisc, outErr, outDisc uint64) {
+	t.Helper()
+	if got.InErrors != inErr || got.InDiscards != inDisc {
+		t.Errorf("In errors/discards = %d/%d, want %d/%d", got.InErrors, got.InDiscards, inErr, inDisc)
+	}
+	if got.OutErrors != outErr || got.OutDiscards != outDisc {
+		t.Errorf("Out errors/discards = %d/%d, want %d/%d", got.OutErrors, got.OutDiscards, outErr, outDisc)
+	}
+}
+
+// Before AUDIT-222 the outer gate required "rx" on the line and the direction
+// was taken from the LINE text, so a TX-only line could never populate the
+// Out* counters — the TX branch was structurally unreachable.
+func TestParseInterfaceList_SplitRxTxLines(t *testing.T) {
+	output := `Name: wan1
+        RX bytes 1000000  errors 5  discards 3
+        TX bytes 2000000  errors 7  discards 2
+`
+	ifaces := ParseInterfaceList(output)
+	if len(ifaces) != 1 {
+		t.Fatalf("expected 1 interface, got %d", len(ifaces))
+	}
+	assertIfaceCounters(t, ifaces[0], 5, 3, 7, 2)
+}
+
+// A single line carrying both directions must fill both — the old code let
+// the TX group overwrite the RX values (direction came from the line, and
+// "rx" was always present on a combined line).
+func TestParseInterfaceList_CombinedRxTxLine(t *testing.T) {
+	output := `Name: wan1
+        RX bytes 1000000 errors 5 discards 3 TX bytes 2000000 errors 7 discards 2
+`
+	ifaces := ParseInterfaceList(output)
+	if len(ifaces) != 1 {
+		t.Fatalf("expected 1 interface, got %d", len(ifaces))
+	}
+	assertIfaceCounters(t, ifaces[0], 5, 3, 7, 2)
+}
+
+// Real FortiOS `diagnose netlink interface list` blocks start with
+// "if=<name> family=..." and carry token-form counters (AUDIT-222). No
+// verbatim device capture exists yet — this fixture mirrors the documented
+// token shapes; a real capture should replace it when available.
+func TestParseInterfaceList_NetlinkTokens(t *testing.T) {
+	output := `if=wan1 family=00 type=1 index=3 mtu=1500 link=0 master=0
+rx_errors=5 rx_dropped=3 tx_errors=7 tx_dropped=2
+if=lan1 family=00 type=1 index=4 mtu=1500 link=0 master=0
+rx_errors=1 rx_dropped=0 tx_errors=0 tx_dropped=4
+`
+	ifaces := ParseInterfaceList(output)
+	if len(ifaces) != 2 {
+		t.Fatalf("expected 2 interfaces, got %d", len(ifaces))
+	}
+	if ifaces[0].Name != "wan1" || ifaces[1].Name != "lan1" {
+		t.Fatalf("names = %q/%q, want wan1/lan1 (the if= header form must be recognized)", ifaces[0].Name, ifaces[1].Name)
+	}
+	assertIfaceCounters(t, ifaces[0], 5, 3, 7, 2)
+	assertIfaceCounters(t, ifaces[1], 1, 0, 0, 4)
+}
+
+// The compact netlink stat line uses rxe=/txe=/rxd=/txd= tokens with no
+// "errors"/"dropped" words at all.
+func TestParseInterfaceList_NetlinkCompactStat(t *testing.T) {
+	output := `if=wan1 family=00 type=1 index=3 mtu=1500 link=0 master=0
+stat: rxp=4986 txp=4459 rxb=331621 txb=879130 rxe=5 txe=7 rxd=3 txd=2 mc=0 collision=0
+`
+	ifaces := ParseInterfaceList(output)
+	if len(ifaces) != 1 {
+		t.Fatalf("expected 1 interface, got %d", len(ifaces))
+	}
+	if ifaces[0].Name != "wan1" {
+		t.Errorf("Name = %q, want wan1", ifaces[0].Name)
+	}
+	assertIfaceCounters(t, ifaces[0], 5, 3, 7, 2)
 }
 
 // ── ParseLicenseStatus ────────────────────────────────────────────────────────

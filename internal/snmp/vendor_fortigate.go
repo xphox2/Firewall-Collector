@@ -1,9 +1,13 @@
 package snmp
 
 import (
+	"encoding/binary"
 	"fmt"
+	"log"
+	"math/bits"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"firewall-collector/internal/relay"
@@ -53,13 +57,15 @@ var (
 	fgOIDVPNTunnelUpTime     = ".1.3.6.1.4.1.12356.101.12.2.2.1.21"
 
 	// fgVpnDialupTable — dial-up/dynamic VPN peers (hub-side of spoke/hub IPSec).
+	// Column .7 is fgVpnDialUpDstAddr (single remote address, not a range) and
+	// .8 is fgVpnDialUpVdom — an INTEGER, formerly mis-parsed as a "DstEnd" IP
+	// (AUDIT-217). There is no destination end column in this table.
 	fgBaseOIDVPNDialup      = ".1.3.6.1.4.1.12356.101.12.2.1.1"
 	fgOIDVPNDialupGateway   = ".1.3.6.1.4.1.12356.101.12.2.1.1.2"
 	fgOIDVPNDialupLifetime  = ".1.3.6.1.4.1.12356.101.12.2.1.1.3"
 	fgOIDVPNDialupSrcBegin  = ".1.3.6.1.4.1.12356.101.12.2.1.1.5"
 	fgOIDVPNDialupSrcEnd    = ".1.3.6.1.4.1.12356.101.12.2.1.1.6"
-	fgOIDVPNDialupDstBegin  = ".1.3.6.1.4.1.12356.101.12.2.1.1.7"
-	fgOIDVPNDialupDstEnd    = ".1.3.6.1.4.1.12356.101.12.2.1.1.8"
+	fgOIDVPNDialupDstAddr   = ".1.3.6.1.4.1.12356.101.12.2.1.1.7"
 	fgOIDVPNDialupInOctets  = ".1.3.6.1.4.1.12356.101.12.2.1.1.9"
 	fgOIDVPNDialupOutOctets = ".1.3.6.1.4.1.12356.101.12.2.1.1.10"
 
@@ -118,13 +124,20 @@ var (
 	fgOIDWFURLBlocked   = ".1.3.6.1.4.1.12356.101.10.1.2.1.1.3.1"
 
 	// --- SD-WAN health check (Part 5) ---
-	fgBaseOIDSDWANHealth    = ".1.3.6.1.4.1.12356.101.4.9"
-	fgOIDSDWANHealthName    = ".1.3.6.1.4.1.12356.101.4.9.2"
-	fgOIDSDWANHealthState   = ".1.3.6.1.4.1.12356.101.4.9.4"
-	fgOIDSDWANHealthLatency = ".1.3.6.1.4.1.12356.101.4.9.5"
-	fgOIDSDWANHealthPktSend = ".1.3.6.1.4.1.12356.101.4.9.7"
-	fgOIDSDWANHealthPktRecv = ".1.3.6.1.4.1.12356.101.4.9.8"
-	fgOIDSDWANHealthIfName  = ".1.3.6.1.4.1.12356.101.4.9.14"
+	// fgVWLHealthCheckLinkTable columns. The previous constants omitted the
+	// table-entry level (".2.1"), so fgOIDSDWANHealthName was the TABLE node
+	// itself and its HasPrefix arm swallowed every walked PDU — all SD-WAN
+	// metrics were silently zero/garbage (AUDIT-177). A real
+	// `snmpwalk .1.3.6.1.4.1.12356.101.4.9` capture from a deployed device
+	// should be turned into a fixture when one becomes available.
+	fgBaseOIDSDWANHealth    = ".1.3.6.1.4.1.12356.101.4.9.2"      // fgVWLHealthCheckLinkTable
+	fgOIDSDWANHealthName    = ".1.3.6.1.4.1.12356.101.4.9.2.1.2"  // fgVWLHealthCheckLinkName
+	fgOIDSDWANHealthState   = ".1.3.6.1.4.1.12356.101.4.9.2.1.4"  // ...LinkState
+	fgOIDSDWANHealthLatency = ".1.3.6.1.4.1.12356.101.4.9.2.1.5"  // ...LinkLatency (DisplayString)
+	fgOIDSDWANHealthPktSend = ".1.3.6.1.4.1.12356.101.4.9.2.1.7"  // ...LinkPacketSent
+	fgOIDSDWANHealthPktRecv = ".1.3.6.1.4.1.12356.101.4.9.2.1.8"  // ...LinkPacketReceived
+	fgOIDSDWANHealthPktLoss = ".1.3.6.1.4.1.12356.101.4.9.2.1.9"  // ...LinkPacketLoss (DisplayString %)
+	fgOIDSDWANHealthIfName  = ".1.3.6.1.4.1.12356.101.4.9.2.1.14" // ...LinkIfName
 
 	// --- License/contract table (Part 6) ---
 	fgBaseOIDLicense   = ".1.3.6.1.4.1.12356.101.4.6.3.1.1"
@@ -363,8 +376,7 @@ func (f *FortiGateProfile) ParseDialupVPNStatus(pdus []gosnmp.SnmpPDU) []relay.V
 	tunnelMap := make(map[int]*relay.VPNStatus)
 	srcBegin := make(map[int]string)
 	srcEnd := make(map[int]string)
-	dstBegin := make(map[int]string)
-	dstEnd := make(map[int]string)
+	dstAddr := make(map[int]string)
 
 	for _, pdu := range pdus {
 		if !isValidPDU(pdu) {
@@ -395,15 +407,10 @@ func (f *FortiGateProfile) ParseDialupVPNStatus(pdus []gosnmp.SnmpPDU) []relay.V
 			if idx >= 0 {
 				srcEnd[idx] = safeString(pdu.Value)
 			}
-		} else if strings.HasPrefix(name, fgOIDVPNDialupDstBegin+".") {
-			idx := getIndexFromOID(name, fgOIDVPNDialupDstBegin)
+		} else if strings.HasPrefix(name, fgOIDVPNDialupDstAddr+".") {
+			idx := getIndexFromOID(name, fgOIDVPNDialupDstAddr)
 			if idx >= 0 {
-				dstBegin[idx] = safeString(pdu.Value)
-			}
-		} else if strings.HasPrefix(name, fgOIDVPNDialupDstEnd+".") {
-			idx := getIndexFromOID(name, fgOIDVPNDialupDstEnd)
-			if idx >= 0 {
-				dstEnd[idx] = safeString(pdu.Value)
+				dstAddr[idx] = safeString(pdu.Value)
 			}
 		} else if strings.HasPrefix(name, fgOIDVPNDialupInOctets+".") {
 			idx := getIndexFromOID(name, fgOIDVPNDialupInOctets)
@@ -431,9 +438,12 @@ func (f *FortiGateProfile) ParseDialupVPNStatus(pdus []gosnmp.SnmpPDU) []relay.V
 		t.Status = "up"
 		t.State = "active"
 		t.TunnelType = "ipsec-dialup"
-		// Dialup table uses IP range selectors (begin/end) instead of addr/mask.
+		// The source selector is a begin/end IP range; the destination is a
+		// SINGLE address column (fgVpnDialUpDstAddr), so it renders as /32
+		// (or /0 for 0.0.0.0) — same output as before AUDIT-217, but no
+		// longer derived by mis-parsing the vdom integer as an end IP.
 		t.LocalSubnet = rangeToCIDR(srcBegin[idx], srcEnd[idx])
-		t.RemoteSubnet = rangeToCIDR(dstBegin[idx], dstEnd[idx])
+		t.RemoteSubnet = rangeToCIDR(dstAddr[idx], "")
 		// The gen1 dialup table has no tunnel name column; use remote gateway IP.
 		if t.TunnelName == "" {
 			if t.RemoteIP != "" {
@@ -450,6 +460,15 @@ func (f *FortiGateProfile) ParseDialupVPNStatus(pdus []gosnmp.SnmpPDU) []relay.V
 // rangeToCIDR converts an IP range (begin, end) to CIDR notation.
 // FortiGate dialup VPN table uses range selectors instead of addr/mask.
 // e.g. (10.0.0.0, 10.0.0.255) → "10.0.0.0/24"
+//
+// A range only IS a CIDR block when (a) begin XOR end is a contiguous run of
+// trailing one-bits AND (b) begin sits on the block boundary (host bits all
+// zero). The old code checked only (a), so a non-aligned range like
+// 10.0.1.255-10.0.2.0 was misrendered as a wrong CIDR block (AUDIT-299).
+// Ranges that are not clean blocks are emitted in the SPACED "begin - end"
+// form: the server's cidrToLikePattern splits on " - ", and an unspaced
+// "begin-end" falls through to single-IP parsing there, silently dropping the
+// pair from flow attribution.
 func rangeToCIDR(begin, end string) string {
 	if begin == "" {
 		return ""
@@ -469,38 +488,15 @@ func rangeToCIDR(begin, end string) string {
 	if eIP == nil {
 		return begin
 	}
-	// XOR begin and end to find host portion
-	xor := make([]byte, 4)
-	for i := 0; i < 4; i++ {
-		xor[i] = bIP[i] ^ eIP[i]
+	b := binary.BigEndian.Uint32(bIP)
+	e := binary.BigEndian.Uint32(eIP)
+	xor := b ^ e
+	// xor&(xor+1) != 0 → host bits not contiguous; b&xor != 0 → begin has
+	// one-bits inside the host portion (not the block's network address).
+	if xor&(xor+1) != 0 || b&xor != 0 {
+		return begin + " - " + end
 	}
-	// Valid CIDR range: XOR should be 0...0 then 1...1 (contiguous host bits)
-	// Count prefix bits (leading zeros in XOR)
-	prefixLen := 0
-	for i := 0; i < 4; i++ {
-		for bit := 7; bit >= 0; bit-- {
-			if xor[i]&(1<<uint(bit)) == 0 {
-				prefixLen++
-			} else {
-				// Verify remaining bits are all 1s
-				for j := i; j < 4; j++ {
-					startBit := 0
-					if j == i {
-						startBit = bit
-					} else {
-						startBit = 7
-					}
-					for b := startBit; b >= 0; b-- {
-						if xor[j]&(1<<uint(b)) == 0 {
-							// Not a clean CIDR — return as range
-							return begin + "-" + end
-						}
-					}
-				}
-				return fmt.Sprintf("%s/%d", begin, prefixLen)
-			}
-		}
-	}
+	prefixLen := 32 - bits.OnesCount32(xor)
 	return fmt.Sprintf("%s/%d", begin, prefixLen)
 }
 
@@ -569,7 +565,10 @@ func inferSensorUnit(s *relay.HardwareSensor) {
 		strings.Contains(lower, "+3.") || strings.Contains(lower, "+5.") ||
 		strings.Contains(lower, "+12") || strings.Contains(lower, "volt"):
 		s.Type = "voltage"
-		s.Unit = "mV"
+		// fgHwSensorEntValue is a DisplayString in VOLTS (e.g. "12.070000") —
+		// labeling it mV was a 1000x mislabel (AUDIT-300). The UI's
+		// getSensorIcon matches unit "v".
+		s.Unit = "V"
 	case strings.Contains(lower, "ps") && strings.Contains(lower, "status"):
 		s.Type = "power"
 		s.Unit = ""
@@ -879,60 +878,70 @@ func (f *FortiGateProfile) ParseSecurityStats(pdus []gosnmp.SnmpPDU) *relay.Secu
 
 func (f *FortiGateProfile) SDWANHealthBaseOID() string { return fgBaseOIDSDWANHealth }
 
+// sdwanUnknownStates throttles the unknown-state log below to once per
+// distinct value for the process lifetime.
+var (
+	sdwanUnknownStatesMu sync.Mutex
+	sdwanUnknownStates   = map[int64]bool{}
+)
+
+// logUnknownSDWANState logs an unexpected fgVWLHealthCheckLinkState value once.
+// The 0→"alive" mapping has never executed against a real device — if the enum
+// polarity is actually 1-based (alive=1), the first real deployment will log
+// every alive link's state value here and tell us.
+func logUnknownSDWANState(v int64) {
+	sdwanUnknownStatesMu.Lock()
+	defer sdwanUnknownStatesMu.Unlock()
+	if sdwanUnknownStates[v] {
+		return
+	}
+	sdwanUnknownStates[v] = true
+	log.Printf("[SNMP] fortigate SD-WAN health-check state value %d is outside the assumed enum (mapped to \"dead\") — capture `snmpwalk .1.3.6.1.4.1.12356.101.4.9` from this device to confirm the polarity and turn it into a fixture", v)
+}
+
 func (f *FortiGateProfile) ParseSDWANHealth(pdus []gosnmp.SnmpPDU) []relay.SDWANHealth {
-	healthMap := make(map[int]*relay.SDWANHealth)
+	// fgVWLHealthCheckLinkTable may be composite-indexed (health-check id +
+	// member id). getIndexFromOID keeps only the LAST index arc, which would
+	// silently merge distinct rows sharing a trailing arc — so rows are keyed
+	// by the FULL index suffix string instead (AUDIT-177).
+	healthMap := make(map[string]*relay.SDWANHealth)
+	row := func(name, column string) *relay.SDWANHealth {
+		key := strings.TrimPrefix(name, column+".")
+		if h, exists := healthMap[key]; exists {
+			return h
+		}
+		h := &relay.SDWANHealth{}
+		healthMap[key] = h
+		return h
+	}
 	for _, pdu := range pdus {
 		if !isValidPDU(pdu) {
 			continue
 		}
 		name := pdu.Name
-		if strings.HasPrefix(name, fgOIDSDWANHealthName+".") {
-			idx := getIndexFromOID(name, fgOIDSDWANHealthName)
-			if idx < 0 {
-				continue
-			}
-			h := getOrCreateSDWAN(healthMap, idx)
-			h.Name = safeString(pdu.Value)
-		} else if strings.HasPrefix(name, fgOIDSDWANHealthState+".") {
-			idx := getIndexFromOID(name, fgOIDSDWANHealthState)
-			if idx < 0 {
-				continue
-			}
-			h := getOrCreateSDWAN(healthMap, idx)
+		switch {
+		case strings.HasPrefix(name, fgOIDSDWANHealthName+"."):
+			row(name, fgOIDSDWANHealthName).Name = safeString(pdu.Value)
+		case strings.HasPrefix(name, fgOIDSDWANHealthState+"."):
+			h := row(name, fgOIDSDWANHealthState)
 			stateVal := gosnmp.ToBigInt(pdu.Value).Int64()
 			if stateVal == 0 {
 				h.State = "alive"
 			} else {
 				h.State = "dead"
+				logUnknownSDWANState(stateVal)
 			}
-		} else if strings.HasPrefix(name, fgOIDSDWANHealthLatency+".") {
-			idx := getIndexFromOID(name, fgOIDSDWANHealthLatency)
-			if idx < 0 {
-				continue
-			}
-			h := getOrCreateSDWAN(healthMap, idx)
-			h.Latency = parseStringFloat(pdu.Value)
-		} else if strings.HasPrefix(name, fgOIDSDWANHealthPktSend+".") {
-			idx := getIndexFromOID(name, fgOIDSDWANHealthPktSend)
-			if idx < 0 {
-				continue
-			}
-			h := getOrCreateSDWAN(healthMap, idx)
-			h.PacketSend = uint64(gosnmp.ToBigInt(pdu.Value).Uint64())
-		} else if strings.HasPrefix(name, fgOIDSDWANHealthPktRecv+".") {
-			idx := getIndexFromOID(name, fgOIDSDWANHealthPktRecv)
-			if idx < 0 {
-				continue
-			}
-			h := getOrCreateSDWAN(healthMap, idx)
-			h.PacketRecv = uint64(gosnmp.ToBigInt(pdu.Value).Uint64())
-		} else if strings.HasPrefix(name, fgOIDSDWANHealthIfName+".") {
-			idx := getIndexFromOID(name, fgOIDSDWANHealthIfName)
-			if idx < 0 {
-				continue
-			}
-			h := getOrCreateSDWAN(healthMap, idx)
-			h.Interface = safeString(pdu.Value)
+		case strings.HasPrefix(name, fgOIDSDWANHealthLatency+"."):
+			row(name, fgOIDSDWANHealthLatency).Latency = parseStringFloat(pdu.Value)
+		case strings.HasPrefix(name, fgOIDSDWANHealthPktSend+"."):
+			row(name, fgOIDSDWANHealthPktSend).PacketSend = uint64(gosnmp.ToBigInt(pdu.Value).Uint64())
+		case strings.HasPrefix(name, fgOIDSDWANHealthPktRecv+"."):
+			row(name, fgOIDSDWANHealthPktRecv).PacketRecv = uint64(gosnmp.ToBigInt(pdu.Value).Uint64())
+		case strings.HasPrefix(name, fgOIDSDWANHealthPktLoss+"."):
+			// The device's own computed loss percentage (DisplayString).
+			row(name, fgOIDSDWANHealthPktLoss).PacketLoss = parseStringFloat(pdu.Value)
+		case strings.HasPrefix(name, fgOIDSDWANHealthIfName+"."):
+			row(name, fgOIDSDWANHealthIfName).Interface = safeString(pdu.Value)
 		}
 	}
 
@@ -940,23 +949,17 @@ func (f *FortiGateProfile) ParseSDWANHealth(pdus []gosnmp.SnmpPDU) []relay.SDWAN
 	result := make([]relay.SDWANHealth, 0, len(healthMap))
 	for _, h := range healthMap {
 		h.Timestamp = now
-		// Compute packet loss from send/recv
-		if h.PacketSend > 0 {
+		// Prefer the device's own loss column (.9). Fall back to the send/recv
+		// subtraction only when it is absent, and only when recv <= send —
+		// counter timing skew can report recv > send, and an unguarded uint64
+		// subtraction would underflow to ~1.8e19% (AUDIT-219).
+		if h.PacketLoss == 0 && h.PacketSend > 0 && h.PacketRecv <= h.PacketSend {
 			lost := h.PacketSend - h.PacketRecv
 			h.PacketLoss = float64(lost) / float64(h.PacketSend) * 100
 		}
 		result = append(result, *h)
 	}
 	return result
-}
-
-func getOrCreateSDWAN(m map[int]*relay.SDWANHealth, index int) *relay.SDWANHealth {
-	if v, exists := m[index]; exists {
-		return v
-	}
-	v := &relay.SDWANHealth{}
-	m[index] = v
-	return v
 }
 
 // parseStringFloat tries to parse an SNMP value as a float64.
