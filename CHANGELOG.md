@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.40 - 2026-08-29
+
+Audit remediation (2026-08-27 engineering audit) — device uptime unit canonicalization (AUDIT-220, collector half of a cross-repo pair). Re-verified against master.
+
+### Fixed
+- **Non-FortiGate device uptime no longer reports 100x too small.** The seven non-FortiGate SNMP vendor profiles (OPNsense, SonicWall, Cisco ASA, Palo Alto, pfSense, Firewalla, generic) pre-divided `sysUpTime` by 100 to store seconds, but every server and frontend consumer divides the stored value by 100 again — so a 100-day OPNsense box displayed as "1d". These profiles now store the raw hundredths-of-a-second timeticks, matching FortiGate (the one profile that already did), so the consumer's single divide renders the correct value. FortiGate is unchanged.
+- **The SSH-performance uptime path is canonicalized to the same unit.** The SSH `get system performance status` parser emitted seconds; it now emits hundredths, matching the SNMP timeticks unit. This also fixes a pre-existing FortiGate display flicker: FortiGate reports both an SNMP row (hundredths, correct) and an SSH-perf row (formerly seconds, 100x too small), and the server picks whichever is newest — so FortiGate uptime intermittently rendered 100x too small whenever the SSH row won.
+
+**Wire-contract note:** `SystemStatus.Uptime` now carries hundredths for these producers instead of seconds. No server change is required for the collector-relayed path — the server consumer already assumes hundredths, so the change moves the display from wrong to right with no regression window. (The server's legacy single-device SNMP mode has its own copy of the pre-divide; that is corrected in the companion server release.)
+
 ## 1.3.39 - 2026-08-28
 
 Audit remediation batch 5 (2026-08-27 engineering audit) — FortiGate SNMP and SSH parser correctness (AUDIT-177, AUDIT-217, AUDIT-218, AUDIT-219, AUDIT-222, AUDIT-299, AUDIT-300, AUDIT-303). Every finding was independently re-verified against current master before being fixed.

@@ -86,7 +86,7 @@ func (s *SonicWallProfile) ParseSystemStatus(pdus []gosnmp.SnmpPDU) *relay.Syste
 			status.Version = "SonicOS " + safeString(pdu.Value)
 		case swOIDSysUpTime:
 			ticks := gosnmp.ToBigInt(pdu.Value).Uint64()
-			status.Uptime = ticks / 100
+			status.Uptime = ticks // AUDIT-220: store RAW hundredths (the consumer FormatUptime divides by 100 once; pre-dividing here made non-FortiGate uptime render 100x too small).
 		case swOIDCpuUtil:
 			status.CPUUsage = float64(gosnmp.ToBigInt(pdu.Value).Int64())
 		case swOIDRamUtil:

@@ -11,7 +11,7 @@ func asaSystemFixture() []gosnmp.SnmpPDU {
 	return []gosnmp.SnmpPDU{
 		{Name: asaOIDSysName, Type: gosnmp.OctetString, Value: "asa-branch-01"},
 		{Name: asaOIDSysDescr, Type: gosnmp.OctetString, Value: "Cisco Adaptive Security Appliance Version 9.16(4)8"},
-		{Name: asaOIDSysUpTime, Type: gosnmp.TimeTicks, Value: uint32(360000)}, // 3600 s
+		{Name: asaOIDSysUpTime, Type: gosnmp.TimeTicks, Value: uint32(360000)}, // 360000 raw hundredths (AUDIT-220)
 		{Name: asaOIDCpu1MinFirst, Type: gosnmp.Gauge32, Value: uint(17)},
 		{Name: asaOIDMemPoolUsed, Type: gosnmp.Gauge32, Value: uint(1073741824)}, // 1 GiB used
 		{Name: asaOIDMemPoolFree, Type: gosnmp.Gauge32, Value: uint(3221225472)}, // 3 GiB free
@@ -32,8 +32,8 @@ func TestCiscoASA_ParseSystemStatus(t *testing.T) {
 	if status.Version != "ASA 9.16(4)8" {
 		t.Errorf("Version = %q, want ASA 9.16(4)8", status.Version)
 	}
-	if status.Uptime != 3600 {
-		t.Errorf("Uptime = %d, want 3600", status.Uptime)
+	if status.Uptime != 360000 { // AUDIT-220: raw hundredths, not seconds
+		t.Errorf("Uptime = %d, want 360000", status.Uptime)
 	}
 	if status.CPUUsage != 17 {
 		t.Errorf("CPUUsage = %v, want 17", status.CPUUsage)
