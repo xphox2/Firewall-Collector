@@ -2,6 +2,7 @@ package snmp
 
 import (
 	"bytes"
+	"fmt"
 	"log"
 	"net"
 	"strings"
@@ -59,6 +60,72 @@ func TestTrapReceiver_CommunityMismatch_LogsDrop(t *testing.T) {
 	}
 	if !strings.Contains(out, "192.0.2.1") {
 		t.Errorf("expected the source IP in the drop log, got: %q", out)
+	}
+}
+
+// TestTrapReceiver_UnrecognizedTrap_VarbindLogCapped_AUDIT216 pins the varbind
+// log cap: an unrecognized trap carrying many varbinds must NOT log one line
+// per varbind (a single crafted UDP packet could otherwise flood the log). The
+// dump is bounded and followed by a "+N more" summary. On a reverted fix every
+// varbind is logged and this fails.
+func TestTrapReceiver_UnrecognizedTrap_VarbindLogCapped_AUDIT216(t *testing.T) {
+	withCleanVendorRegistry(t, func() {
+		tr := NewTrapReceiver("127.0.0.1", 0, "")
+		tr.handler = func(*relay.TrapEvent) {}
+
+		const nVarbinds = 500
+		vars := make([]gosnmp.SnmpPDU, nVarbinds)
+		for i := range vars {
+			vars[i] = gosnmp.SnmpPDU{
+				Name:  fmt.Sprintf(".1.3.6.1.4.1.99999.1.%d", i),
+				Type:  gosnmp.OctetString,
+				Value: []byte("x"),
+			}
+		}
+		packet := &gosnmp.SnmpPacket{Version: gosnmp.Version2c, Variables: vars}
+		addr := &net.UDPAddr{IP: net.ParseIP("10.0.0.1"), Port: 162}
+
+		out := withCapturedLog(t, func() {
+			if evt := tr.parseTrap(packet, addr); evt != nil {
+				t.Fatalf("expected nil for an unrecognized trap, got %+v", evt)
+			}
+		})
+
+		oidLines := strings.Count(out, "OID=")
+		if oidLines > 16 {
+			t.Errorf("unrecognized-trap dump logged %d per-varbind OID lines; want ≤ 16 (AUDIT-216 cap): %q", oidLines, out)
+		}
+		if !strings.Contains(out, "more varbinds") {
+			t.Errorf("expected a '+N more varbinds' summary line, got: %q", out)
+		}
+	})
+}
+
+// TestTrapReceiver_ConstantTimeCommunity_AUDIT317 anchors the allow/deny
+// semantics of the constant-time community compare (crypto/subtle). A timing
+// test is not meaningful over one-way UDP, so this guards behavioral parity: a
+// correct community is allowed, a wrong one denied, and an unset config stays
+// open. (It cannot fail on the constant-time property itself — reverting to a
+// plain compare keeps the same behavior — it guards the refactor's semantics.)
+func TestTrapReceiver_ConstantTimeCommunity_AUDIT317(t *testing.T) {
+	tr := NewTrapReceiver("127.0.0.1", 0, "s3cret")
+	if !tr.allowCommunity("s3cret", "192.0.2.1") {
+		t.Errorf("correct community denied")
+	}
+	if tr.allowCommunity("wrong", "192.0.2.1") {
+		t.Errorf("wrong community allowed")
+	}
+	if tr.allowCommunity("", "192.0.2.1") {
+		t.Errorf("empty supplied community allowed against a configured one")
+	}
+	// A prefix of the real community must not be accepted (length parity).
+	if tr.allowCommunity("s3cre", "192.0.2.1") {
+		t.Errorf("prefix of the community accepted")
+	}
+	// Unset config = filtering disabled (open) — preserved by the early return.
+	open := NewTrapReceiver("127.0.0.1", 0, "")
+	if !open.allowCommunity("anything", "192.0.2.1") {
+		t.Errorf("empty-config receiver should accept any community")
 	}
 }
 

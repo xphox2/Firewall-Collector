@@ -223,7 +223,9 @@ func (s *Server) serve() {
 
 		switch opcode {
 		case opRRQ:
-			log.Printf("[TFTP] RRQ from %s", clientAddr.String())
+			// AUDIT-307: the "RRQ from …" log moved into handleRRQ, emitted
+			// only AFTER the allowlist + rate-limit checks pass, so an
+			// unauthorized or flooding source cannot spam the log per packet.
 			s.wg.Add(1)
 			go func() {
 				defer s.wg.Done()
@@ -316,7 +318,14 @@ func (s *Server) handleWRQ(reqPkt []byte, clientAddr *net.UDPAddr) {
 
 	log.Printf("[TFTP] WRQ %q complete: %d bytes from %s", filename, len(data), clientAddr.String())
 
+	// AUDIT-306: the writeHandler callback (SendConfigRevision in prod) is
+	// tracked on s.wg so Shutdown()'s wg.Wait() blocks until it finishes.
+	// Without the Add/Done the outer handleWRQ goroutine's Done could fire —
+	// and Shutdown return — while a config revision was still in flight, losing
+	// it on shutdown.
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		defer func() {
 			if r := recover(); r != nil {
 				log.Printf("[TFTP] PANIC in writeHandler for %q: %v", filename, r)
@@ -337,6 +346,25 @@ func (s *Server) handleRRQ(reqPkt []byte, clientAddr *net.UDPAddr) {
 			log.Printf("[TFTP] PANIC in handleRRQ: %v", r)
 		}
 	}()
+
+	// AUDIT-307: reads get the SAME allowlist + rate-limit guards as writes
+	// (handleWRQ). Prod only registers a write handler today, but the first
+	// SetHandler/ReadHandler use would otherwise expose unrate-limited reads to
+	// any UDP/69 host. Run before any state mutation so a blocked or flooding
+	// peer consumes no socket/goroutine resources.
+	if !s.isSourceAllowed(clientAddr.IP) {
+		log.Printf("[TFTP] RRQ from %s: source IP not in allowlist — refusing", clientAddr.String())
+		s.sendErrorOn(s.conn, clientAddr, 2, "Access denied")
+		return
+	}
+	if !s.checkAndUpdateRateLimit(clientAddr.IP) {
+		log.Printf("[TFTP] RRQ from %s: rate-limited (min interval %v) — refusing",
+			clientAddr.String(), s.minWRQInterval)
+		s.sendErrorOn(s.conn, clientAddr, 0, "Rate limit exceeded")
+		return
+	}
+
+	log.Printf("[TFTP] RRQ from %s", clientAddr.String())
 
 	s.handlerMu.RLock()
 	h := s.readHandler

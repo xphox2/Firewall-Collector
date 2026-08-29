@@ -46,7 +46,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.3.42"
+const version = "1.3.43"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -519,6 +519,10 @@ func main() {
 		// M16 of the 2026-07-01 audit: give the TCP path the same per-source
 		// rate limit as UDP (they share the port and the PPS budget).
 		syslogTCP.SetRateLimiter(newLimiter(probeCfg.SyslogRateLimitPPS, probeCfg.SyslogRateLimitGlobalPPS), func() { c.metrics.IncRateLimitedDrop("syslog") })
+		// AUDIT-305: surface malformed-message drops as a metric — the receivers
+		// count these silently now (no per-message log), so this hook is the only
+		// operator signal.
+		syslogTCP.SetParseErrorHook(func() { c.metrics.IncSyslogParseError("tcp") })
 		if err := syslogTCP.Start(func(msg *relay.SyslogMessage) {
 			c.handleSyslogMessage(msg, probeID)
 		}); err != nil {
@@ -531,6 +535,7 @@ func main() {
 
 		syslogUDP := syslog.NewUDPSyslogReceiver(probeCfg.ListenAddr, probeCfg.SyslogPort)
 		syslogUDP.SetRateLimiter(newLimiter(probeCfg.SyslogRateLimitPPS, probeCfg.SyslogRateLimitGlobalPPS), func() { c.metrics.IncRateLimitedDrop("syslog") })
+		syslogUDP.SetParseErrorHook(func() { c.metrics.IncSyslogParseError("udp") })
 		syslogUDP.SetWorkers(probeCfg.UDPWorkers)
 		if err := syslogUDP.Start(func(msg *relay.SyslogMessage) {
 			c.handleSyslogMessage(msg, probeID)
@@ -2061,6 +2066,60 @@ func (c *Collector) pruneSNMPARPFlags(devices []relay.DeviceInfo) {
 	}
 }
 
+// pruneIfaceIPMap drops interface-IP→device-ID cache entries for devices no
+// longer in the assigned list (AUDIT-237). resolveDeviceByIP reads this cache,
+// so without pruning a decommissioned device's IP — reassigned to a NEW device
+// — keeps resolving to the STALE device until the entry is overwritten or the
+// process restarts, misattributing that device's flows/traps/syslog. The
+// sibling device-ID-keyed caches (failCount, sshLastPoll, lastBackupAt,
+// observedHostKeys) leak identically on device removal and are pruned here too.
+func (c *Collector) pruneIfaceIPMap(devices []relay.DeviceInfo) {
+	keep := make(map[uint]bool, len(devices))
+	for _, d := range devices {
+		keep[d.ID] = true
+	}
+
+	c.ifaceIPMu.Lock()
+	for ip, id := range c.ifaceIPMap {
+		if !keep[id] {
+			delete(c.ifaceIPMap, ip)
+		}
+	}
+	c.ifaceIPMu.Unlock()
+
+	c.failCountMu.Lock()
+	for id := range c.failCount {
+		if !keep[id] {
+			delete(c.failCount, id)
+		}
+	}
+	c.failCountMu.Unlock()
+
+	c.sshLastPollMu.Lock()
+	for id := range c.sshLastPoll {
+		if !keep[id] {
+			delete(c.sshLastPoll, id)
+		}
+	}
+	c.sshLastPollMu.Unlock()
+
+	c.cfgBackupMu.Lock()
+	for id := range c.lastBackupAt {
+		if !keep[id] {
+			delete(c.lastBackupAt, id)
+		}
+	}
+	c.cfgBackupMu.Unlock()
+
+	c.observedHostKeysMu.Lock()
+	for id := range c.observedHostKeys {
+		if !keep[id] {
+			delete(c.observedHostKeys, id)
+		}
+	}
+	c.observedHostKeysMu.Unlock()
+}
+
 func (c *Collector) recordPollFailure(deviceID uint) {
 	c.failCountMu.Lock()
 	c.failCount[deviceID]++
@@ -2141,6 +2200,7 @@ func (c *Collector) deviceRefreshLoop() {
 			c.applyTFTPAllowlist()
 			c.pruneThroughputCache(devices)
 			c.pruneSNMPARPFlags(devices)
+			c.pruneIfaceIPMap(devices)
 
 			names := make([]string, len(devices))
 			for i, d := range devices {

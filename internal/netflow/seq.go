@@ -1,6 +1,9 @@
 package netflow
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 // Sequence-loss tracking (research §2.7): every flow protocol numbers its
 // exports, but with VERSION-SPECIFIC semantics — v5 counts flow records, v9
@@ -17,6 +20,17 @@ import "sync"
 // spoofing source could otherwise grow one entry per forged (IP, domain) pair
 // — same memory-DoS rationale as the template-cache caps.
 const maxSeqStates = 4096
+
+// seqStateTTL bounds how long an idle sequence space is remembered. AUDIT-283:
+// the cap above REFUSES new keys once full but never EVICTS, so a sender
+// enumerating the domain field can fill the map to maxSeqStates permanently —
+// observe() then refuses every real space and gap detection is silently
+// disabled fleet-wide until a process restart. The maintenance ticker calls
+// sweep to evict spaces not seen within this window, freeing cap for live
+// exporters — the same idle-eviction posture every sibling cache uses
+// (templateCache.sweep, samplerCache.sweepOrphans). 30 min matches the
+// template TTL: a space with no datagram in 30 min is dead weight.
+const seqStateTTL = 30 * time.Minute
 
 // seqGapPlausibleLimit splits a nonzero modular delta into "loss" vs
 // "renumbering". Modular uint32 math cannot tell a backward jump of J from a
@@ -37,9 +51,10 @@ type seqKey struct {
 
 // seqState is the per-space expectation.
 type seqState struct {
-	next     uint32 // expected sequence value of the next datagram
-	uptimeMs int64  // last seen header sysUptime (-1 = none seen / IPFIX)
-	valid    bool   // next is trustworthy (false after init or an uncountable message)
+	next     uint32    // expected sequence value of the next datagram
+	uptimeMs int64     // last seen header sysUptime (-1 = none seen / IPFIX)
+	valid    bool      // next is trustworthy (false after init or an uncountable message)
+	lastSeen time.Time // AUDIT-283: last observe() time, for the idle sweep
 }
 
 // seqTracker holds every sequence space's state. All methods are
@@ -99,5 +114,24 @@ func (t *seqTracker) observe(k seqKey, seq, records uint32, uptimeMs int64, hasU
 	}
 	st.next = seq + records // modular wrap is the correct behavior
 	st.valid = countable
+	st.lastSeen = time.Now()
 	return event
+}
+
+// sweep evicts sequence spaces not observed within seqStateTTL and returns how
+// many were removed (AUDIT-283). Called from the receiver's maintenance ticker
+// so the map cannot be pinned at maxSeqStates by a burst of one-shot forged
+// (IP, domain) pairs, which would otherwise refuse tracking for every real
+// exporter that arrives afterward.
+func (t *seqTracker) sweep(now time.Time) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	removed := 0
+	for k, st := range t.states {
+		if now.Sub(st.lastSeen) > seqStateTTL {
+			delete(t.states, k)
+			removed++
+		}
+	}
+	return removed
 }

@@ -278,5 +278,18 @@ func parseBool(envKey string, defaultVal bool) bool {
 	if v == "" {
 		return defaultVal
 	}
-	return v == "true" || v == "1" || v == "yes"
+	// AUDIT-263: the compare is case-insensitive and a value matching NEITHER
+	// the true-set nor the false-set falls back to defaultVal with a warning,
+	// instead of silently reading as false. The old code was case-sensitive and
+	// returned false for anything but "true"/"1"/"yes", so YAML capitalization
+	// (PROBE_SYSLOG_ENABLED: True) silently disabled a listener that defaults on.
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "true", "1", "yes", "on":
+		return true
+	case "false", "0", "no", "off":
+		return false
+	default:
+		log.Printf("%s: unrecognized boolean %q (want true/false/1/0/yes/no/on/off) — using default %v", envKey, v, defaultVal)
+		return defaultVal
+	}
 }

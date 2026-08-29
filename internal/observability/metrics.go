@@ -107,6 +107,8 @@ type Metrics struct {
 
 	rateLimitedDrops *prometheus.CounterVec
 
+	syslogParseErrors *prometheus.CounterVec
+
 	netflowEvents       *prometheus.CounterVec
 	flowDedupSuppressed *prometheus.CounterVec
 
@@ -215,6 +217,18 @@ func New(cfg Config) *Metrics {
 		Help: "Datagrams dropped by the per-source-IP rate limiter, by listener.",
 	}, []string{"listener"})
 
+	// Labeled by transport (udp|tcp) — a small fixed set, NOT per-source (same
+	// cardinality rule as rateLimitedDrops). Counts malformed syslog messages
+	// dropped at parse time. The receivers count these silently (AUDIT-305:
+	// per-message logging was a log-flood vector), so this counter is the ONLY
+	// operator-visible signal that a source is emitting unparseable syslog —
+	// sustained growth means a misconfigured/incompatible exporter or garbage
+	// on the port.
+	m.syslogParseErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "firewall_collector_syslog_parse_errors_total",
+		Help: "Malformed syslog messages dropped at parse time, by transport (udp|tcp).",
+	}, []string{"transport"})
+
 	// Labeled by parse-event class (malformed|unknown_version|
 	// data_before_template|template_quarantined|seq_gap|…) — a small fixed set
 	// emitted by internal/netflow, NOT per-exporter (same cardinality rule as
@@ -281,6 +295,7 @@ func New(cfg Config) *Metrics {
 		m.queueDepth,
 		m.queueDropped,
 		m.rateLimitedDrops,
+		m.syslogParseErrors,
 		m.netflowEvents,
 		m.flowDedupSuppressed,
 		m.pollDuration,
@@ -343,6 +358,16 @@ func (m *Metrics) IncRateLimitedDrop(listener string) {
 		return
 	}
 	m.rateLimitedDrops.WithLabelValues(listener).Inc()
+}
+
+// IncSyslogParseError increments firewall_collector_syslog_parse_errors_total
+// for the given transport ("udp"|"tcp"). Wired to each syslog receiver's
+// SetParseErrorHook. Nil-safe so tests/wiring without metrics don't panic.
+func (m *Metrics) IncSyslogParseError(transport string) {
+	if m == nil {
+		return
+	}
+	m.syslogParseErrors.WithLabelValues(transport).Inc()
 }
 
 // IncNetFlowEvent increments firewall_collector_netflow_events_total for the

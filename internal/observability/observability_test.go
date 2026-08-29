@@ -221,6 +221,48 @@ func TestMetrics_DropCounterIncrements(t *testing.T) {
 	}
 }
 
+// TestMetrics_SyslogParseErrorExposed — AUDIT-305: the syslog parse-error count
+// (the receivers count malformed messages silently now) must be visible on
+// /metrics, per transport, so an operator retains a signal for unparseable
+// syslog after per-message logging was removed.
+func TestMetrics_SyslogParseErrorExposed(t *testing.T) {
+	metrics := New(Config{Version: "test", Vendor: "unit"})
+	for i := 0; i < 3; i++ {
+		metrics.IncSyslogParseError("udp")
+	}
+	metrics.IncSyslogParseError("tcp")
+
+	srv := NewServer(metrics, "127.0.0.1:0")
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	status, body := get(t, "http://"+srv.Addr().String()+"/metrics")
+	if status != http.StatusOK {
+		t.Fatalf("/metrics status = %d, want 200", status)
+	}
+	for _, want := range []string{
+		`firewall_collector_syslog_parse_errors_total{transport="udp"} 3`,
+		`firewall_collector_syslog_parse_errors_total{transport="tcp"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/metrics body missing %q\n--- body ---\n%s\n--- end ---", want, body)
+		}
+	}
+}
+
+// TestMetrics_SyslogParseErrorNilSafe guards the nil-receiver path used by
+// tests/wiring without metrics.
+func TestMetrics_SyslogParseErrorNilSafe(t *testing.T) {
+	var m *Metrics
+	m.IncSyslogParseError("udp") // must not panic
+}
+
 // TestMetrics_BuildInfoPresent — the build_info gauge must always
 // render a series, even before any other event has happened. This is
 // what lets dashboards show "version 1.2.99, vendor acme" at all

@@ -52,7 +52,24 @@ type SyslogReceiver struct {
 	limiter    *ratelimit.Limiter
 	onRateDrop func()
 	connSem    chan struct{} // bounded concurrent-connection semaphore
+
+	// parseErrors counts malformed lines. AUDIT-305: both syslog paths count
+	// parse failures instead of logging one line per malformed message — a
+	// flood of garbage would otherwise DoS the log. onParseError, if set, is
+	// fired once per malformed line so the count reaches the metrics surface
+	// (firewall_collector_syslog_parse_errors_total) — the only operator signal
+	// now that per-message logging is gone.
+	parseErrors  atomic.Uint64
+	onParseError func()
 }
+
+// ParseErrors reports the number of malformed lines dropped (AUDIT-305).
+func (s *SyslogReceiver) ParseErrors() uint64 { return s.parseErrors.Load() }
+
+// SetParseErrorHook registers a callback fired once per malformed line, used to
+// surface the count as a metric. Nil disables it. Set before Start. Mirrors the
+// NetFlow receiver's SetParseEventCallback.
+func (s *SyslogReceiver) SetParseErrorHook(fn func()) { s.onParseError = fn }
 
 func NewSyslogReceiver(listenAddr string, port int) *SyslogReceiver {
 	return &SyslogReceiver{
@@ -206,6 +223,10 @@ func (s *SyslogReceiver) handleConnection(conn net.Conn) {
 
 			msg, err := ParseRFC5424(line)
 			if err != nil {
+				s.parseErrors.Add(1)
+				if s.onParseError != nil {
+					s.onParseError()
+				}
 				continue // M16: don't log per malformed line — a flood would DoS the log
 			}
 
@@ -244,7 +265,22 @@ type UDPSyslogReceiver struct {
 	stopCh     chan struct{}
 	stopOnce   sync.Once
 	wg         sync.WaitGroup
+
+	// parseErrors counts malformed datagrams. AUDIT-305: the UDP path formerly
+	// logged one line per malformed datagram, so an unauthenticated flood of
+	// garbage DoS'd the log. It now counts here like the TCP path and stays
+	// silent, matching the M16 posture. onParseError, if set, is fired once per
+	// malformed datagram so the count reaches the metrics surface.
+	parseErrors  atomic.Uint64
+	onParseError func()
 }
+
+// ParseErrors reports the number of malformed datagrams dropped (AUDIT-305).
+func (u *UDPSyslogReceiver) ParseErrors() uint64 { return u.parseErrors.Load() }
+
+// SetParseErrorHook registers a callback fired once per malformed datagram, used
+// to surface the count as a metric. Nil disables it. Set before Start.
+func (u *UDPSyslogReceiver) SetParseErrorHook(fn func()) { u.onParseError = fn }
 
 // SetRateLimiter attaches a per-source-IP rate limiter; datagrams from a source
 // over its rate are dropped before parsing. Nil disables limiting. Set before Start.
@@ -415,7 +451,12 @@ func (u *UDPSyslogReceiver) serveConn(conn *net.UDPConn) error {
 
 		msg, err := ParseRFC5424(data)
 		if err != nil {
-			log.Printf("[Syslog UDP] Parse error from %s: %v", clientAddr, err)
+			// AUDIT-305: count, don't log — a malformed-datagram flood would
+			// otherwise DoS the log. Mirrors the TCP path's M16 behavior.
+			u.parseErrors.Add(1)
+			if u.onParseError != nil {
+				u.onParseError()
+			}
 			continue
 		}
 
