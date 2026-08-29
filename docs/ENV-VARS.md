@@ -101,6 +101,23 @@ records. Suppressed samples increment
 |---|---|---|
 | `PROBE_FLOW_DEDUP` | `prefer-netflow` | `prefer-netflow` (drop sFlow flow samples while NetFlow is live from that exporter) / `prefer-sflow` (the mirror image) / `off` (relay both — the server flags mixed-source devices). Unknown values behave as `off`. |
 
+## NetFlow sampling overrides
+
+NetFlow/IPFIX carries a sampling rate the exporter self-reports; the collector
+scales each flow's byte/packet counts back up by it. Some exporters report the
+wrong rate — the server's SUPPORT-MATRIX documents MikroTik ROS 6.49.x
+byte-swapping the sampling interval — which silently mis-scales every flow from
+that device. This variable is the operator escape hatch: a per-exporter-IP
+pin that overrides whatever the exporter reports. It is step 1 (highest
+priority) of the sampler precedence chain in `cmd/collector/main.go`, applied
+before the NetFlow receiver starts, so the very first record resolves against
+the pinned rate. Overrides are configuration, not learned state — they are
+never persisted to the template cache and are re-applied on every start.
+
+| Variable | Default | Description |
+|---|---|---|
+| `PROBE_NETFLOW_SAMPLING_OVERRIDES` | _(empty)_ | Comma-separated `exporterIP=rate` pairs (e.g. `192.0.2.1=1000,2001:db8::1=512`). IPs are normalized through `net.ParseIP().String()` to match the receiver's exporter keys (IPv4 and IPv6 both allowed); each rate must be an integer `1..4294967295`. Malformed entries are logged and skipped — one typo neither crashes the collector nor discards the valid entries. Empty (the default) = no overrides; every exporter's self-reported rate is trusted. |
+
 ## Queue + batch sizing
 
 | Variable | Default | Description |
@@ -144,9 +161,12 @@ template-refresh cycle (~30 min).
 
 ## Sibling-repo env vars
 
-The collector does **not** read the server's env vars. A subset of
-server-side `PROBE_*` env vars (different prefix semantics) configure
-the in-server probe mode (`cmd/probe/main.go` inside
-`xphox2/Firewall-Monitoring`). The two probe implementations share a
-`PROBE_*` prefix; the canonical list of variables is whichever repo
-hosts the binary you are running.
+The collector does **not** read the server's env vars, and the server no
+longer has a bundled probe. The obsolete `cmd/probe/` was removed from
+`xphox2/Firewall-Monitoring` (server commit `493ef87`); the probe is now
+**only** this repo. The server's own binaries live under `cmd/api`,
+`cmd/configcheck`, `cmd/poller`, and `cmd/trap-receiver`, and their env
+vars are documented in the server repo's
+[`config.env.example`](https://github.com/xphox2/Firewall-Monitoring/blob/master/config.env.example).
+Every `PROBE_*` variable is read by this collector; the canonical source
+of truth is `internal/config/config.go` in this repo.

@@ -6,8 +6,8 @@ The following versions of `firewall-collector` receive security updates:
 
 | Version | Supported          |
 |---------|--------------------|
-| 1.2.x   | :white_check_mark: |
-| < 1.2   | :x:                |
+| 1.3.x   | :white_check_mark: |
+| < 1.3   | :x:                |
 
 We follow [Semantic Versioning](https://semver.org/). The latest minor
 release receives security fixes. Older minors receive fixes on a
@@ -30,8 +30,8 @@ issue tracker only with a non-sensitive summary.
 When reporting, please include:
 
 - The collector version (output of `firewall-collector --version` or
-  the `## 1.2.x` heading of `CHANGELOG.md` on the running build)
-- The OS and Docker image digest (`docker inspect --format '{{.Id}}' xphox/firewall-collector:1.2.x`)
+  the `## 1.3.x` heading of `CHANGELOG.md` on the running build)
+- The OS and Docker image digest (`docker inspect --format '{{.Id}}' xphox/firewall-collector:1.3.x`)
 - A reproducer (collector log lines, packet capture, screenshot — please
   redact customer-specific data such as device serial numbers, public IPs,
   FortiGate admin passwords, and full config backups)

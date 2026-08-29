@@ -10,8 +10,8 @@ A short, one-line description of the bug.
 ## Environment
 
 - **Collector version:** (output of `firewall-collector --version` or
-  the `## 1.2.x` heading of `CHANGELOG.md`)
-- **Docker image digest:** (`docker inspect --format '{{.Id}}' xphox/firewall-collector:1.2.x`)
+  the `## 1.3.x` heading of `CHANGELOG.md`)
+- **Docker image digest:** (`docker inspect --format '{{.Id}}' xphox/firewall-collector:1.3.x`)
 - **OS / distro:**
 - **Go version (if building from source):**
 - **Central server version:** (from the server's `CHANGELOG.md`)

@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.3.42 - 2026-08-29
+
+Audit remediation (2026-08-27 engineering audit), batch 21 — documentation-accuracy corrections and the collector's first anti-drift doc guardrails (AUDIT-180, 181, 225, 236, 241, 242). No runtime behavior changes; the described code was already correct — the docs and comments describing it were stale.
+
+### Fixed
+- **Stale version strings across docs (AUDIT-180).** The README version badge read `1.3.4`; it now tracks the `version` const (`1.3.42`). `SECURITY.md`'s Supported Versions table listed only `1.2.x` / `< 1.2`; it now names the current `1.3.x` series (and its reporting-example version strings follow). `docs/FEATURES.md` and `DEPLOY.md` referred to the current release as `1.2.x` and told operators to pull `:1.2` / `:1.2.143`; both now use the `1.3.x` series and the `:1.3` moving tag. The sweep also covers `CONTRIBUTING.md`'s patch-versioning example, `docs/COMPATIBILITY.md`'s current-master server row and quick rule (server `0.11.x`, collectors `1.2.x` and `1.3.x`), the `docs/FEATURES.md` image-tags row and roadmap heading, and the `.github/ISSUE_TEMPLATE/BUG_REPORT.md` version/image-digest examples. Genuinely historical rows (per-version CHANGELOG entries, the pre-handshake compatibility row) are left as-is.
+- **Vendor docs omitted Cisco ASA (AUDIT-181).** Cisco ASA is registered (`internal/snmp/vendor_cisco_asa.go`) but was missing from three doc surfaces: the README SNMP `VendorProfile` list, the `docs/FEATURES.md` inline vendor-profile list, and the `docs/FEATURES.md` vendor-profiles table. All three now include it; the table gains a `cisco_asa` row (`full` profile — system/processor/HA parity with the other full rows plus CDP topology — with HA `✅ (failover)` via CISCO-FIREWALL-MIB, and VPN/SD-WAN/security-stats/license `—`, matching the profile's deliberately-omitted providers).
+- **CHANGELOG was missing the 1.3.30 and 1.3.31 entries (AUDIT-225).** Both shipped but their entries were dropped; the history is restored in descending order between 1.3.32 and 1.3.29, recovered from the original commits (IPSec telemetry command type + FortiGate phase2 selectors; report the collector's own version to the server).
+- **`commands.go` comments claimed FortiGate-only IPSec apply/remove (AUDIT-236).** The guard has accepted both `fortigate` and `opnsense` for some time; the two stale comments now match the code. No code change — OPNsense acceptance is intended.
+- **`docs/ENV-VARS.md` was missing `PROBE_NETFLOW_SAMPLING_OVERRIDES` and pointed at a removed server path (AUDIT-241, AUDIT-242).** The per-exporter NetFlow sampling-rate override (step 1 of the sampler precedence chain, the escape hatch for exporters that self-report a wrong rate) is now documented with its format and default. The "Sibling-repo env vars" section no longer points at the obsolete `cmd/probe/` that was removed from the server repo.
+
+### Added
+- **Anti-drift documentation guardrails (`internal/shell/`).** A test pins the README version badge to the `cmd/collector/main.go` `version` const, and a test requires every env-var key wired in `internal/config/config.go` to be documented in `docs/ENV-VARS.md` (no allowlist needed — all keys are documented). These are the collector's first doc guardrails; each fails if its target regresses.
+
 ## 1.3.41 - 2026-08-29
 
 Audit remediation (2026-08-27 engineering audit), batch 14 — SNMP counter/attribution correctness plus observability wiring (AUDIT-210, 221, 223, 238, 293, 294, 295, 298, 302). Re-verified against master.
@@ -121,6 +135,28 @@ The root element is the whole reason this is a separate client rather than a fla
 `PfSenseClient` is also deliberately its own type rather than an `OPNsenseClient` with a different root. The poll path dispatches its extra SSH diagnostics by concrete client type, and an `*OPNsenseClient` additionally gets hardware-sensor and bridge-FDB probing. Those are plausible on pfSense — same FreeBSD underpinnings — but have never been run against one, and inheriting them silently would mean shipping unverified device commands. Config backup is what the server needs; the diagnostics can follow once there is a device to verify them on.
 
 **Unverified against a real pfSense device** — none was available. The capture mechanism is byte-identical to the OPNsense path, which is verified in production; what is untested is that pfSense's shell and file layout behave as documented.
+
+## 1.3.31 - 2026-07-30
+
+### Added — report the collector's own version to the server
+
+The server knew only the negotiated `schema_version`, which tracks the wire format and not the binary: a collector can speak the same schema on any number of builds, so "which collector build is this?" had no answer.
+
+That gap had real cost. The IPSec telemetry gate had to key on the *text* of a failure the collector returns, because no version comparison was available. And diagnosing a stale collector meant inferring it from side effects in unrelated telemetry — watching whether a FortiGate SSH cycle had started emitting selectors — instead of reading one field.
+
+The collector now sends its own version on register **and** on every heartbeat, so an upgrade shows up within one cadence rather than waiting for a re-registration that may never happen. The field is optional on the wire, so an older server ignores it.
+
+## 1.3.30 - 2026-07-29
+
+### Added — IPSec telemetry command type; FortiGate phase2 selectors
+
+Adds `ipsec_telemetry`: the same read-only mechanism as `ipsec_status` — run server-rendered GET steps, return raw device documents for the server to parse — but recurring rather than one-shot, and carrying several documents the server correlates into per-child-SA telemetry rows. It is a distinct command type because `ipsec_status` is deploy verification, with first-result-wins, single-step semantics that polling must not inherit. Vendor parsing stays server-side, so this needs no collector release when parsing changes.
+
+### Fixed — FortiGate phase2 rows arriving with no traffic selectors
+
+`ParseVPNPhase2` had no src-subnet/dst-subnet regex at all, so every named phase2 had empty subnets: the map rendered no child lines for them and they could never be matched to a provisioned tunnel by selector. A tunnel with four subnet pairs showed four blank rows plus one synthesized `dialup-*` row carrying a single pair.
+
+The conversion is the load-bearing part, not the regexes. FortiOS prints `set src-subnet 192.168.13.0 255.255.255.0` — address plus dotted netmask — which nothing downstream can read: `netclass.SelectorIP` handles CIDR, `a - b` ranges and bare IPs, never a space-separated pair, and the peer-pairing check is exact string equality against strongSwan's canonical CIDR. Storing the device's own text would have made the panel *look* fixed while pairing stayed silently broken. So the address is masked rather than trusted, host-form and network-form entries converge on one string, a non-contiguous mask yields empty rather than a bogus prefix, and an address-object selector still parses with empty subnets exactly as before.
 
 ## 1.3.29 - 2026-07-24
 

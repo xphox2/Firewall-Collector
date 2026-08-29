@@ -7,7 +7,8 @@
 
 ## Quick rules
 
-1. The server is **backward-compatible** with any 1.2.x collector.
+1. The server is **backward-compatible** with any supported collector
+   (1.2.78 through the current 1.3.x series).
 2. A collector ≥ the server's `schema_version` floor just works.
 3. A collector with a `schema_version` outside the server's accepted
    range gets **HTTP 426** on `/api/probes/register` and the probe
@@ -21,7 +22,7 @@
 
 | Server version | Accepts collectors | Notes |
 |---|---|---|
-| **0.10.487+** (current master) | all 1.2.x | Server-side `schema_version` validation introduced in 0.10.382. |
+| **0.11.x** (current master) | all 1.2.x and 1.3.x | Server-side `schema_version` validation introduced in 0.10.382; unchanged since. |
 | 0.10.382 | 1.2.108+ | `schema_version` field is required starting here; absent field → 1 (back-compat). |
 | 0.10.380 and earlier | all 1.2.x | Pre-handshake. The probe's `schema_version` field is ignored. |
 

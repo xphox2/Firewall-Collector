@@ -103,7 +103,7 @@ func newCommandExecutor(sink commandResultSink) *commandExecutor {
 		return string(out), nil
 	}
 	// apply_ipsec / remove_ipsec (C2b-1): WRITE one IPSec tunnel end to the device
-	// (FortiGate only). The handler checksum-verifies, collision-prechecks, writes,
+	// (FortiGate and OPNsense). The handler checksum-verifies, collision-prechecks, writes,
 	// and verifies (apply) or ownership-checks + deletes (remove). The payload
 	// carries the PSK — NEVER log it. Writes are serialized per device.
 	e.handlers["apply_ipsec"] = func(cmd relay.PendingCommand) (string, error) {
@@ -146,7 +146,7 @@ func runIPSecRead(cmd relay.PendingCommand) (string, error) {
 }
 
 // runIPSecWrite executes an apply_ipsec (remove=false) or remove_ipsec
-// (remove=true). C2b-1 supports FortiGate only; any other vendor is rejected
+// (remove=true). C2b-1 supports FortiGate and OPNsense; any other vendor is rejected
 // before any device contact. The whole apply/verify (or remove) holds the
 // device's write lock so concurrent commands can't interleave on one firewall.
 func (e *commandExecutor) runIPSecWrite(cmd relay.PendingCommand, remove bool) (string, error) {
