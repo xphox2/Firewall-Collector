@@ -102,7 +102,7 @@
 | `host` network mode for the listener ports (with extensive inline security comment) | Stable | [Probe] | 1.0.0 |
 | Multi-arch container image (`linux/amd64`; arm64 is on the roadmap) | Beta | [Probe] | 1.2.93 |
 | Reproducible builds (`-trimpath -buildvcs=false`) | Stable | [Probe] | 1.2.93 |
-| Auto-pushed image tags (`:1.2.x` exact, `:1.2` moving, `:stable`, `:latest`) | Stable | [Probe] | 1.2.93 |
+| Auto-pushed image tags (`:1.3.x` exact, `:1.3` moving, `:stable`, `:latest`) | Stable | [Probe] | 1.2.93 |
 
 ## Vendor profiles
 
@@ -123,7 +123,7 @@ compile-time `VendorProfile` satisfaction test).
 
 To add a vendor: see [CUSTOM-VENDOR.md](CUSTOM-VENDOR.md).
 
-## Roadmap (deferred from current `1.2.x` series)
+## Roadmap (deferred from current `1.3.x` series)
 
 These are tracked in `docs/audit-2026-06-23-consolidated.md` (the
 current audit) and surfaced here so customers don't plan around vaporware.
