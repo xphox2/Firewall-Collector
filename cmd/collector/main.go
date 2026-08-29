@@ -46,7 +46,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.3.41"
+const version = "1.3.42"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP

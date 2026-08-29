@@ -7,7 +7,7 @@
 
 **Status legend**
 
-- **Stable** — shipping in the current `1.2.x` release, exercised in CI,
+- **Stable** — shipping in the current `1.3.x` release, exercised in CI,
   covered by tests.
 - **Beta** — shipping but the audit row says "not done" or there's a known
   follow-up. Safe to use, but read the linked caveat.

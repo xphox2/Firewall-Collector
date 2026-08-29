@@ -32,7 +32,7 @@ git push origin master
 
 1. Go to **Actions** tab in your GitHub repo
 2. You should see the build running
-3. Once complete, image will be at: `docker.io/xphox/firewall-collector:1.2.143` (and `:1.2`, `:stable`, `:latest` aliases on the default branch)
+3. Once complete, image will be at: `docker.io/xphox/firewall-collector:1.3.42` (and `:1.3`, `:stable`, `:latest` aliases on the default branch)
 
 ---
 
@@ -40,7 +40,7 @@ git push origin master
 ```bash
 docker run -d \
   -e PROBE_REGISTRATION_KEY=your-key \
-  xphox/firewall-collector:1.2
+  xphox/firewall-collector:1.3
 ```
 
-> Pin to a specific patch (e.g. `:1.2.137`) in `docker-compose.yml` for reproducible deployments. See **README.md > Upgrading** for the upgrade and rollback procedure.
+> Pin to a specific patch (e.g. `:1.3.42`) in `docker-compose.yml` for reproducible deployments. See **README.md > Upgrading** for the upgrade and rollback procedure.

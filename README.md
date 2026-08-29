@@ -10,7 +10,7 @@
 > admin UI, and runbook.
 
 [![CI](https://img.shields.io/badge/CI-passing-brightgreen)](https://github.com/xphox2/Firewall-Collector/actions)
-[![Version](https://img.shields.io/badge/version-1.3.4-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.3.42-blue)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.25.0+-00ADD8)](go.mod)
 
@@ -42,8 +42,8 @@ AUDIT-NNN row exists.
 
 - **[Probe] SNMP polling** (v1/v2c/v3, MD5/SHA/SHA2, DES/AES/AES192/256)
   on `PROBE_POLL_INTERVAL` (default 60s). Per-device `VendorProfile`
-  registry with FortiGate, Palo Alto, SonicWall, pfSense, OPNsense,
-  Firewalla, generic Linux/BSD VPN.
+  registry with FortiGate, Palo Alto, Cisco ASA, SonicWall, pfSense,
+  OPNsense, Firewalla, generic Linux/BSD VPN.
 - **[Probe] SNMP trap receiver** (UDP/162). V1 enterprise + V2c
   specific-trap OID classification with severity. Community string
   enforcement, goroutine-per-trap, panic-recovery.
