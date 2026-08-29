@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.38 - 2026-08-28
+
+### Added
+- **GitHub releases/tags are now published automatically** (companion of the server repo's release-tag workflow; the gap was recorded in the 1.3.36 roadmap note). A new `release-tag` workflow runs on every master push: it reads the version constant from `cmd/collector/main.go` and, when no `v<version>` tag exists yet, creates the tag and a GitHub release whose notes are that version's CHANGELOG section. Idempotent — pushes that don't bump the constant are no-ops. Before this the repo published zero tags/releases, so the technicallabs.org System Monitor (which resolves live versions via the GitHub API) could never resolve it; `v1.3.35` and `v1.3.37` were backfilled manually so `releases/latest` resolves immediately. The workflow carries the repo's only `contents: write` grant; the CI workflow keeps `contents: read` (AUDIT-178).
+
 ## 1.3.37 - 2026-08-28
 
 Audit remediation batch (2026-08-27 engineering audit) — relay durability and command-executor safety (AUDIT-175, AUDIT-212, AUDIT-213/214, AUDIT-287, AUDIT-288, AUDIT-289). Every finding was independently re-verified against current master before being fixed.
