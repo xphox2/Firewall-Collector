@@ -21,7 +21,7 @@ import (
 //	(a) no tracked path matches an internal-material glob;
 //	(b) every IPv4/IPv6 literal is private, special-purpose, a documentation
 //	    or benchmarking address, or on the reviewed allowlist below;
-//	(c) no /Users/<name> or /home/<name> path.
+//	(c) no /Users/<name>, /home/<name> or C:\Users\<name> path.
 //
 // Test data uses RFC 5737 (192.0.2/24, 198.51.100/24, 203.0.113/24) and
 // RFC 3849 (2001:db8::/32) for external hosts, RFC 2544 (198.18.0.0/15) for
@@ -260,25 +260,94 @@ func v4AllowedNarrow(a netip.Addr) bool {
 }
 
 // templateSuffixes are what may follow "a.b.c." to complete an address at run
-// time: printf verbs, SQL and Go string concatenation, shell/JS interpolation,
-// and a literal "x" placeholder (checked separately).
-var templateSuffixes = []string{"%d", "%v", "%s", "' ||", `" +`, "${"}
+// time: SQL, Go and JS string concatenation (with or without spaces) and
+// shell/JS/Python interpolation. Printf verbs, the "*" wildcard and
+// single-letter placeholders are matched by templateTail.
+var templateSuffixes = []string{"' ||", "'||", "' +", "'+", `" +`, `"+`, "${", "{"}
+
+// templateTail matches a printf verb ("%d", "%03d", "%[1]d", "%v", ...), a
+// "*" wildcard (not "**", Markdown bold closing after a version number), or
+// a single-letter placeholder ("x", "X", "N") not followed by a word byte.
+var templateTail = regexp.MustCompile(`^(?:%[-+# 0]*(?:\[[0-9]+\])?[0-9]*(?:\.[0-9]+)?[A-Za-z]|\*(?:[^*]|$)|[xXN](?:[^0-9A-Za-z_]|$))`)
+
+// isTemplateTail reports whether rest (the text right after "a.b.c.") turns
+// the prefix into an address template.
+func isTemplateTail(rest string) bool {
+	if templateTail.MatchString(rest) {
+		return true
+	}
+	for _, suf := range templateSuffixes {
+		if strings.HasPrefix(rest, suf) {
+			return true
+		}
+	}
+	return false
+}
+
+// mib2Prefix is the mib-2 subtree (1.3.6.1.2.1); enterprisesPrefix is the
+// private-enterprise arc (1.3.6.1.4.1), whose OIDs are never scanned.
+var (
+	mib2Prefix        = []string{"1", "3", "6", "1", "2", "1"}
+	enterprisesPrefix = []string{"1", "3", "6", "1", "4", "1"}
+)
+
+// mib2AddrTables are the mib-2 tables whose row index holds raw addresses
+// (no InetAddressType/length pair), keyed by the two parts after mib-2, with
+// the part positions (from the start of the OID) where an address begins:
+//
+//	ipAddrTable       1.3.6.1.2.1.4.20.1.C.<ip>
+//	ipRouteTable      1.3.6.1.2.1.4.21.1.C.<ip>
+//	ipNetToMediaTable 1.3.6.1.2.1.4.22.1.C.<ifIndex>.<ip>
+//	ipCidrRouteTable  1.3.6.1.2.1.4.24.4.1.C.<dest>.<mask>.<tos>.<nexthop>
+//	tcpConnTable      1.3.6.1.2.1.6.13.1.C.<ip>.<port>.<ip>.<port>
+//	udpTable          1.3.6.1.2.1.7.5.1.C.<ip>.<port>
+//
+// Other mib-2 OIDs (bridge, host resources, ...) carry only column and index
+// numbers, which are not addresses.
+var mib2AddrTables = map[string][]int{
+	"4.20": {10},
+	"4.21": {10},
+	"4.22": {11},
+	"4.24": {11, 15, 20},
+	"6.13": {10, 15},
+	"7.5":  {10},
+}
+
+// hasPrefixParts reports whether parts starts with prefix.
+func hasPrefixParts(parts, prefix []string) bool {
+	if len(parts) < len(prefix) {
+		return false
+	}
+	for i, p := range prefix {
+		if parts[i] != p {
+			return false
+		}
+	}
+	return true
+}
 
 // scanIPv4 returns every disallowed IPv4 literal in data.
 //
-//   - A run that starts with "." is an OID fragment and is skipped, unless the
-//     dot follows a letter or underscore (host.a.b.c.d, x_.a.b.c.d): then the
-//     dot is a separator and the rest is classified as usual.
+//   - A leading "." is dropped. The run is an OID fragment, skipped below 6
+//     parts, unless the dot follows a word byte (host.a.b.c.d, x_.a.b.c.d) or
+//     another dot (an ellipsis, ...a.b.c.d): then the dot is a separator.
 //   - A trailing sentence period is stripped; the run is still checked.
+//   - 6+ parts (OIDs, with or without the leading dot; checked first):
+//     enterprise OIDs (1.3.6.1.4.1...) are skipped. Flagged when "1.4" sits at
+//     the start or 6 parts from the end (an IP-MIB address index
+//     "1.4.a.b.c.d": InetAddressType ipv4, length 4, bare, after an ifIndex
+//     or ending a full OID) and the last 4 parts are a public address; or,
+//     for a mib-2 OID (1.3.6.1.2.1...) of 8+ parts in a table indexed by raw
+//     addresses (mib2AddrTables), when an address in the index is public.
 //   - 4 parts: an address.
 //   - 5 parts (IP.index or ifIndex.IP): flagged when a window is a public
 //     address, unless the other window is allowed by a range narrower than a
 //     first-octet block (or by an allowlist).
-//   - 3 parts followed by a template suffix (".%d", ".%v", ".%s", ".' ||",
-//     `." +`, ".${`, ".x"): an address template; its /24 must be allowed.
-//   - 6+ parts: OIDs, skipped, except a run starting "1.4." (an IP-MIB
-//     address index "1.4.a.b.c.d": InetAddressType ipv4, length 4), whose
-//     last 4 parts are an address.
+//   - 3 parts followed by a template tail (a printf verb such as ".%d",
+//     ".%03d" or ".%[1]d"; a concatenation ".' ||", ".'||", ".' +", ".'+",
+//     `." +`, `."+`; an interpolation ".${", ".{"; a wildcard ".*"; or a
+//     placeholder ".x", ".X", ".N"): an address template; its /24 must be
+//     allowed.
 func scanIPv4(p string, data []byte) []ipFinding {
 	var out []ipFinding
 	s := string(data)
@@ -290,11 +359,12 @@ func scanIPv4(p string, data []byte) []ipFinding {
 			continue
 		}
 		run := s[start:end]
+		oidFragment := false
 		if strings.HasPrefix(run, ".") {
-			if start == 0 || !isWordByte(s[start-1]) {
-				continue // OID fragment
+			if start == 0 || !isWordByte(s[start-1]) && s[start-1] != '.' {
+				oidFragment = true
 			}
-			run = run[1:] // host.a.b.c.d: the dot is a separator
+			run = run[1:] // host.a.b.c.d or ...a.b.c.d: the dot is a separator
 			if run == "" {
 				continue
 			}
@@ -313,39 +383,52 @@ func scanIPv4(p string, data []byte) []ipFinding {
 			return ok
 		}
 		public := func(a netip.Addr) bool { return !v4Allowed(a) && !listed(a) }
-		switch n := len(parts); {
-		case n == 3:
-			if !trailingDot {
-				continue
+		excuses := func(a netip.Addr, ok bool) bool { return ok && (v4AllowedNarrow(a) || listed(a)) }
+		n := len(parts)
+		if n >= 6 {
+			if hasPrefixParts(parts, enterprisesPrefix) {
+				continue // enterprise OID
 			}
-			rest := s[end:]
-			tmpl := strings.HasPrefix(rest, "x") && (len(rest) == 1 || !isWordByte(rest[1]))
-			for _, suf := range templateSuffixes {
-				tmpl = tmpl || strings.HasPrefix(rest, suf)
+			ipMIB := func(i int) bool { return i >= 0 && parts[i] == "1" && parts[i+1] == "4" }
+			if ipMIB(0) || ipMIB(n-6) {
+				if a, ok := parseV4(parts[n-4:]); ok && public(a) {
+					flag(run)
+					continue
+				}
 			}
-			if !tmpl {
+			if n >= 8 && hasPrefixParts(parts, mib2Prefix) {
+				for _, at := range mib2AddrTables[parts[6]+"."+parts[7]] {
+					if at+4 > n {
+						break
+					}
+					if a, ok := parseV4(parts[at : at+4]); ok && public(a) {
+						flag(run)
+						break
+					}
+				}
+			}
+			continue
+		}
+		if oidFragment {
+			continue
+		}
+		switch n {
+		case 3:
+			if !trailingDot || !isTemplateTail(s[end:]) {
 				continue
 			}
 			a, ok := parseV4(append(parts, "0"))
 			if ok && public(a) {
 				flag(run + ".")
 			}
-		case n == 4:
+		case 4:
 			if a, ok := parseV4(parts); ok && public(a) {
 				flag(run)
 			}
-		case n == 5:
+		case 5:
 			first, ok1 := parseV4(parts[:4])
 			last, ok2 := parseV4(parts[1:])
-			excuses := func(a netip.Addr, ok bool) bool { return ok && (v4AllowedNarrow(a) || listed(a)) }
 			if (ok1 && public(first) && !excuses(last, ok2)) || (ok2 && public(last) && !excuses(first, ok1)) {
-				flag(run)
-			}
-		case n >= 6:
-			if parts[0] != "1" || parts[1] != "4" {
-				continue
-			}
-			if a, ok := parseV4(parts[n-4:]); ok && public(a) {
 				flag(run)
 			}
 		}
@@ -367,16 +450,24 @@ var (
 )
 
 // scanIPv6 returns every global-unicast IPv6 literal outside 2001:db8::/32
-// that is not allowlisted.
+// that is not allowlisted. A candidate may follow a letter or a colon
+// ("addr:2a00:..."): a single leading or trailing ":" is a separator and is
+// dropped ("::" is kept, it is part of the address).
 func scanIPv6(data []byte) []ipFinding {
 	var out []ipFinding
 	s := string(data)
 	for _, loc := range v6Candidate.FindAllStringIndex(s, -1) {
 		start, end := loc[0], loc[1]
-		if start > 0 && isWordByte(s[start-1]) || end < len(s) && isWordByte(s[end]) {
+		if end < len(s) && isWordByte(s[end]) {
 			continue
 		}
 		cand := strings.TrimSuffix(s[start:end], ".")
+		if strings.HasPrefix(cand, ":") && !strings.HasPrefix(cand, "::") {
+			cand = cand[1:]
+		}
+		if strings.HasSuffix(cand, ":") && !strings.HasSuffix(cand, "::") {
+			cand = cand[:len(cand)-1]
+		}
 		a, err := netip.ParseAddr(cand)
 		if err != nil || !a.Is6() || a.Is4In6() {
 			continue
@@ -462,6 +553,45 @@ func TestPublicHygiene_IPv4Rules(t *testing.T) {
 		{"template %v, public", ip("9", "9", "9") + ".%v", 1},
 		{"template %s, public", ip("9", "9", "9") + ".%s", 1},
 		{"template %v, private", "10.1.2.%v", 0},
+		// More evasion forms.
+		{`template "+ (gofmt), public`, `"` + ip("9", "9", "9") + `."+strconv.Itoa(i)`, 1},
+		{"template JS ' +, public", "'" + ip("9", "9", "9") + ".' + i", 1},
+		{"template JS '+, public", "'" + ip("9", "9", "9") + ".'+i", 1},
+		{"template SQL '||, public", "'" + ip("9", "9", "9") + ".'||g", 1},
+		{"template %03d, public", ip("9", "9", "9") + ".%03d", 1},
+		{"template %[1]d, public", ip("9", "9", "9") + ".%[1]d", 1},
+		{"template .*, public", ip("9", "9", "9") + ".*", 1},
+		{"template .X, public", ip("9", "9", "9") + ".X", 1},
+		{"template .N, public", ip("9", "9", "9") + ".N", 1},
+		{"template .{i}, public", ip("9", "9", "9") + ".{i}", 1},
+		{"template .%03d, private", "10.1.2.%03d", 0},
+		{"template .*, benchmarking", "198.19.9.*", 0},
+		{"version at the end of Markdown bold", "**Released " + ip("9", "9", "9") + ".**", 0},
+		{"3 parts then a word", ip("9", "9", "9") + ".Next", 0},
+		{"ellipsis, public", "see ..." + pub, 1},
+		{"ellipsis, private", "see ...10.0.0.1", 0},
+		// SNMP OIDs carrying addresses.
+		{"ifIndex.1.4.ip, public", ip("7", "1", "4", pub), 1},
+		{"full IP-MIB OID, no leading dot, public", ip("1", "3", "6", "1", "2", "1", "4", "34", "1", "3", "1", "4", pub), 1},
+		{"full IP-MIB OID, leading dot, public", "oid ." + ip("1", "3", "6", "1", "2", "1", "4", "34", "1", "3", "1", "4", pub), 1},
+		{"full IP-MIB OID, private", "oid .1.3.6.1.2.1.4.34.1.3.1.4.192.168.1.1", 0},
+		{"ipAddrTable, public", "oid ." + ip("1", "3", "6", "1", "2", "1", "4", "20", "1", "2", pub), 1},
+		{"ipAddrTable, private", "oid .1.3.6.1.2.1.4.20.1.2.10.0.0.1", 0},
+		{"ipRouteTable, public", "oid ." + ip("1", "3", "6", "1", "2", "1", "4", "21", "1", "7", pub), 1},
+		{"ipRouteTable, private", "oid .1.3.6.1.2.1.4.21.1.7.192.168.1.0", 0},
+		{"ipNetToMedia, public", "oid ." + ip("1", "3", "6", "1", "2", "1", "4", "22", "1", "2", "5", pub), 1},
+		{"ipNetToMedia, private", "oid .1.3.6.1.2.1.4.22.1.2.5.172.16.1.1", 0},
+		{"ipCidrRoute, public dest", "oid ." + ip("1", "3", "6", "1", "2", "1", "4", "24", "4", "1", "16", pub, "255", "255", "255", "0", "0", "192", "168", "1", "1"), 1},
+		{"ipCidrRoute, public next hop", "oid ." + ip("1", "3", "6", "1", "2", "1", "4", "24", "4", "1", "16", "192", "168", "1", "0", "255", "255", "255", "0", "0", pub), 1},
+		{"ipCidrRoute, private", "oid .1.3.6.1.2.1.4.24.4.1.16.192.168.1.0.255.255.255.0.0.192.168.1.1", 0},
+		{"tcpConnTable, public remote", "oid ." + ip("1", "3", "6", "1", "2", "1", "6", "13", "1", "1", "192", "168", "1", "5", "22", pub, "5000"), 1},
+		{"tcpConnTable, private", "oid .1.3.6.1.2.1.6.13.1.1.192.168.1.5.22.10.0.0.9.5000", 0},
+		{"udpTable, public", "oid ." + ip("1", "3", "6", "1", "2", "1", "7", "5", "1", "1", pub, "161"), 1},
+		{"udpTable, private", "oid .1.3.6.1.2.1.7.5.1.1.10.0.0.1.161", 0},
+		{"ipNetToMedia, ifIndex 10 before a public address", "oid ." + ip("1", "3", "6", "1", "2", "1", "4", "22", "1", "2", "10", pub), 1},
+		{"mib-2 table OID, column only", "oid .1.3.6.1.2.1.4.20.1.2", 0},
+		{"mib-2 bridge OID, column numbers only", "oid .1.3.6.1.2.1.17.7.1.4.5.1.1", 0},
+		{"enterprise OID with 1.4 before an address", "oid ." + ip("1", "3", "6", "1", "4", "1", "9", "1", "4", pub), 0},
 	}
 	for _, c := range cases {
 		if got := len(scanIPv4("x.go", []byte(c.text))); got != c.want {
@@ -484,6 +614,13 @@ func TestPublicHygiene_IPv6Rules(t *testing.T) {
 		{"ports 2055:2055", 0},
 		{"time 21:39:14", 0},
 		{"mac aa:bb:cc:dd:ee:ff", 0},
+		// After a letter or a colon.
+		{"addr:" + pub + " x", 1},
+		{"addr" + pub + " x", 1},
+		{"ip=" + pub + ": up", 1},
+		{"addr:2001:db8::1 x", 0},
+		{"at time:21:39:14", 0},
+		{"loopback ::1", 0},
 	}
 	for _, c := range cases {
 		if got := len(scanIPv6([]byte(c.text))); got != c.want {
@@ -510,7 +647,12 @@ func TestPublicHygiene_AllowlistsHaveReasons(t *testing.T) {
 // ---------------------------------------------------------------------------
 // (c) home-directory paths
 
-var homePath = regexp.MustCompile(`/(?:Users|home)/([A-Za-z0-9._-]+)`)
+var (
+	homePath = regexp.MustCompile(`/(?:Users|home)/([A-Za-z0-9._-]+)`)
+	// winHomePath matches C:\Users\<name> with single or escaped
+	// backslashes (a Go or JSON string), any drive letter, any case.
+	winHomePath = regexp.MustCompile(`(?i)\b[a-z]:\\+(?:users|documents and settings)\\+([a-z0-9._-]+)`)
+)
 
 // homePathAllowlist is the reviewed list of generic home-directory names.
 var homePathAllowlist = map[string]string{}
@@ -518,12 +660,14 @@ var homePathAllowlist = map[string]string{}
 func scanHomePaths(data []byte) []ipFinding {
 	var out []ipFinding
 	s := string(data)
-	for _, m := range homePath.FindAllStringSubmatchIndex(s, -1) {
-		name := s[m[2]:m[3]]
-		if _, ok := homePathAllowlist[name]; ok {
-			continue
+	for _, re := range []*regexp.Regexp{homePath, winHomePath} {
+		for _, m := range re.FindAllStringSubmatchIndex(s, -1) {
+			name := s[m[2]:m[3]]
+			if _, ok := homePathAllowlist[name]; ok {
+				continue
+			}
+			out = append(out, ipFinding{line: strings.Count(s[:m[0]], "\n") + 1, lit: s[m[0]:m[1]]})
 		}
-		out = append(out, ipFinding{line: strings.Count(s[:m[0]], "\n") + 1, lit: s[m[0]:m[1]]})
 	}
 	return out
 }
@@ -545,5 +689,18 @@ func TestPublicHygiene_HomePathRules(t *testing.T) {
 	}
 	if n := len(scanHomePaths([]byte("cd /srv/firewall-collector"))); n != 0 {
 		t.Errorf("neutral path flagged (%d findings)", n)
+	}
+	for _, text := range []string{
+		`cd C:` + `\Users\someone\proj`,
+		`"C:` + `\\Users\\someone\\proj"`,
+		`d:` + `\users\someone`,
+		`C:` + `\Documents and Settings\someone`,
+	} {
+		if n := len(scanHomePaths([]byte(text))); n != 1 {
+			t.Errorf("Windows home path %q: %d findings, want 1", text, n)
+		}
+	}
+	if n := len(scanHomePaths([]byte(`C:\Program Files\x`))); n != 0 {
+		t.Errorf("neutral Windows path flagged (%d findings)", n)
 	}
 }

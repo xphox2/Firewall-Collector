@@ -26,7 +26,7 @@ import (
 //     with no digit on either side, so "10.1.2" matches inside "10.1.2.3" but
 //     not inside "10.1.23". A token ending in "." is a prefix and needs only
 //     the leading boundary, so "10.1.2." matches "10.1.2.3" but not
-//     "110.1.2.3".
+//     "910.1.2.3".
 //   - Any other token matches as a substring of the raw text, and also
 //     against runs of adjacent alphanumeric sub-tokens joined by "-", "_",
 //     "." or nothing — so "abc-fw-01" also catches "ABC_FW_01" and "abcfw01".
