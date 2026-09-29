@@ -36,7 +36,7 @@ AGENTS.md
 session-ses_*.md
 
 # Internal notes and audit reports stay outside the public repo
-tasks/
+/tasks/
 docs/audit-20*
 docs/audit-archive/
 docs/AUDIT.md

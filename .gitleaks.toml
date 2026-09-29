@@ -1,21 +1,13 @@
 # gitleaks configuration for the public repository.
 #
-# Extends the built-in rule set. The allowlist below names only test files
-# that deliberately carry FAKE credentials (placeholder tokens and passwords,
-# and keys generated at test time). It holds no real values. Private,
-# repo-specific rules are never committed here; maintainers pass them
-# locally with an extra --config.
+# Extends the built-in rule set with no allowlist: the tree and the history
+# introduced on top of master scan clean without one. Add an allowlist entry
+# only for a test file that deliberately carries a FAKE credential and is
+# actually flagged, with the reason next to it. Private, repo-specific rules
+# are never committed here; maintainers pass them locally with an extra
+# --config.
 
 title = "firewall-collector"
 
 [extend]
 useDefault = true
-
-[allowlist]
-description = "Test fixtures with fake credentials"
-paths = [
-  '''^cmd/collector/commands_panic_audit212_test\.go$''',
-  '''^internal/relay/relay_mtls_audit048_test\.go$''',
-  '''^internal/ssh/ssh_audit071_test\.go$''',
-  '''^internal/sshtool/sshtool_test\.go$''',
-]

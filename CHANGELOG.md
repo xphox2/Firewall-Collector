@@ -4,22 +4,20 @@
 
 Public-repository hygiene: internal material removed, test data neutralised, secret scanning added, and one behaviour change for operators.
 
-### Changed — upgrade warning
-- **`PROBE_SERVER_URL` is now required and has no built-in default.** Earlier images baked a default server URL into both the binary and the image `ENV`, so a container that never set the variable silently relied on it. The collector now refuses to start when `PROBE_SERVER_URL` is unset or is not an absolute `http://`/`https://` URL with a host (checked in `main()` next to the `PROBE_REGISTRATION_KEY` check; the `ssh-test` subcommand is unaffected). **Before pulling 1.3.45 — or a moving tag (`:1.3`, `:stable`, `:latest`) that resolves to it — set `PROBE_SERVER_URL` explicitly in the container's environment** (including GUI-managed containers that do not use `docker-compose.yml`), or the collector exits at startup. `docker-compose.yml`, `README.md`, `DEPLOY.md` and `docs/ENV-VARS.md` (now **Required: Yes**) are updated; `TestValidateServerURL` / `TestServerURLHasNoDefault` pin the behaviour.
+### Changed
+- **Upgrade warning: `PROBE_SERVER_URL` is now required and has no built-in default.** Earlier images baked a default server URL into both the binary and the image `ENV`, so a container that never set the variable silently relied on it. The collector now refuses to start when `PROBE_SERVER_URL` is unset or is not an absolute `http://`/`https://` URL with a host (checked in `main()` next to the `PROBE_REGISTRATION_KEY` check; the `ssh-test` subcommand is unaffected). **Before pulling 1.3.45 — or a moving tag (`:1.3`, `:stable`, `:latest`) that resolves to it — set `PROBE_SERVER_URL` explicitly in the container's environment** (including GUI-managed containers that do not use `docker-compose.yml`), or the collector exits at startup. `docker-compose.yml`, `README.md`, `DEPLOY.md` and `docs/ENV-VARS.md` (now **Required: Yes**) are updated; The value is normalised before use (surrounding whitespace and trailing slashes trimmed) and written back to the config, so endpoint URLs never carry a doubled slash. `TestNormalizeServerURL` / `TestServerURLHasNoDefault` pin the behaviour.
 - The image's port labels moved to a neutral `firewall-collector.ports.*` namespace.
+- Test data neutralised: fixtures use documentation (RFC 5737), benchmarking (RFC 2544) and private (RFC 1918) address ranges, synthetic device names, serials and MAC addresses, and `example.*` names. The FortiOS key=value parser test uses a synthetic log line with a non-zero UTC offset. Test meaning is unchanged.
+- The repo-wide guardrail tests moved from `internal/shell` to `test/guardrails` (package `guardrails`).
 
 ### Removed
 - Internal working material (task notes, internal audit reports and their archive, stray scratch config files) is no longer tracked in the public repository. Docs and the changelog no longer link to it; references are self-contained text.
 - `DEPLOY.md` is now a short generic deploy guide.
 
-### Changed
-- Test data neutralised: fixtures use documentation (RFC 5737), benchmarking (RFC 2544) and private (RFC 1918) address ranges, synthetic device names, serials and MAC addresses, and `example.*` names. The FortiOS key=value parser test uses a synthetic log line. Test meaning is unchanged.
-- The repo-wide guardrail tests moved from `internal/shell` to `test/guardrails` (package `guardrails`).
-
 ### Added
 - **Public-hygiene guardrail** (`test/guardrails/public_hygiene_test.go`): fails CI on a tracked internal-material path (`tasks/`, `scripts/`, `.claude/`, internal audit reports, tool instruction files, session transcripts), on a public IPv4/IPv6 literal outside the allowed ranges and a small reviewed allowlist, and on a home-directory path.
 - **Private denylist check** (`test/guardrails/private_denylist_test.go`): a local-only scan against a maintainer-held token list, enabled with `FWMON_DENYLIST` (and an optional keep-list via `FWMON_DENYLIST_KEEP`); skipped in CI.
-- **Secret scanning:** a `Secret Scan` workflow runs a pinned, checksum-verified gitleaks on every push and pull request (the introduced commits, with a full-history fallback), using the committed `.gitleaks.toml`, which allowlists only test files that carry fake credentials.
+- **Secret scanning:** a `Secret Scan` workflow runs a pinned, checksum-verified gitleaks on every push and pull request (the introduced commits, with a full-history fallback), using the committed `.gitleaks.toml`, which extends the default rules and needs no allowlist.
 - `.gitignore` covers internal notes, audit reports, tool settings and instruction files, dumps, packet captures and root-level scratch files. `CONTRIBUTING.md` gains a "Never commit" section and documents a local `gitleaks` pre-commit hook.
 
 ## 1.3.44 - 2026-08-29
@@ -152,7 +150,7 @@ FortiOS traffic and event logs are `key=value` records, not RFC 5424, but every 
 |---|---|
 | `hostname` | `devid="FGT60F0000000000"` |
 | `app_name` | `eventtime=1767225600123456789` |
-| `process_id` | `tz="+0000"` |
+| `process_id` | `tz="-0500"` |
 | `message_id` | `logid="0000000015"` |
 | `structured_data` | `type="traffic"` |
 | `message` | began mid-record at `subtype=` |
