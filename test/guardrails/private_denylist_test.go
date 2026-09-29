@@ -24,7 +24,9 @@ import (
 //
 //   - A token made only of digits and dots (an address or prefix) matches
 //     with no digit on either side, so "10.1.2" matches inside "10.1.2.3" but
-//     not inside "10.1.23".
+//     not inside "10.1.23". A token ending in "." is a prefix and needs only
+//     the leading boundary, so "10.1.2." matches "10.1.2.3" but not
+//     "110.1.2.3".
 //   - Any other token matches as a substring of the raw text, and also
 //     against runs of adjacent alphanumeric sub-tokens joined by "-", "_",
 //     "." or nothing — so "abc-fw-01" also catches "ABC_FW_01" and "abcfw01".
@@ -156,8 +158,12 @@ func (m *denyMatcher) scan(text string) []denyHit {
 			at := from + i
 			from = at + 1
 			if e.numeric {
+				// A prefix entry ("a.b.c.") ends in a dot, so an octet after
+				// it is the rest of the address: only the leading boundary
+				// applies.
 				end := at + len(e.lower)
-				if at > 0 && isDigit(lower[at-1]) || end < len(lower) && isDigit(lower[end]) {
+				prefix := strings.HasSuffix(e.lower, ".")
+				if at > 0 && isDigit(lower[at-1]) || !prefix && end < len(lower) && isDigit(lower[end]) {
 					continue
 				}
 			}
@@ -192,7 +198,7 @@ func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 
 // TestPrivateDenylist_MatcherRules pins the matcher with synthetic tokens.
 func TestPrivateDenylist_MatcherRules(t *testing.T) {
-	m := newDenyMatcher([]string{"acme-fw-01", "198.18.7", "widgetco", "aa:bb:cc"}, []string{"widgetco-public"})
+	m := newDenyMatcher([]string{"acme-fw-01", "198.18.7", "widgetco", "aa:bb:cc", "198.18.9."}, []string{"widgetco-public"})
 	cases := []struct {
 		text string
 		want int
@@ -205,6 +211,10 @@ func TestPrivateDenylist_MatcherRules(t *testing.T) {
 		{"peer 198.18.7.4", 1},
 		{"peer 1198.18.7.4", 0},
 		{"peer 198.18.71.4", 0},
+		// A trailing-dot prefix entry: the octet after it is expected.
+		{"host 198.18.9.5 up", 1},
+		{"198.18.95.1", 0},
+		{"1198.18.9.5", 0},
 		{"see WidgetCo docs", 1},
 		{"see widgetco-public docs", 0},
 		{"mac AA:BB:CC:01:02:03", 1},
