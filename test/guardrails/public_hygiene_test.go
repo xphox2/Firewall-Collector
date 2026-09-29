@@ -246,16 +246,39 @@ type ipFinding struct {
 	lit  string
 }
 
+// v4AllowedNarrow reports whether a is in an allowed range narrower than a
+// first-octet block (0/8, 10/8, 127/8, 224/4, 240/4). The 5-part rule uses it:
+// a window inside a first-octet block says nothing about the other four
+// parts, so "10." or "224." in front of a public address must not excuse it.
+func v4AllowedNarrow(a netip.Addr) bool {
+	for _, p := range allowedV4 {
+		if p.Bits() > 8 && p.Contains(a) {
+			return true
+		}
+	}
+	return false
+}
+
+// templateSuffixes are what may follow "a.b.c." to complete an address at run
+// time: printf verbs, SQL and Go string concatenation, shell/JS interpolation,
+// and a literal "x" placeholder (checked separately).
+var templateSuffixes = []string{"%d", "%v", "%s", "' ||", `" +`, "${"}
+
 // scanIPv4 returns every disallowed IPv4 literal in data.
 //
-//   - A run that starts with "." is an OID fragment and is skipped.
+//   - A run that starts with "." is an OID fragment and is skipped, unless the
+//     dot follows a letter or underscore (host.a.b.c.d, x_.a.b.c.d): then the
+//     dot is a separator and the rest is classified as usual.
 //   - A trailing sentence period is stripped; the run is still checked.
 //   - 4 parts: an address.
-//   - 5 parts (IP.index or ifIndex.IP): flagged only if neither 4-part window
-//     is allowed and at least one window is a public address.
-//   - 3 parts followed by ".%d", ".' ||" or ".x": an address template; its
-//     /24 must be allowed.
-//   - 6+ parts: OIDs, skipped.
+//   - 5 parts (IP.index or ifIndex.IP): flagged when a window is a public
+//     address, unless the other window is allowed by a range narrower than a
+//     first-octet block (or by an allowlist).
+//   - 3 parts followed by a template suffix (".%d", ".%v", ".%s", ".' ||",
+//     `." +`, ".${`, ".x"): an address template; its /24 must be allowed.
+//   - 6+ parts: OIDs, skipped, except a run starting "1.4." (an IP-MIB
+//     address index "1.4.a.b.c.d": InetAddressType ipv4, length 4), whose
+//     last 4 parts are an address.
 func scanIPv4(p string, data []byte) []ipFinding {
 	var out []ipFinding
 	s := string(data)
@@ -268,51 +291,61 @@ func scanIPv4(p string, data []byte) []ipFinding {
 		}
 		run := s[start:end]
 		if strings.HasPrefix(run, ".") {
-			continue // OID fragment
+			if start == 0 || !isWordByte(s[start-1]) {
+				continue // OID fragment
+			}
+			run = run[1:] // host.a.b.c.d: the dot is a separator
+			if run == "" {
+				continue
+			}
 		}
 		trailingDot := strings.HasSuffix(run, ".")
 		run = strings.TrimSuffix(run, ".")
 		parts := strings.Split(run, ".")
 		lineNo := strings.Count(s[:start], "\n") + 1
 		flag := func(lit string) { out = append(out, ipFinding{line: lineNo, lit: lit}) }
-		public := func(a netip.Addr) bool {
-			if v4Allowed(a) {
-				return false
-			}
+		listed := func(a netip.Addr) bool {
 			lit := a.String()
 			if _, ok := ipv4Allowlist[lit]; ok {
-				return false
+				return true
 			}
-			if _, ok := ipv4FileAllowlist[p+"|"+lit]; ok {
-				return false
-			}
-			return true
+			_, ok := ipv4FileAllowlist[p+"|"+lit]
+			return ok
 		}
-		switch len(parts) {
-		case 3:
+		public := func(a netip.Addr) bool { return !v4Allowed(a) && !listed(a) }
+		switch n := len(parts); {
+		case n == 3:
 			if !trailingDot {
 				continue
 			}
 			rest := s[end:]
-			if !(strings.HasPrefix(rest, "%d") || strings.HasPrefix(rest, "' ||") ||
-				(strings.HasPrefix(rest, "x") && (len(rest) == 1 || !isWordByte(rest[1])))) {
+			tmpl := strings.HasPrefix(rest, "x") && (len(rest) == 1 || !isWordByte(rest[1]))
+			for _, suf := range templateSuffixes {
+				tmpl = tmpl || strings.HasPrefix(rest, suf)
+			}
+			if !tmpl {
 				continue
 			}
 			a, ok := parseV4(append(parts, "0"))
 			if ok && public(a) {
 				flag(run + ".")
 			}
-		case 4:
+		case n == 4:
 			if a, ok := parseV4(parts); ok && public(a) {
 				flag(run)
 			}
-		case 5:
+		case n == 5:
 			first, ok1 := parseV4(parts[:4])
 			last, ok2 := parseV4(parts[1:])
-			if (ok1 && !public(first)) || (ok2 && !public(last)) {
+			excuses := func(a netip.Addr, ok bool) bool { return ok && (v4AllowedNarrow(a) || listed(a)) }
+			if (ok1 && public(first) && !excuses(last, ok2)) || (ok2 && public(last) && !excuses(first, ok1)) {
+				flag(run)
+			}
+		case n >= 6:
+			if parts[0] != "1" || parts[1] != "4" {
 				continue
 			}
-			if ok1 || ok2 {
+			if a, ok := parseV4(parts[n-4:]); ok && public(a) {
 				flag(run)
 			}
 		}
@@ -401,6 +434,34 @@ func TestPublicHygiene_IPv4Rules(t *testing.T) {
 		{"template .x, private", "10.1.2.x", 0},
 		{"3 parts no template", ip("9", "9", "9") + " ok", 0},
 		{"allowlisted", "dns 8.8.8.8", 0},
+		// 5 parts: a first-octet block (0/8, 10/8, 127/8, 224/4, 240/4) in
+		// one window must not excuse a public address in the other.
+		{"5-part 10/8 in front of public", "10." + pub, 1},
+		{"5-part 127/8 in front of public", "127." + pub, 1},
+		{"5-part 224/4 in front of public", "224." + pub, 1},
+		{"5-part 240/4 in front of public", "240." + pub, 1},
+		{"5-part 0/8 in front of public", "0." + pub, 1},
+		{"5-part public then 10/8 window", ip("9", "10", "9", "9", "9"), 1},
+		{"5-part both windows first-octet blocks", "10.10.0.0.1", 0},
+		{"5-part narrow window still excuses", "192.168.1.1.9", 0},
+		// 6+ parts: an IP-MIB "1.4.a.b.c.d" index carries an address.
+		{"IP-MIB index, public", "1.4." + pub, 1},
+		{"IP-MIB index, public, more parts", ip("1", "4", "7", pub), 1},
+		{"enterprise OID is not an IP-MIB index", "1.3.6.1.4.1.9.9.109", 0},
+		{"IP-MIB index, private", "1.4.192.168.1.1", 0},
+		{"IP-MIB index, allowlisted", "1.4.8.8.8.8", 0},
+		// A dot after a letter is a separator, not an OID fragment.
+		{"host.a.b.c.d, public", "host." + pub, 1},
+		{"host_.a.b.c.d, public", "x_." + pub, 1},
+		{"host.a.b.c.d, private", "host.10.0.0.1", 0},
+		{"OID fragment after space", "oid ." + pub, 0},
+		{"OID name, long numeric tail", "ifDescr.1.3.6.1.2.1", 0},
+		// More template suffixes.
+		{`template " +, public`, `"` + ip("9", "9", "9") + `." + n`, 1},
+		{"template ${, public", ip("9", "9", "9") + ".${n}", 1},
+		{"template %v, public", ip("9", "9", "9") + ".%v", 1},
+		{"template %s, public", ip("9", "9", "9") + ".%s", 1},
+		{"template %v, private", "10.1.2.%v", 0},
 	}
 	for _, c := range cases {
 		if got := len(scanIPv4("x.go", []byte(c.text))); got != c.want {
