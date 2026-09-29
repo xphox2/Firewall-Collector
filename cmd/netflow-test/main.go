@@ -1,9 +1,8 @@
 // netflow-test is a standalone NetFlow v5 / v9 / IPFIX test sender for
 // operators and end-to-end verification (the flow analogue of cmd/tftp-test).
 // It crafts spec-correct datagrams for the vendor conformance shapes the
-// collector's parser guarantees (docs/flow-protocol-research-2026-07-03.md,
-// server repo) and fires them at a collector, printing what was sent and what
-// should land server-side.
+// collector's parser guarantees and fires them at a collector, printing what
+// was sent and what should land server-side.
 //
 // The exporter identity is ALWAYS the sending socket's source IP — v5/v9/IPFIX
 // carry no in-band agent address, so there is no -exporter-ip flag (it would

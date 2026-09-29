@@ -473,7 +473,7 @@ Live validation of the port-to-port map found that FortiGates expose **no BRIDGE
 
 ### Added — NetFlow v5/v9 + IPFIX ingestion (Tranche 3, collector side)
 
-Design input: the 2026-07-03 flow-protocol research report (server repo, `docs/flow-protocol-research-2026-07-03.md`), adversarially verified against RFCs 3954/7011/5103/5153/6313/8158, the IANA IPFIX registries, and vendor docs.
+Design input: the 2026-07-03 flow-protocol research report, adversarially verified against RFCs 3954/7011/5103/5153/6313/8158, the IANA IPFIX registries, and vendor docs.
 
 - **New `internal/netflow` receiver** (`NetFlowReceiver`): up to two UDP sockets — `PROBE_NETFLOW_PORT` (2055) and `PROBE_IPFIX_PORT` (4739), `0` disables either — with **content-based version dispatch** on the datagram's version word, so a v9 exporter pointed at the IPFIX port (or vice versa) still decodes. SO_REUSEPORT worker fan-out (`PROBE_UDP_WORKERS`), socket-respawn supervision (same discipline as sFlow/syslog), source-IP allowlist from the assigned-device fleet (deny-all until devices are known), and per-source + global rate limits (`PROBE_NETFLOW_RATE_LIMIT_PPS`=1000 / `PROBE_NETFLOW_RATE_LIMIT_GLOBAL_PPS`=30000). Emits the same normalized `relay.FlowSample` stream as sFlow, labelled `flow_source` (1=v5, 2=v9, 3=IPFIX).
 - **NetFlow v5 parser**: 24-byte header + 48-byte records, `sampling & 0x3FFF` rate (0→1) with counters multiplied in, nfdump's exact uptime-wrap corrections (First>Last; Last>sysUptime>100 s — Cisco CSCei12353), count-lie clamping/salvage, ICMP type/code moved out of dst_port with ports zeroed.

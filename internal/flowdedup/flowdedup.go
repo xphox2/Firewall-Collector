@@ -13,11 +13,10 @@
 //     different data (the SNMP-fallback bandwidth source), not flow records.
 //     Callers simply don't consult the tracker for counter samples.
 //
-// Vendor context (docs/flow-protocol-research-2026-07-03.md §2.8, server
-// repo): dual-export is effectively a FortiGate + VyOS scenario, and Fortinet
-// itself recommends NetFlow — enabling sFlow disables NPU offload. Complete
-// session-based NetFlow is also strictly higher fidelity than 1-in-N sampled
-// sFlow, hence the default direction.
+// Vendor context: dual-export is effectively a FortiGate + VyOS scenario,
+// and Fortinet itself recommends NetFlow — enabling sFlow disables NPU
+// offload. Complete session-based NetFlow is also strictly higher fidelity
+// than 1-in-N sampled sFlow, hence the default direction.
 package flowdedup
 
 import (

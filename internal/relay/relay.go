@@ -243,8 +243,7 @@ type FlowSample struct {
 	// backward-compatible pattern as Drops above: the sFlow parser never sets
 	// them (zero values marshal absent), a pre-adopting server drops the
 	// unknown JSON keys, and a pre-adopting collector sends nothing. JSON names
-	// MUST match the server's models.FlowSample exactly. Full field rationale:
-	// Firewall-Mon docs/flow-protocol-research-2026-07-03.md §2.1.
+	// MUST match the server's models.FlowSample exactly.
 
 	// FlowSource labels the exporting protocol (FlowSource* constants below):
 	// 0/absent = sFlow, 1 = NetFlow v5, 2 = NetFlow v9, 3 = IPFIX. The server
