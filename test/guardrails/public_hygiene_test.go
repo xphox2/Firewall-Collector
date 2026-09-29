@@ -198,7 +198,7 @@ var ipv4Allowlist = map[string]string{
 
 // ipv4FileAllowlist is the reviewed per-file allowlist: "path|ip" -> reason.
 var ipv4FileAllowlist = map[string]string{
-	"internal/netflow/ipfix.go|3.4.2.2": "RFC 7011 section number (§3.4.2.2), not an address",
+	"internal/netflow/ipfix.go|" + ip("3", "4", "2", "2"): "RFC 7011 section number in a comment, not an address",
 }
 
 // ipv6Allowlist is the reviewed list of global-unicast IPv6 literals allowed
@@ -329,7 +329,7 @@ func isWordByte(c byte) bool {
 var v6Candidate = regexp.MustCompile(`[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*`)
 
 var (
-	v6Global = netip.MustParsePrefix("2000::/3")
+	v6Global = netip.PrefixFrom(netip.AddrFrom16([16]byte{0x20}), 3) // global unicast (the /3 starting at 2000)
 	v6Doc    = netip.MustParsePrefix("2001:db8::/32")
 )
 

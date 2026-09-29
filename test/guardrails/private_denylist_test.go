@@ -24,7 +24,7 @@ import (
 //
 //   - A token made only of digits and dots (an address or prefix) matches
 //     with no digit on either side, so "10.1.2" matches inside "10.1.2.3" but
-//     not inside "110.1.2".
+//     not inside "10.1.23".
 //   - Any other token matches as a substring of the raw text, and also
 //     against runs of adjacent alphanumeric sub-tokens joined by "-", "_",
 //     "." or nothing — so "abc-fw-01" also catches "ABC_FW_01" and "abcfw01".
@@ -192,7 +192,7 @@ func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 
 // TestPrivateDenylist_MatcherRules pins the matcher with synthetic tokens.
 func TestPrivateDenylist_MatcherRules(t *testing.T) {
-	m := newDenyMatcher([]string{"acme-fw-01", "10.99.7", "widgetco", "aa:bb:cc"}, []string{"widgetco-public"})
+	m := newDenyMatcher([]string{"acme-fw-01", "198.18.7", "widgetco", "aa:bb:cc"}, []string{"widgetco-public"})
 	cases := []struct {
 		text string
 		want int
@@ -202,9 +202,9 @@ func TestPrivateDenylist_MatcherRules(t *testing.T) {
 		{"host acmefw01 up", 1},
 		{"host Acme.Fw.01 up", 1},
 		{"host acme-fw-02 up", 0},
-		{"peer 10.99.7.4", 1},
-		{"peer 110.99.7.4", 0},
-		{"peer 10.99.71.4", 0},
+		{"peer 198.18.7.4", 1},
+		{"peer 1198.18.7.4", 0},
+		{"peer 198.18.71.4", 0},
 		{"see WidgetCo docs", 1},
 		{"see widgetco-public docs", 0},
 		{"mac AA:BB:CC:01:02:03", 1},
