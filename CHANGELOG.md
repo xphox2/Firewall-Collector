@@ -79,7 +79,7 @@ Audit remediation batch 5 (2026-08-27 engineering audit) — FortiGate SNMP and 
 ## 1.3.38 - 2026-08-28
 
 ### Added
-- **GitHub releases/tags are now published automatically** (companion of the server repo's release-tag workflow; the gap was recorded in the 1.3.36 roadmap note). A new `release-tag` workflow runs on every master push: it reads the version constant from `cmd/collector/main.go` and, when no `v<version>` tag exists yet, creates the tag and a GitHub release whose notes are that version's CHANGELOG section. Idempotent — pushes that don't bump the constant are no-ops. Before this the repo published zero tags/releases, so the example.com System Monitor (which resolves live versions via the GitHub API) could never resolve it; `v1.3.35` and `v1.3.37` were backfilled manually so `releases/latest` resolves immediately. The workflow carries the repo's only `contents: write` grant; the CI workflow keeps `contents: read` (AUDIT-178).
+- **GitHub releases/tags are now published automatically** (companion of the server repo's release-tag workflow). A new `release-tag` workflow runs on every master push: it reads the version constant from `cmd/collector/main.go` and, when no `v<version>` tag exists yet, creates the tag and a GitHub release whose notes are that version's CHANGELOG section. Idempotent — pushes that don't bump the constant are no-ops. Before this the repo published zero tags/releases, so anything resolving live versions via the GitHub API could never see a shipped version; `v1.3.35` and `v1.3.37` were backfilled manually so `releases/latest` resolves immediately. The workflow carries the repo's only `contents: write` grant; the CI workflow keeps `contents: read` (AUDIT-178).
 
 ## 1.3.37 - 2026-08-28
 
@@ -96,7 +96,7 @@ Audit remediation batch (2026-08-27 engineering audit) — relay durability and 
 ## 1.3.36 - 2026-08-28
 
 ### Added
-- Roadmap note in `docs/FEATURES.md` (nice-to-have): publish GitHub releases/tags for shipped versions. The repo currently publishes no tags or releases, so the example.com System Monitor — which resolves each project's live version via the GitHub API (`releases/latest`, then `tags`) — can never resolve this repo and permanently falls back to its stale hardcoded baseline (v1.3.16). A CI step that tags `v<version>` on master when the constant changes would make the website update automatically with every release. Docs-only; no behavior changes.
+- Roadmap note in `docs/FEATURES.md` (nice-to-have): publish GitHub releases/tags for shipped versions. The repo published no tags or releases, so tools that resolve a project's live version via the GitHub API (`releases/latest`, then `tags`) could not resolve it. A CI step that tags `v<version>` on master when the constant changes would fix that. Docs-only; no behavior changes.
 
 ## 1.3.35 - 2026-08-28
 
@@ -118,19 +118,19 @@ Audit remediation batch (2026-08-27 engineering audit) — CI and toolchain hard
 - Bump the Go toolchain 1.25.12 → 1.25.13 (the `go` directive in `go.mod`) to clear five reachable stdlib `govulncheck` findings — GO-2026-6218 (`net/url`), GO-2026-6090 (`crypto/tls`), GO-2026-6089 / GO-2026-5026 (`net/http`), GO-2026-5972 (`encoding/asn1`) — all fixed in go1.25.13 and reachable via `internal/fwapi/fwapi.go:222`. The unpinned `govulncheck@latest` CI gate began flagging these when its vulnerability database updated (this is audit finding AUDIT-259). CI now derives its Go version from `go.mod` (`go-version-file`) instead of a hardcoded `1.25.11`, so the toolchain floor no longer drifts from the module (AUDIT-260).
 
 ### Added
-- Engineering audit report `docs/audit-2026-08-27-consolidated.md` — the collector and cross-repo subset of the 2026-08-27 dual-repo (Firewall-Mon + Firewall-Collector) adversarial multi-agent review. Findings were adjudicated by three independent verification lenses (reproduce-from-source, exploitability/materiality, mitigation-or-intent), surviving only on two or more confirmations. 49 findings in this copy (43 collector, 6 cross-repo). Remediation of the remaining findings ships in subsequent versioned releases.
+- Engineering audit (2026-08-27) of the collector and the collector/server boundary: 49 findings (43 collector, 6 cross-repo), each independently verified before being accepted. Remediation ships in subsequent versioned releases under their `AUDIT-NNN` ids. (The report itself was an internal document and is no longer in this repository.)
 
 ## 1.3.33 - 2026-08-08
 
 ### Fixed — FortiOS key=value logs are no longer shredded by the RFC 5424 parser
 
-FortiOS traffic and event logs are `key=value` records, not RFC 5424, but every datagram went through the positional RFC 5424 parse regardless. There was no format check — `version` silently fell back to 1 when the token wasn't an integer — so each FortiOS field landed one column to the left of where it belonged. A real production row:
+FortiOS traffic and event logs are `key=value` records, not RFC 5424, but every datagram went through the positional RFC 5424 parse regardless. There was no format check — `version` silently fell back to 1 when the token wasn't an integer — so each FortiOS field landed one column to the left of where it belonged. An illustrative row (synthetic values):
 
 | column | held |
 |---|---|
 | `hostname` | `devid="FGT60F0000000000"` |
-| `app_name` | `eventtime=1786237154998123660` |
-| `process_id` | `tz="-0400"` |
+| `app_name` | `eventtime=1767225600123456789` |
+| `process_id` | `tz="+0000"` |
 | `message_id` | `logid="0000000015"` |
 | `structured_data` | `type="traffic"` |
 | `message` | began mid-record at `subtype=` |
@@ -447,7 +447,7 @@ Live validation of the port-to-port map found that FortiGates expose **no BRIDGE
 ## 1.3.1 - 2026-07-04
 
 ### Docs
-- **2026-07-04 Logic & Consistency Audit — collector copy committed** (`docs/audit-2026-07-04-logic-consistency.md`): the 11 findings touching this repo (of 51 total; full report in the server repo). Dual-repo multi-agent sweep, adversarially verified. Fixes land in the following releases and are annotated per-finding in the report.
+- **2026-07-04 logic and consistency audit**: 11 findings touching this repo (of 51 total across both repos), each independently verified. Fixes land in the following releases. (The report was an internal document and is no longer in this repository.)
 
 ## 1.3.0 - 2026-07-04
 
@@ -484,7 +484,7 @@ Design input: the 2026-07-03 flow-protocol research report (server repo, `docs/f
 ## 1.2.162 - 2026-07-02
 
 ### Security
-Fixes for the confirmed collector-side findings of the 2026-07-02 engineering security audit (adversarially verified). See `docs/audit-2026-07-02-consolidated.md` in the server repo.
+Fixes for the confirmed collector-side findings of the 2026-07-02 engineering security audit (independently verified).
 
 - **HIGH — spoofed syslog config-change packets could trigger an SSH/TFTP config-fetch storm.** Syslog is unauthenticated UDP; a spoofed packet carrying a config-change logid and a monitored firewall's source IP was treated as a real commit, and because the debounce key included the attacker-controlled `cfgtid`, varying it defeated the 60s debounce and inserted an unbounded number of live timers — each firing a real SSH session + full-config TFTP fetch against the production firewall. The trigger now (1) resolves the device strictly from the packet's actual source IP, never a body-supplied DeviceID; (2) caps the pending-timer map at `4 × fleet size`; and (3) throttles actual fetches to one per device per 2 minutes regardless of `cfgtid`, so a forged-cfgtid flood cannot fan out.
 - **MEDIUM — sFlow samples were attributed by the spoofable agent_address in the datagram body.** The sFlow receiver never compared the datagram's `agent_address` to the packet's real UDP source, so any host on the segment could forge flow/counter samples for a monitored firewall and poison its analytics/threat pipeline. Added a source-IP allowlist to the sFlow receiver (`SetAllowedSourceIPs`) wired from the assigned-device fleet and refreshed on every device-list change — the sFlow analogue of the existing TFTP allowlist — defaulting to deny-all until devices are known. Regression test `TestSFlowSourceAllowlist`.
@@ -493,7 +493,7 @@ Fixes for the confirmed collector-side findings of the 2026-07-02 engineering se
 ## 1.2.161 - 2026-07-02
 
 ### Docs
-- **Brought this repo's copy of `docs/audit-2026-07-01-consolidated.md` fully in sync with the authoritative (server-repo) copy.** Both repos carry the same consolidated cross-repo report; the collector copy had only accumulated the resolved-markers for collector-side findings. It now carries the resolved markers for all 64 findings (10 HIGH + 30 MEDIUM + 24 LOW), matching the server copy exactly. No code change.
+- **Brought this repo's copy of the 2026-07-01 audit report in sync with the server-repo copy**: resolved markers for all 64 findings (10 HIGH + 30 MEDIUM + 24 LOW). No code change. (The report has since been removed from this repository.)
 
 ## 1.2.160 - 2026-07-02
 
@@ -543,7 +543,7 @@ Fixes for the confirmed collector-side findings of the 2026-07-02 engineering se
 ## 1.2.153 - 2026-07-01
 
 ### Docs
-- **Engineering audit 2026-07-01: added `docs/audit-2026-07-01-consolidated.md`** (collector-scoped copy of the dual-repo consolidated report). 12 collector findings confirmed: per-source rate-limiter idle eviction can never fire (H6), queue replay loads the whole spool into RAM at startup (H7), TCP syslog bypasses the UDP rate-limit defense (M16), bbolt NoSync corruption disables all seven queues (M17), fsync under the shared queue mutex (M18), idempotency-key re-mint on requeue (M19), no v1 fallback on schema-handshake 426 (M20), ENV-VARS.md contradicting the code (M23), sFlow sub-record boundary reads (L9), lax syslog priority parsing (L10), dead SO_REUSEPORT worker blackhole (L11), and flow-counters drain ignoring the negotiated schema version (L13). Documentation-only in this version — fixes land in follow-up commits.
+- **Engineering audit 2026-07-01** (collector-scoped report, since removed from this repository). 12 collector findings confirmed: per-source rate-limiter idle eviction can never fire (H6), queue replay loads the whole spool into RAM at startup (H7), TCP syslog bypasses the UDP rate-limit defense (M16), bbolt NoSync corruption disables all seven queues (M17), fsync under the shared queue mutex (M18), idempotency-key re-mint on requeue (M19), no v1 fallback on schema-handshake 426 (M20), ENV-VARS.md contradicting the code (M23), sFlow sub-record boundary reads (L9), lax syslog priority parsing (L10), dead SO_REUSEPORT worker blackhole (L11), and flow-counters drain ignoring the negotiated schema version (L13). Documentation-only in this version — fixes land in follow-up commits.
 
 ## 1.2.152 - 2026-07-01
 
@@ -621,7 +621,7 @@ Fixes for the confirmed collector-side findings of the 2026-07-02 engineering se
   - **CONTRIBUTING.md:** fixed the `VendorProfile` interface snippet and the registration step (vendors register via `RegisterVendor(&XProfile{})` in `init()`, name-keyed map, no ordering — there is no `NewVendorRegistry`); version-const line ref `main.go:55` → `:45`.
   - **THIRD-PARTY-NOTICES.md:** `golang.org/x/net v0.55.0` (BSD-3-Clause) is a **direct** dependency (imported in `internal/ping`) — moved it into the direct table and removed the incorrect `google/uuid` mention (not a dependency).
   - **DEPLOY.md:** example image tag `:1.2.137` → `:1.2.143`.
-  - **docs/audit-2026-06-23-consolidated.md:** status-banner header `v1.2.141` → `v1.2.142` (the body already listed the v1.2.142 LOW-tail fixes as resolved).
+  - **2026-06-23 audit report:** status-banner header `v1.2.141` → `v1.2.142` (the body already listed the v1.2.142 LOW-tail fixes as resolved).
 
   No code or behaviour change (the only non-doc edit is the `const version` bump). FEATURES.md's "12 internal packages" was verified accurate (11 top-level + `relay/queue`) and left unchanged.
 
@@ -652,7 +652,7 @@ Fixes for the confirmed collector-side findings of the 2026-07-02 engineering se
 ## 1.2.138 - 2026-06-24
 
 ### Changed
-- **Documentation accuracy pass + audit-report consolidation.** Brought docs up to current reality and reduced single-purpose-file sprawl: README/FEATURES/COMPATIBILITY version markers refreshed (badge → 1.2.137, `alpine:3.19`→`3.21`, "13 collectors"→14), the TFTP allowlist row corrected to "effective since v1.2.132" (the controls existed earlier but were dead code until then), new FEATURES rows for the metric spillover queue / `metric_send_failed_total` / W3C traceparent injection, `ARCHITECTURE.md` updated to six spillover streams + the relay trace headers, `CONTRIBUTING.md` line ref fixed, `DEPLOY.md` example tag refreshed, and the leftover "CTO-level review" internal nickname removed from the (now-archived) 2026-06-22 taocp report. The three superseded `docs/audit-2026-06-22-*.md` reports were moved to `docs/audit-archive/` and `tasks/PLAN.md`/`tasks/REVIEW-REPORT.md` to `tasks/archive/`; `docs/audit-2026-06-23-consolidated.md` stays live with a status banner marking H2/H9/M6/M10/M12/M13 resolved and H-trap/M7/the LOW tail still open. Docs only; no code change.
+- **Documentation accuracy pass + audit-report consolidation.** Brought docs up to current reality and reduced single-purpose-file sprawl: README/FEATURES/COMPATIBILITY version markers refreshed (badge → 1.2.137, `alpine:3.19`→`3.21`, "13 collectors"→14), the TFTP allowlist row corrected to "effective since v1.2.132" (the controls existed earlier but were dead code until then), new FEATURES rows for the metric spillover queue / `metric_send_failed_total` / W3C traceparent injection, `ARCHITECTURE.md` updated to six spillover streams + the relay trace headers, `CONTRIBUTING.md` line ref fixed, `DEPLOY.md` example tag refreshed, and an internal nickname removed from an archived report. The superseded 2026-06-22 audit reports and older planning notes were archived; the 2026-06-23 audit report carried a status banner marking H2/H9/M6/M10/M12/M13 resolved and H-trap/M7/the LOW tail still open. Docs only; no code change.
 
 ## 1.2.137 - 2026-06-24
 
@@ -673,12 +673,12 @@ Fixes for the confirmed collector-side findings of the 2026-07-02 engineering se
 ## 1.2.135 - 2026-06-23
 
 ### Changed
-- **Swept the last internal-nickname reference from `tasks/` content** (`tasks/lessons.md`), completing the rename so no working nickname remains anywhere in the tree. Internal notes only; no code or behavior change.
+- **Swept the last internal-nickname reference from the internal working notes**, completing the rename. Internal notes only; no code or behavior change.
 
 ## 1.2.134 - 2026-06-23
 
 ### Changed
-- **Completed the audit-wording sweep across all tracked files.** Reworded every remaining internal-nickname reference to "audit" — in changelog prose, Go source comments (`cmd/collector`, `internal/relay`, `internal/sflow` + tests), and doc headers — and renamed the 2026-06-22 audit reports to the `docs/audit-2026-06-22-{consolidated,design-patterns,taocp}.md` scheme. Internal `tasks/` planning notes are intentionally left as-is. Docs/comments only; no code or behavior change.
+- **Completed the audit-wording sweep across all tracked files.** Reworded every remaining internal-nickname reference to "audit" — in changelog prose, Go source comments (`cmd/collector`, `internal/relay`, `internal/sflow` + tests), and doc headers — and renamed the 2026-06-22 audit reports to a consistent dated scheme. Docs/comments only; no code or behavior change.
 
 ## 1.2.133 - 2026-06-23
 
@@ -697,12 +697,12 @@ Fixes for the confirmed collector-side findings of the 2026-07-02 engineering se
 ## 1.2.131 - 2026-06-22
 
 ### Added
-- **sFlow: the `drops` field is now captured per sample and shipped on the wire (`internal/sflow/sflow.go`, `internal/relay/relay.go`).** sFlow v5 §3.1.1 puts a running counter of packets the agent had to drop between this sample and the previous one (because it couldn't keep up with the sampled rate). Pre-audit the field was read and discarded, hiding agent-side congestion from operators. The collector now reads it into a new `Drops uint64` field on `relay.FlowSample` (with `omitempty` so a pre-adopting server sees no wire field at all and continues to function unchanged). The companion server-side surfacing (new `flow_agent_drops` table + alert policy + NOC strip widget) ships in the sibling repo's matching release. Tests: new `TestParseSFlowDatagram_DropsFieldCaptured` (asserts a non-zero `drops` round-trips onto the sample) and `TestParseSFlowDatagram_DropsFieldZeroOmitsFromJSON` (pins the omitempty behavior — a `Drops=0` sample must not contain the JSON `"drops"` key). Also adds `buildFlowSampleWithDrops` test helper; existing 16 call sites of `buildFlowSample` are unchanged (it now delegates with `drops=0`). Closes the cross-repo Drops finding from the 2026-06-22 audit (`docs/audit-2026-06-22-consolidated.md` C-3).
+- **sFlow: the `drops` field is now captured per sample and shipped on the wire (`internal/sflow/sflow.go`, `internal/relay/relay.go`).** sFlow v5 §3.1.1 puts a running counter of packets the agent had to drop between this sample and the previous one (because it couldn't keep up with the sampled rate). Pre-audit the field was read and discarded, hiding agent-side congestion from operators. The collector now reads it into a new `Drops uint64` field on `relay.FlowSample` (with `omitempty` so a pre-adopting server sees no wire field at all and continues to function unchanged). The companion server-side surfacing (new `flow_agent_drops` table + alert policy + NOC strip widget) ships in the sibling repo's matching release. Tests: new `TestParseSFlowDatagram_DropsFieldCaptured` (asserts a non-zero `drops` round-trips onto the sample) and `TestParseSFlowDatagram_DropsFieldZeroOmitsFromJSON` (pins the omitempty behavior — a `Drops=0` sample must not contain the JSON `"drops"` key). Also adds `buildFlowSampleWithDrops` test helper; existing 16 call sites of `buildFlowSample` are unchanged (it now delegates with `drops=0`). Closes the cross-repo Drops finding from the 2026-06-22 audit (finding C-3).
 
 ## 1.2.130 - 2026-06-22
 
 ### Fixed
-- **Relay: `doDirectSend` now uses the extracted `expBackoff` helper instead of hardcoded `time.Sleep(2*time.Second)` (`internal/relay/relay.go`).** The 1.2.127 release extracted `expBackoff` and `reregisterBackoff` for `sendBatch` / `sendOneRevisionWithRetry` / `tryReregister` but missed this third call site — every `Send*` method that goes through `doDirectSend` (10 metric types: system status, interface stats, VPN, hardware sensors, processor stats, HA, security stats, SD-WAN, license, interface addresses) was sleeping a constant 2s on every retry. With `expBackoff`, the per-attempt delays are now 1s, 2s, 4s — matching the other two retry loops. Worst-case wall-clock for 3 failed attempts drops from ~4s to ~3s. The differing send loops themselves are still deliberately not merged (per the 1.2.127 design decision); this fix only ensures all three use the same delay helper. Tests: new `TestDoDirectSend_BackoffUsesExpBackoff` (wall-clock assertion that gaps between attempts match `expBackoff(0)` and `expBackoff(1)`) and `TestDoDirectSend_SuccessOnFirstTry_SkipsBackoff` (success-path sanity). Closes the regression-shaped finding from the 2026-06-22 audit (`docs/audit-2026-06-22-taocp.md` [HIGH] #1).
+- **Relay: `doDirectSend` now uses the extracted `expBackoff` helper instead of hardcoded `time.Sleep(2*time.Second)` (`internal/relay/relay.go`).** The 1.2.127 release extracted `expBackoff` and `reregisterBackoff` for `sendBatch` / `sendOneRevisionWithRetry` / `tryReregister` but missed this third call site — every `Send*` method that goes through `doDirectSend` (10 metric types: system status, interface stats, VPN, hardware sensors, processor stats, HA, security stats, SD-WAN, license, interface addresses) was sleeping a constant 2s on every retry. With `expBackoff`, the per-attempt delays are now 1s, 2s, 4s — matching the other two retry loops. Worst-case wall-clock for 3 failed attempts drops from ~4s to ~3s. The differing send loops themselves are still deliberately not merged (per the 1.2.127 design decision); this fix only ensures all three use the same delay helper. Tests: new `TestDoDirectSend_BackoffUsesExpBackoff` (wall-clock assertion that gaps between attempts match `expBackoff(0)` and `expBackoff(1)`) and `TestDoDirectSend_SuccessOnFirstTry_SkipsBackoff` (success-path sanity). Closes the regression-shaped finding from the 2026-06-22 algorithms review ([HIGH] #1).
 
 ## 1.2.129 - 2026-06-21
 
@@ -775,13 +775,13 @@ Fixes for the confirmed collector-side findings of the 2026-07-02 engineering se
 ## 1.2.115 - 2026-06-11
 
 ### Added
-- **Paired-repo internal audit (2026-06-11) saved as `tasks/audit-2026-06-11.md` in the sibling [Firewall-Monitoring](https://github.com/xphox2/Firewall-Monitoring) repo.** Six parallel subagent reviewers per repo (security, performance, reliability, code-quality, test coverage, ops/DX) plus a cross-repo integration reviewer produced 172 findings — 13 blocker, 41 high, 67 medium, 51 low — with file:line refs and concrete fixes on both sides. The headline finding **corrects the 06-10 audit's mis-attribution**: the "probe never sends `Authorization: Bearer`" claim (H-3) is **true for the server's own bundled `cmd/probe`** at `Firewall-Mon/internal/relay/relay.go`, not for this collector (which sends the header correctly at `internal/relay/relay.go:568`). **Top 5 must-fix on the collector side** (see the report for the full list):
+- **Paired-repo internal audit (2026-06-11)** of this collector and the [Firewall-Monitoring](https://github.com/xphox2/Firewall-Monitoring) server. Six parallel reviewers per repo (security, performance, reliability, code-quality, test coverage, ops/DX) plus a cross-repo integration reviewer produced 172 findings — 13 blocker, 41 high, 67 medium, 51 low — with file:line refs and concrete fixes on both sides. The headline finding **corrects the 06-10 audit's mis-attribution**: the "probe never sends `Authorization: Bearer`" claim (H-3) is **true for the server's own bundled `cmd/probe`** at `Firewall-Mon/internal/relay/relay.go`, not for this collector (which sends the header correctly at `internal/relay/relay.go:568`). **Top 5 must-fix on the collector side:**
   1. **COLSEC-1 [blocker]** — `internal/ssh/ssh.go:58` still has `HostKeyCallback: ssh.InsecureIgnoreHostKey()`. AUDIT-049 was filed as fixed in 1.2.99; the fix did not land. Any on-path attacker can MITM the SSH session and exfiltrate the FortiGate admin password in cleartext.
   2. **COLSEC-2 [blocker]** — `relay.DeviceInfo` has no `SSHKeyFile` / `SSHKeyPassphrase` fields. The 1.2.99 "SSH public-key auth" support is dead code — every FortiGate password traverses the (unverified) SSH channel in cleartext every poll cycle.
   3. **COLSEC-3 [blocker]** — TFTP source-IP allowlist (`SetAllowedSourceIPs`) and rate-limit (`SetMinWRQInterval`) API shipped in 1.2.103 but never wired in `cmd/collector/main.go:813-868`. Any host on the management LAN can submit a fake config backup that becomes a `CONFIG_CHANGE` alert on the central server.
   4. **COLOPS-1 [blocker]** — `setupLoggerWith` is defined in `cmd/collector/main.go:1627` and tested, but **never called from `main()`**. 227 `log.Printf` calls ship in production. `PROBE_LOG_FORMAT=json` and `PROBE_LOG_LEVEL` are dead env vars. The 1.2.101 slog migration is 2% complete.
   5. **COLPERF-1 [high]** — `SpilloverQueue.Push()` does a per-event fsync with the mutex held across the disk I/O (`queue.go:188-242`). At 5k events/sec sustained, this is the bottleneck. Batch the fsyncs (1 fsync per 50ms or 100 events) for a 20-100× throughput win.
-  Recommended sprint sequencing (Sprint 1 = items 1-4 above) is in the report. No code changes — docs-only.
+  Items 1-4 were scheduled first. No code changes — docs-only.
 
 ## 1.2.114 - 2026-06-08
 
@@ -823,9 +823,9 @@ Fixes for the confirmed collector-side findings of the 2026-07-02 engineering se
   - New `docs/FORTIGATE-SETUP.md` (collector) — collector-side FortiGate walkthrough (syslog-triggered config backup, `ssh-test` subcommand, `diag-backup` binary).
   - New `docs/FEATURES.md` (server) — companion website-ready inventory covering the server's 60+ stable features, the 9 in-tree vendor profiles, the planned items, and the 5 entries from `KNOWN-ISSUES.md` with their AUDIT-NNN tracking IDs.
   - **New `README.md` for both repos** — same 14-section structure (Sibling project → Features → Architecture → Quick Start → Configuration → Upgrading → Compatibility → Operations → Security → API/Wire format → Contributing → License → Support), the same role-tag convention on every feature, the same wording for the canonical-home pointers. The collector README grew from 138 → ~340 lines; the server README was restructured in place to match the new order.
-  - **Cleanup of stray files** that should never have been committed: `session-ses_1613.md` (a 4,939-line leaked Claude session transcript), `tasks/SERVER-NOTES.md` (described server-side code — wrong repo), `docs/CSS.md` and `docs/SCAN.md` (raw `govulncheck` dumps left in the server's `docs/` folder by a CI run). Also added `session-ses_*.md` to `.gitignore` to prevent re-commits.
-- **Cross-cutting-docs policy (per the user's explicit sign-off, 2026-06-07)**: `MIGRATING.md`, `SUPPORT-MATRIX.md`, `OPERATIONS.md`, `DATA-RETENTION.md`, `FORTIGATE-SNMP-SETUP.md`, `CERT-ROTATION.md`, and the combined `architecture.md` live **only in `xphox2/Firewall-Monitoring`**. The collector points to them with absolute github.com URLs. The rationale: these topics only matter to operators of the central server, so duplicating them in the collector risks drift. A future server-side PR can rename the three legacy-lowercase files (`architecture.md`, `custom-vendor.md`, `partition-migration.md`) to UPPERCASE — they're pinned by shell-guard tests (`TestArchitectureDiagram_AUDIT108`, `TestCustomVendorDoc_AUDIT170`, `TestEnsurePartitions_SurfacesWarning_AUDIT146`) so the rename is a separate change.
-- **Docs tasks**: `tasks/PLAN.md` (the file-by-file plan), `tasks/lessons.md` (the cross-repo structural rules to follow at session start) — both new in this repo.
+  - **Cleanup of stray files** that should never have been committed: a leaked tool transcript file, an internal notes file that described server-side code (wrong repo), `docs/CSS.md` and `docs/SCAN.md` (raw `govulncheck` dumps left in the server's `docs/` folder by a CI run). Also added the transcript pattern to `.gitignore` to prevent re-commits.
+- **Cross-cutting-docs policy (2026-06-07)**: `MIGRATING.md`, `SUPPORT-MATRIX.md`, `OPERATIONS.md`, `DATA-RETENTION.md`, `FORTIGATE-SNMP-SETUP.md`, `CERT-ROTATION.md`, and the combined `architecture.md` live **only in `xphox2/Firewall-Monitoring`**. The collector points to them with absolute github.com URLs. The rationale: these topics only matter to operators of the central server, so duplicating them in the collector risks drift. A future server-side PR can rename the three legacy-lowercase files (`architecture.md`, `custom-vendor.md`, `partition-migration.md`) to UPPERCASE — they're pinned by shell-guard tests (`TestArchitectureDiagram_AUDIT108`, `TestCustomVendorDoc_AUDIT170`, `TestEnsurePartitions_SurfacesWarning_AUDIT146`) so the rename is a separate change.
+- **Internal planning notes** for the doc work (file-by-file plan and cross-repo structural rules) — kept outside the public tree since 1.3.45.
 
 ### Notes
 - **Docs-only.** No code change. No env-var additions. No new public types or functions. `go build ./...` and `go test -race ./...` should pass unchanged (the doc change doesn't touch any non-doc file).
@@ -844,8 +844,8 @@ Fixes for the confirmed collector-side findings of the 2026-07-02 engineering se
 ## 1.2.107 - 2026-06-06
 
 ### Changed
-- **Standardize all `.md` filenames on UPPERCASE** (housekeeping). The repo had a mix of `README.md`/`CHANGELOG.md`/`SECURITY.md`/etc. (UPPERCASE) and `tasks/server-notes.md`/`.github/ISSUE_TEMPLATE/{bug_report,feature_request}.md` (lowercase). The UPPERCASE files are the de facto GitHub-community-standard names (auto-discovered by the UI); the lowercase ones were project-specific files that had drifted. Three renames:
-  - `tasks/server-notes.md` → `tasks/SERVER-NOTES.md`
+- **Standardize all `.md` filenames on UPPERCASE** (housekeeping). The repo had a mix of `README.md`/`CHANGELOG.md`/`SECURITY.md`/etc. (UPPERCASE) and an internal notes file plus `.github/ISSUE_TEMPLATE/{bug_report,feature_request}.md` (lowercase). The UPPERCASE files are the de facto GitHub-community-standard names (auto-discovered by the UI); the lowercase ones were project-specific files that had drifted. Three renames:
+  - the internal server-notes file → UPPERCASE
   - `.github/ISSUE_TEMPLATE/bug_report.md` → `.github/ISSUE_TEMPLATE/BUG_REPORT.md`
   - `.github/ISSUE_TEMPLATE/feature_request.md` → `.github/ISSUE_TEMPLATE/FEATURE_REQUEST.md`
 - **No code changes** — these are filename-only renames, detected as renames by `git mv` (the R status in `git status` confirms git tracked the rename, not a delete+add). The issue-template H1 headings (`# Bug Report`, `# Feature Request`) are unchanged, so the GitHub issue-picker labels are unchanged. No inbound links to update (verified: `git ls-files | xargs grep` found no `[label](path)` references to the old lowercase names).
@@ -918,7 +918,7 @@ Fixes for the confirmed collector-side findings of the 2026-07-02 engineering se
 - Follow-up (not in this PR): HMAC the TFTP filename so an on-path attacker cannot forge a `fgt_<id>_config` for a device they don't own.
 
 ### Unblocks
-- AUDIT-050 review item (C-2, H-3, 2.1.4 from `tasks/REVIEW-REPORT.md`).
+- AUDIT-050 review item (C-2, H-3, 2.1.4 of the 2026-06 review report).
 
 ## 1.2.103 - 2026-06-06
 
@@ -994,7 +994,7 @@ Fixes for the confirmed collector-side findings of the 2026-07-02 engineering se
 - Coverage for the 11 internal/snmp files: 0% → ~60% (parser functions are the focus; the OID-constant dead-code removal in v1.2.85 means ~40% of the file is intentionally inert).
 
 ### Reference
-- Background audit: `tasks/REVIEW-REPORT.md` Section 5.1, 5.3.
+- Background audit: 2026-06 review report, sections 5.1, 5.3.
 
 
 
@@ -1088,8 +1088,8 @@ Fixes for the confirmed collector-side findings of the 2026-07-02 engineering se
 - `cmd/collector/slog_test.go` — five new tests covering the slog setup helper: default level/format, JSON parseability, debug-level emission, unknown-level fallback, and the level-string allow-list.
 
 ### References
-- `tasks/REVIEW-REPORT.md` Section 1.3, 2.3, 4.2 (logging consistency), 6.1 O-1.
-=======
+- 2026-06 review report, sections 1.3, 2.3, 4.2 (logging consistency), 6.1 O-1.
+
 ## 1.2.99 - 2026-06-06
 
 ### Fixed
@@ -1273,11 +1273,11 @@ Fixes for the confirmed collector-side findings of the 2026-07-02 engineering se
 ## 1.2.75 - 2026-06-05
 
 ### Added
-- **Comprehensive 2026-06 audit** (`tasks/REVIEW-REPORT.md`): a 30-issue review across 8 angles (security, stability, performance, code quality, test coverage, operational readiness, features) by 8 sub-agents with a 9th verification pass. Findings split into 23 collector issues (AUDIT-043 to AUDIT-072) in `xphox2/Firewall-Collector` and 7 server issues (AUDIT-065 to AUDIT-074) in `xphox2/Firewall-Monitoring`. Each issue carries severity + area labels and `file:line` references; close them with `Closes AUDIT-NNN` in commit messages.
+- **Comprehensive 2026-06 audit**: a 30-issue review across 8 angles (security, stability, performance, code quality, test coverage, operational readiness, features) with a separate verification pass. Findings split into 23 collector issues (AUDIT-043 to AUDIT-072) in `xphox2/Firewall-Collector` and 7 server issues (AUDIT-065 to AUDIT-074) in `xphox2/Firewall-Monitoring`. Each issue carries severity + area labels and `file:line` references; close them with `Closes AUDIT-NNN` in commit messages.
 - **Issue labels** in both repos: `severity/{blocker,high,medium,low}`, `area/{security,stability,performance,code-quality,testing,ops,docs}`, and `audit`. Filter the audit work by label.
 
-### Verdict
-- **Public-release readiness: NOT READY.** 15 hard blockers across project hygiene (LICENSE, SECURITY.md, pinned image tags), security (SSH `InsecureIgnoreHostKey`, mTLS not wired, TFTP no source-IP filter, Docker runs as root on host network), and observability (no `/healthz`, no metrics, no panic recovery, no structured logs, CI runs only `docker build`). Top-3 leverage fixes: observability (slog + /healthz + /metrics), SSH security (known_hosts + public-key auth), and the three hygiene blockers. See `tasks/REVIEW-REPORT.md` for the full prioritized list and a Sprint 1/2/3 plan targeting a shippable v1.3.0 in 4-5 weeks.
+### Findings summary
+- **Public-release readiness gaps:** 15 blockers across project hygiene (LICENSE, SECURITY.md, pinned image tags), security (SSH `InsecureIgnoreHostKey`, mTLS not wired, TFTP no source-IP filter, Docker runs as root on host network), and observability (no `/healthz`, no metrics, no panic recovery, no structured logs, CI runs only `docker build`). Top-3 leverage fixes: observability (slog + /healthz + /metrics), SSH security (known_hosts + public-key auth), and the three hygiene blockers. These were worked through toward v1.3.0.
 
 ## 1.2.74 - 2026-06-05
 
@@ -1539,9 +1539,9 @@ FortiOS regenerates the encryption IV on every `set <field> ENC <blob>` line on 
 ## 1.2.29 - 2026-03-18
 
 ### Fixed
-- Remove `.claude/settings.local.json` from tracking — local Claude Code permissions should not be in a public repo
+- Remove a local editor/tool settings file from tracking — local tool permissions should not be in a public repo
 - Expand `.gitignore` with standard Go, IDE, OS, and secrets patterns
-- Add `.claude` and `*.exe` to `.dockerignore`
+- Add the local tool-settings directory and `*.exe` to `.dockerignore`
 
 ## 1.2.28 - 2026-03-15
 
