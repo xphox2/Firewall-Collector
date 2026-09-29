@@ -135,11 +135,11 @@ current audit) and surfaced here so customers don't plan around vaporware.
 | Hot-reload of `internal/config` (no restart on env change) | AUDIT-NNN not yet assigned | Planned |
 | Server-side mTLS client-cert verification of probes | not in collector; server-side only | [Server] Planned ([CERT-ROTATION.md](https://github.com/xphox2/Firewall-Monitoring/blob/master/docs/CERT-ROTATION.md)) |
 | Per-probe mTLS key issuance via `/api/admin/rotate-mtls` | — | [Server] Planned |
-| Publish GitHub releases/tags for shipped versions | technicallabs.org System Monitor | Planned (nice-to-have, noted 2026-08-28) |
+| Publish GitHub releases/tags for shipped versions | example.com System Monitor | Planned (nice-to-have, noted 2026-08-28) |
 
 > Nice-to-have (2026-08-28): the collector ships as a `version` const bump in
 > `cmd/collector/main.go` plus a CHANGELOG entry — the GitHub repo has **no tags
-> or releases**. The technicallabs.org System Monitor resolves each project's
+> or releases**. The example.com System Monitor resolves each project's
 > live version via the GitHub API (`releases/latest`, then `tags`), so it can
 > never resolve this repo and permanently shows its stale hardcoded baseline
 > (v1.3.16 while the collector is on 1.3.36). The stale README version badge

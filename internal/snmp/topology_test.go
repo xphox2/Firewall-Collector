@@ -25,7 +25,7 @@ func pduStr(oid, s string) gosnmp.SnmpPDU {
 // lowercase; multicast and malformed rows are dropped.
 func TestParseIPNetToMedia(t *testing.T) {
 	pdus := []gosnmp.SnmpPDU{
-		pduBytes(OIDIpNetToMediaPhys+".4.192.168.5.107", []byte{0xAA, 0xBB, 0xCC, 0x00, 0x11, 0x22}),
+		pduBytes(OIDIpNetToMediaPhys+".4.192.168.105.107", []byte{0xAA, 0xBB, 0xCC, 0x00, 0x11, 0x22}),
 		pduBytes(OIDIpNetToMediaPhys+".7.10.0.0.1", []byte{0x00, 0x09, 0x0F, 0x09, 0x00, 0x02}),
 		// multicast (I/G bit) — dropped
 		pduBytes(OIDIpNetToMediaPhys+".4.224.0.0.5", []byte{0x01, 0x00, 0x5E, 0x00, 0x00, 0x05}),
@@ -38,7 +38,7 @@ func TestParseIPNetToMedia(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("got %d entries, want 2: %+v", len(got), got)
 	}
-	if got[0].IfIndex != 4 || got[0].IPAddress != "192.168.5.107" || got[0].MACAddress != "aa:bb:cc:00:11:22" {
+	if got[0].IfIndex != 4 || got[0].IPAddress != "192.168.105.107" || got[0].MACAddress != "aa:bb:cc:00:11:22" {
 		t.Errorf("row 0 wrong: %+v", got[0])
 	}
 	if got[1].MACAddress != "00:09:0f:09:00:02" {

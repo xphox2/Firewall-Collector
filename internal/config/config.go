@@ -125,7 +125,7 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		Probe: ProbeConfig{
 			RegistrationKey: os.Getenv("PROBE_REGISTRATION_KEY"),
-			ServerURL:       GetEnv("PROBE_SERVER_URL", "https://stats.technicallabs.org"),
+			ServerURL:       GetEnv("PROBE_SERVER_URL", "https://stats.example.com"),
 			TLSCertFile:     os.Getenv("PROBE_TLS_CERT"),
 			TLSKeyFile:      os.Getenv("PROBE_TLS_KEY"),
 			CACertFile:      os.Getenv("PROBE_CA_CERT"),

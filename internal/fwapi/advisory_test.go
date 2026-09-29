@@ -54,7 +54,7 @@ func runAdvisory(t *testing.T, srv *httptest.Server) StepResult {
 // A 2xx advisory read echoes its body verbatim so the SERVER can parse it —
 // vendor knowledge stays in the server driver, the collector stays transport.
 func TestRunPreflight_ReturnBodyEchoesBody(t *testing.T) {
-	body := `{"results":[{"seq-num":1,"dst":"192.168.5.0 255.255.255.0","device":"port3","distance":10}]}`
+	body := `{"results":[{"seq-num":1,"dst":"192.168.105.0 255.255.255.0","device":"port3","distance":10}]}`
 	got := runAdvisory(t, advisoryServer(t, http.StatusOK, body))
 	if got.Body != body {
 		t.Errorf("body not echoed verbatim:\n got %q\nwant %q", got.Body, body)

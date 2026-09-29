@@ -16,13 +16,13 @@ func TestParseVPNPhase2_SelectorsAreCanonicalCIDR(t *testing.T) {
 config vpn ipsec phase2-interface
     edit "fwm-t12"
         set phase1name "fwm-t12"
-        set src-subnet 192.168.13.0 255.255.255.0
-        set dst-subnet 192.168.50.0 255.255.255.0
+        set src-subnet 192.168.113.0 255.255.255.0
+        set dst-subnet 192.168.150.0 255.255.255.0
     next
     edit "fwm-t12-1"
         set phase1name "fwm-t12"
-        set src-subnet 192.168.25.0 255.255.255.0
-        set dst-subnet 192.168.12.0 255.255.255.0
+        set src-subnet 192.168.125.0 255.255.255.0
+        set dst-subnet 192.168.112.0 255.255.255.0
     next
 end`
 	got := ParseVPNPhase2(cfg)
@@ -30,8 +30,8 @@ end`
 		t.Fatalf("expected 2 phase2 entries, got %d", len(got))
 	}
 	want := []struct{ local, remote string }{
-		{"192.168.13.0/24", "192.168.50.0/24"},
-		{"192.168.25.0/24", "192.168.12.0/24"},
+		{"192.168.113.0/24", "192.168.150.0/24"},
+		{"192.168.125.0/24", "192.168.112.0/24"},
 	}
 	for i, w := range want {
 		if got[i].LocalSubnet != w.local || got[i].RemoteSubnet != w.remote {
@@ -47,8 +47,8 @@ end`
 // pairing fails.
 func TestSubnetToCIDR_MasksTheAddress(t *testing.T) {
 	cases := []struct{ addr, mask, want string }{
-		{"192.168.13.0", "255.255.255.0", "192.168.13.0/24"},
-		{"192.168.13.7", "255.255.255.0", "192.168.13.0/24"}, // host form → network
+		{"192.168.113.0", "255.255.255.0", "192.168.113.0/24"},
+		{"192.168.113.7", "255.255.255.0", "192.168.113.0/24"}, // host form → network
 		{"10.0.0.0", "255.0.0.0", "10.0.0.0/8"},
 		{"192.168.1.5", "255.255.255.255", "192.168.1.5/32"},
 		{"0.0.0.0", "0.0.0.0", "0.0.0.0/0"},

@@ -13,7 +13,7 @@ variable on this page is wired there. If you find a mismatch, the
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `PROBE_REGISTRATION_KEY` | **Yes** | — | Bearer token from the server's admin UI. Process refuses to start without it. |
-| `PROBE_SERVER_URL` | No | `https://stats.technicallabs.org` | Central server base URL. |
+| `PROBE_SERVER_URL` | No | `https://stats.example.com` | Central server base URL. |
 | `PROBE_TLS_CERT` | No | — | Path to PEM client cert for mTLS. |
 | `PROBE_TLS_KEY` | No | — | Path to PEM client key. Refuses world-readable perms (`0o077` blocked on Unix). |
 | `PROBE_CA_CERT` | No | — | Path to PEM CA pool used to verify the server. |

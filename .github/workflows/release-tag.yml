@@ -4,7 +4,7 @@
 # Every release in this repo is a version-const bump in cmd/collector/main.go
 # plus a CHANGELOG entry; before this workflow the repo published no tags or
 # releases, so anything resolving versions via the GitHub API (the
-# technicallabs.org System Monitor uses releases/latest, falling back to tags)
+# example.com System Monitor uses releases/latest, falling back to tags)
 # could never see a shipped version. On every push to master this job reads
 # the version constant and, when no v<version> tag exists yet, creates the tag
 # and a release whose notes are that version's CHANGELOG section. Idempotent:

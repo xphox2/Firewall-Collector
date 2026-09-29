@@ -6,14 +6,14 @@ import (
 	"time"
 )
 
-// A real production FortiOS traffic line, captured from rust-01. Under the old
-// positional parse this produced hostname=`devid="FGT60FTK20081032"`,
+// A real production FortiOS traffic line, captured from prod-host. Under the old
+// positional parse this produced hostname=`devid="FGT60F0000000000"`,
 // app_name=`eventtime=1786237154998123660`, process_id=`tz="-0400"`,
 // message_id=`logid="0000000015"`, structured_data=`type="traffic"`, and a
 // message that began mid-record at `subtype=`.
-const prodFortiLine = `<189>date=2026-08-08 time=21:39:14 devname="FGT-60F" devid="FGT60FTK20081032" ` +
+const prodFortiLine = `<189>date=2026-08-08 time=21:39:14 devname="FGT-60F" devid="FGT60F0000000000" ` +
 	`eventtime=1786237154998123660 tz="-0400" logid="0000000015" type="traffic" subtype="forward" ` +
-	`level="notice" vd="root" srcip=51.161.8.211 srcport=46872 srcintf="wan1" action="accept"`
+	`level="notice" vd="root" srcip=203.0.113.211 srcport=46872 srcintf="wan1" action="accept"`
 
 func TestParseFortiOSKV_ProductionTrafficLine(t *testing.T) {
 	msg, err := ParseRFC5424([]byte(prodFortiLine))

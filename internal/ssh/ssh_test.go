@@ -98,8 +98,8 @@ func TestTrimToConfigHeader(t *testing.T) {
 	}{
 		{
 			name:     "prompt_glued_to_header_stripped",
-			input:    "FW-HOME # #config-version=FGT60F-7.4.12-FW-build2902-260505:opmode=0\n#conf_file_ver=123\nconfig system global\nset hostname \"FW-HOME\"\nend",
-			expected: "#config-version=FGT60F-7.4.12-FW-build2902-260505:opmode=0\n#conf_file_ver=123\nconfig system global\nset hostname \"FW-HOME\"\nend",
+			input:    "FW-HERON # #config-version=FGT60F-7.4.0-FW-build0000-000000:opmode=0\n#conf_file_ver=123\nconfig system global\nset hostname \"FW-HERON\"\nend",
+			expected: "#config-version=FGT60F-7.4.0-FW-build0000-000000:opmode=0\n#conf_file_ver=123\nconfig system global\nset hostname \"FW-HERON\"\nend",
 		},
 		{
 			name:     "already_clean_unchanged",

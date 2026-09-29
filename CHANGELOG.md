@@ -79,7 +79,7 @@ Audit remediation batch 5 (2026-08-27 engineering audit) — FortiGate SNMP and 
 ## 1.3.38 - 2026-08-28
 
 ### Added
-- **GitHub releases/tags are now published automatically** (companion of the server repo's release-tag workflow; the gap was recorded in the 1.3.36 roadmap note). A new `release-tag` workflow runs on every master push: it reads the version constant from `cmd/collector/main.go` and, when no `v<version>` tag exists yet, creates the tag and a GitHub release whose notes are that version's CHANGELOG section. Idempotent — pushes that don't bump the constant are no-ops. Before this the repo published zero tags/releases, so the technicallabs.org System Monitor (which resolves live versions via the GitHub API) could never resolve it; `v1.3.35` and `v1.3.37` were backfilled manually so `releases/latest` resolves immediately. The workflow carries the repo's only `contents: write` grant; the CI workflow keeps `contents: read` (AUDIT-178).
+- **GitHub releases/tags are now published automatically** (companion of the server repo's release-tag workflow; the gap was recorded in the 1.3.36 roadmap note). A new `release-tag` workflow runs on every master push: it reads the version constant from `cmd/collector/main.go` and, when no `v<version>` tag exists yet, creates the tag and a GitHub release whose notes are that version's CHANGELOG section. Idempotent — pushes that don't bump the constant are no-ops. Before this the repo published zero tags/releases, so the example.com System Monitor (which resolves live versions via the GitHub API) could never resolve it; `v1.3.35` and `v1.3.37` were backfilled manually so `releases/latest` resolves immediately. The workflow carries the repo's only `contents: write` grant; the CI workflow keeps `contents: read` (AUDIT-178).
 
 ## 1.3.37 - 2026-08-28
 
@@ -96,7 +96,7 @@ Audit remediation batch (2026-08-27 engineering audit) — relay durability and 
 ## 1.3.36 - 2026-08-28
 
 ### Added
-- Roadmap note in `docs/FEATURES.md` (nice-to-have): publish GitHub releases/tags for shipped versions. The repo currently publishes no tags or releases, so the technicallabs.org System Monitor — which resolves each project's live version via the GitHub API (`releases/latest`, then `tags`) — can never resolve this repo and permanently falls back to its stale hardcoded baseline (v1.3.16). A CI step that tags `v<version>` on master when the constant changes would make the website update automatically with every release. Docs-only; no behavior changes.
+- Roadmap note in `docs/FEATURES.md` (nice-to-have): publish GitHub releases/tags for shipped versions. The repo currently publishes no tags or releases, so the example.com System Monitor — which resolves each project's live version via the GitHub API (`releases/latest`, then `tags`) — can never resolve this repo and permanently falls back to its stale hardcoded baseline (v1.3.16). A CI step that tags `v<version>` on master when the constant changes would make the website update automatically with every release. Docs-only; no behavior changes.
 
 ## 1.3.35 - 2026-08-28
 
@@ -128,7 +128,7 @@ FortiOS traffic and event logs are `key=value` records, not RFC 5424, but every 
 
 | column | held |
 |---|---|
-| `hostname` | `devid="FGT60FTK20081032"` |
+| `hostname` | `devid="FGT60F0000000000"` |
 | `app_name` | `eventtime=1786237154998123660` |
 | `process_id` | `tz="-0400"` |
 | `message_id` | `logid="0000000015"` |
@@ -177,7 +177,7 @@ Adds `ipsec_telemetry`: the same read-only mechanism as `ipsec_status` — run s
 
 `ParseVPNPhase2` had no src-subnet/dst-subnet regex at all, so every named phase2 had empty subnets: the map rendered no child lines for them and they could never be matched to a provisioned tunnel by selector. A tunnel with four subnet pairs showed four blank rows plus one synthesized `dialup-*` row carrying a single pair.
 
-The conversion is the load-bearing part, not the regexes. FortiOS prints `set src-subnet 192.168.13.0 255.255.255.0` — address plus dotted netmask — which nothing downstream can read: `netclass.SelectorIP` handles CIDR, `a - b` ranges and bare IPs, never a space-separated pair, and the peer-pairing check is exact string equality against strongSwan's canonical CIDR. Storing the device's own text would have made the panel *look* fixed while pairing stayed silently broken. So the address is masked rather than trusted, host-form and network-form entries converge on one string, a non-contiguous mask yields empty rather than a bogus prefix, and an address-object selector still parses with empty subnets exactly as before.
+The conversion is the load-bearing part, not the regexes. FortiOS prints `set src-subnet 192.168.113.0 255.255.255.0` — address plus dotted netmask — which nothing downstream can read: `netclass.SelectorIP` handles CIDR, `a - b` ranges and bare IPs, never a space-separated pair, and the peer-pairing check is exact string equality against strongSwan's canonical CIDR. Storing the device's own text would have made the panel *look* fixed while pairing stayed silently broken. So the address is masked rather than trusted, host-form and network-form entries converge on one string, a non-contiguous mask yields empty rather than a bogus prefix, and an address-object selector still parses with empty subnets exactly as before.
 
 ## 1.3.29 - 2026-07-24
 
@@ -323,7 +323,7 @@ Live validation of the port-to-port map found that FortiGates expose **no BRIDGE
 - New FortiGate SSH supplement: `diagnose netlink brctl list` enumerates the hardware/software switches (bridge names validated before command interpolation; capped at 8), `diagnose netlink brctl name host <bridge>` yields each switch's host table. Learned unicast rows are relayed as `entry_type=fdb` topology entries carrying the member port **name** (`internal3`) — exactly the per-port evidence the server's inference and transitive suppression need. Local/Static (self) and multicast rows dropped.
 - Same double-gating as the SSH ARP supplement: negotiated schema ≥ 5 AND the last SNMP topology cycle affirmatively returned an empty FDB (`snmpFDBEmpty` flag; walk errors keep it "don't send"), so SSH and SNMP FDB snapshots can never alternate-overwrite. Flags pruned on device-list refresh; truncation logged. Multi-VDOM limitation matches the ARP supplement (diagnose needs a VDOM context).
 - Requires server ≥ 0.11.96 for name-only FDB rows to participate in inference (older servers store them; the inference there keys FDB by ifIndex only).
-- **OPNsense/FreeBSD too**: `ifconfig -g bridge` + `ifconfig <bridge> addr` relayed through the same vendor-neutral pipeline (shared `bridgeFDBSource` seam, per-vendor parsers). Only applies to BRIDGED boxes — a routed OPNsense has no if_bridge and yields nothing (live 192.168.5.107 is routed; verified via SNMP ifTable). STATIC/STICKY and multicast rows dropped; handles the FreeBSD version drift where the Vlan column is absent.
+- **OPNsense/FreeBSD too**: `ifconfig -g bridge` + `ifconfig <bridge> addr` relayed through the same vendor-neutral pipeline (shared `bridgeFDBSource` seam, per-vendor parsers). Only applies to BRIDGED boxes — a routed OPNsense has no if_bridge and yields nothing (live 192.168.105.107 is routed; verified via SNMP ifTable). STATIC/STICKY and multicast rows dropped; handles the FreeBSD version drift where the Vlan column is absent.
 - Tests: FortiOS bridge-list/host-table parses (unsafe-name drop, member-port names, lowercase MACs, Local/Static + multicast filters) and the FreeBSD equivalents (Vlan-column drift, STATIC/STICKY, routed-only empty).
 
 
@@ -707,7 +707,7 @@ Fixes for the confirmed collector-side findings of the 2026-07-02 engineering se
 ## 1.2.129 - 2026-06-21
 
 ### Fixed
-- **Interface IP addresses are now parsed correctly on FortiOS builds that append an extra sub-identifier to the `ipAddrTable` index (`internal/snmp/snmp.go`).** Some FortiGates return `ipAdEntIfIndex`/`ipAdEntNetMask` OIDs indexed with a 5th octet — e.g. `.1.3.6.1.2.1.4.20.1.2.192.168.25.254.1` instead of `…192.168.25.254` — and `GetInterfaceAddresses` was storing the whole suffix (`192.168.25.254.1`) as the IP. That string fails `net.ParseIP`, so the server's subnet/overlay connection detectors silently skipped every address from such a device (it never appeared on the connection map even though it shared a LAN with another monitored firewall). The parser now extracts just the first four octets via `ipv4FromTableIndex` and validates them, so quirky and standard agents both yield a clean dotted-quad. Confirmed against a live FortiGate that returns the 5-octet index; adds a unit test covering the quirk plus clean/short/invalid inputs.
+- **Interface IP addresses are now parsed correctly on FortiOS builds that append an extra sub-identifier to the `ipAddrTable` index (`internal/snmp/snmp.go`).** Some FortiGates return `ipAdEntIfIndex`/`ipAdEntNetMask` OIDs indexed with a 5th octet — e.g. `.1.3.6.1.2.1.4.20.1.2.192.168.125.254.1` instead of `…192.168.125.254` — and `GetInterfaceAddresses` was storing the whole suffix (`192.168.125.254.1`) as the IP. That string fails `net.ParseIP`, so the server's subnet/overlay connection detectors silently skipped every address from such a device (it never appeared on the connection map even though it shared a LAN with another monitored firewall). The parser now extracts just the first four octets via `ipv4FromTableIndex` and validates them, so quirky and standard agents both yield a clean dotted-quad. Confirmed against a live FortiGate that returns the 5-octet index; adds a unit test covering the quirk plus clean/short/invalid inputs.
 
 ### Added
 - **The collector now observes and reports each FortiGate's SSH host key for server-side change detection (`internal/ssh/ssh.go`, `internal/relay/relay.go`, `cmd/collector/main.go`).** `FortiGateClient.Connect` previously used `ssh.InsecureIgnoreHostKey()`; it now installs a `HostKeyCallback` that records the presented host key's `SHA256` fingerprint (`ssh.FingerprintSHA256`) and **returns nil unconditionally** — the connection is never blocked (alert-only by design; the server does the pinning/comparison/alerting). After each successful SSH connect (config backup and SSH polling) the collector records the fingerprint per device; the heartbeat now carries an `observed_host_keys` map (device ID → fingerprint) via a provider registered on the relay client. The collector keeps no host-key state on disk — it just reports what it sees, and the server (which pins a set of known-good keys and is HA-failover-aware) decides whether a key is new. Adds a unit test for the record/snapshot behavior.
@@ -750,7 +750,7 @@ Fixes for the confirmed collector-side findings of the 2026-07-02 engineering se
 ## 1.2.120 - 2026-06-19
 
 ### Fixed
-- **SSH-captured configs are now restorable as-is — the stored config begins exactly at the `#config-version=` header.** `cleanOutput` drops pure-prompt lines and trailing prompts, but a CLI prompt *fused* onto the header line (`FW-HOME # #config-version=...`, the artifact seen in real SSH captures) survived into the stored config. FortiGate's restore — GUI upload and `execute restore config` — requires the file to **begin** with `#config-version=`, so that leading `FW-HOME # ` made the backup non-restorable (line 1 invalid) even though it passed the server's substring-based validation. `GetConfig()` now post-processes the `show` output with `trimToConfigHeader`, slicing any echoed-command/prompt cruft before the header. The TFTP path (`execute backup config`) was already clean; this brings the SSH path to the same restore-grade standard so **every** stored config can be uploaded back to the device. Added `TestTrimToConfigHeader` (prompt-glued header, already-clean, no-header, and an inline-occurrence guard).
+- **SSH-captured configs are now restorable as-is — the stored config begins exactly at the `#config-version=` header.** `cleanOutput` drops pure-prompt lines and trailing prompts, but a CLI prompt *fused* onto the header line (`FW-HERON # #config-version=...`, the artifact seen in real SSH captures) survived into the stored config. FortiGate's restore — GUI upload and `execute restore config` — requires the file to **begin** with `#config-version=`, so that leading `FW-HERON # ` made the backup non-restorable (line 1 invalid) even though it passed the server's substring-based validation. `GetConfig()` now post-processes the `show` output with `trimToConfigHeader`, slicing any echoed-command/prompt cruft before the header. The TFTP path (`execute backup config`) was already clean; this brings the SSH path to the same restore-grade standard so **every** stored config can be uploaded back to the device. Added `TestTrimToConfigHeader` (prompt-glued header, already-clean, no-header, and an inline-occurrence guard).
 
 ## 1.2.119 - 2026-06-19
 
@@ -1335,7 +1335,7 @@ FortiOS regenerates the encryption IV on every `set <field> ENC <blob>` line on 
   - Watches the listener for the WRQ + transfer
   - Prints a labelled verdict: full success / SSH closed silently / firewall couldn't reach TFTP server / firewall says OK but no WRQ / etc., with concrete next steps for each failure mode
   - Build with: `go build -o diag-backup ./cmd/diag-backup/`
-  - Example: `./diag-backup -device-host=192.168.5.1 -device-user=admin -device-password='...' -listen-port=6969 -tftp-target=192.168.5.25`
+  - Example: `./diag-backup -device-host=192.168.105.1 -device-user=admin -device-password='...' -listen-port=6969 -tftp-target=192.168.105.25`
 
 ## 1.2.69 - 2026-04-28
 

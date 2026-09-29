@@ -55,7 +55,7 @@ USER 65534:65534
 
 # Server connection
 ENV PROBE_REGISTRATION_KEY=""
-ENV PROBE_SERVER_URL="https://stats.technicallabs.org"
+ENV PROBE_SERVER_URL="https://stats.example.com"
 
 # Intervals (in seconds)
 ENV PROBE_HEARTBEAT_INTERVAL="60"

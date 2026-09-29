@@ -327,9 +327,9 @@ func (c *FortiGateClient) GetConfig() (string, error) {
 // glued onto the first line) that precedes the FortiOS `#config-version=`
 // header, so the stored config is restorable as-is. FortiGate's restore — GUI
 // upload and `execute restore config` — requires the file to BEGIN with that
-// header; a leading `FW-HOME # ` makes line 1 invalid and the restore is
+// header; a leading `FW-HERON # ` makes line 1 invalid and the restore is
 // rejected. cleanOutput already drops pure-prompt lines and trailing prompts,
-// but a prompt fused to the header line ("FW-HOME # #config-version=...")
+// but a prompt fused to the header line ("FW-HERON # #config-version=...")
 // survives, which is exactly the artifact seen in real SSH captures. If no
 // header is present the text is returned unchanged (server-side validation will
 // flag it).

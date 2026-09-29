@@ -261,7 +261,7 @@ The most-frequently-set variables:
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
 | `PROBE_REGISTRATION_KEY` | **Yes** | — | Bearer token from the server's admin UI |
-| `PROBE_SERVER_URL` | No | `https://stats.technicallabs.org` | Central server base URL |
+| `PROBE_SERVER_URL` | No | `https://stats.example.com` | Central server base URL |
 | `PROBE_SNMP_TRAP_COMMUNITY` | No | — | Optional SNMP trap community allowlist; empty accepts any community (logs a warning at startup) |
 | `PROBE_TLS_CERT` / `PROBE_TLS_KEY` / `PROBE_CA_CERT` | No | — | mTLS to the server |
 | `PROBE_HEARTBEAT_INTERVAL` | No | `60` | Heartbeat period (s) |
