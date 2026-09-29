@@ -7,7 +7,7 @@ import (
 )
 
 func TestParseFortiEventConfigObjAttr(t *testing.T) {
-	// Real-shape FortiOS event-log line, condensed.
+	// A FortiOS event-log line in the shape the device emits, condensed.
 	msg := &relay.SyslogMessage{
 		Message: `date=2025-04-10 time=05:01:53 logid="0100044547" type="event" subtype="system" level="information" vd="root" user="admin" ui="GUI(10.32.22.115)" action="Add" cfgtid=126746708 cfgpath="firewall.policy" cfgobj="8" cfgattr="name[testconfig]"`,
 	}

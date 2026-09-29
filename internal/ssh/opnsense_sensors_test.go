@@ -2,8 +2,9 @@ package ssh
 
 import "testing"
 
-// realistic slice of `sysctl -iq hw.temperature dev.ina2xx dev.emc2302` output
-// from the live NXP box, including the noise lines that must be ignored.
+// A slice of `sysctl -iq hw.temperature dev.ina2xx dev.emc2302` output in the
+// shape the device emits (values are made up), including the noise lines that
+// must be ignored.
 const opnSensorFixture = `hw.temperature.network-board-local: 43.1C
 hw.temperature.cpu-board-remote: 46.6C
 dev.ina2xx.7.power: 2320

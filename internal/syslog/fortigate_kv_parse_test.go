@@ -7,13 +7,16 @@ import (
 )
 
 // A synthetic FortiOS traffic line in the exact shape FortiOS 7.x emits
-// (serial, addresses and timestamps are made up). Under the old positional
+// (serial, addresses and timestamps are made up). The device-local date/time
+// carry a non-zero UTC offset (tz="-0500") and agree with eventtime, so a
+// parse that read date/time without the offset would land five hours off the
+// eventtime-derived timestamp asserted below. Under the old positional
 // parse this produced hostname=`devid="FGT60F0000000000"`,
-// app_name=`eventtime=1767225600123456789`, process_id=`tz="+0000"`,
+// app_name=`eventtime=1767225600123456789`, process_id=`tz="-0500"`,
 // message_id=`logid="0000000015"`, structured_data=`type="traffic"`, and a
 // message that began mid-record at `subtype=`.
-const syntheticFortiLine = `<189>date=2026-01-01 time=00:00:00 devname="FGT-60F" devid="FGT60F0000000000" ` +
-	`eventtime=1767225600123456789 tz="+0000" logid="0000000015" type="traffic" subtype="forward" ` +
+const syntheticFortiLine = `<189>date=2025-12-31 time=19:00:00 devname="FGT-60F" devid="FGT60F0000000000" ` +
+	`eventtime=1767225600123456789 tz="-0500" logid="0000000015" type="traffic" subtype="forward" ` +
 	`level="notice" vd="root" srcip=203.0.113.211 srcport=40000 srcintf="wan1" action="accept"`
 
 func TestParseFortiOSKV_TrafficLine(t *testing.T) {
