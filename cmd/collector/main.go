@@ -9,6 +9,7 @@ import (
 	"log"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -243,6 +244,9 @@ func main() {
 
 	if probeCfg.RegistrationKey == "" {
 		log.Fatal("PROBE_REGISTRATION_KEY environment variable is required")
+	}
+	if err := validateServerURL(probeCfg.ServerURL); err != nil {
+		log.Fatalf("PROBE_SERVER_URL: %v", err)
 	}
 
 	fmt.Println("========================================")
@@ -2848,6 +2852,28 @@ func (c *Collector) stop() {
 // ignore the operator's intent to invoke the diagnostic tool.
 func isSSHToolSubcommand(args []string) bool {
 	return len(args) > 0 && args[0] == "ssh-test"
+}
+
+// validateServerURL checks PROBE_SERVER_URL before the collector starts. The
+// variable has no built-in default, so an unset or malformed value must stop
+// startup with a clear message instead of registering against nothing. It
+// must be an absolute http:// or https:// URL with a host.
+func validateServerURL(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return fmt.Errorf("environment variable is required (the base URL of your Firewall-Mon server, e.g. https://fwmon.example.com)")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid URL %q: %v", raw, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("URL %q must use the http or https scheme", raw)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("URL %q has no host", raw)
+	}
+	return nil
 }
 
 // setupLoggerWith configures the process-wide slog default logger to

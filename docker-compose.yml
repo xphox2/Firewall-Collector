@@ -49,7 +49,9 @@ services:
     environment:
       # Required — registration key from admin panel
       PROBE_REGISTRATION_KEY: ""
-      PROBE_SERVER_URL: "https://stats.example.com"
+      # Required — base URL of your Firewall-Mon server (no default; the
+      # collector refuses to start without it).
+      PROBE_SERVER_URL: "https://your-server.example.com"
 
       # Intervals (seconds)
       PROBE_HEARTBEAT_INTERVAL: "60"
