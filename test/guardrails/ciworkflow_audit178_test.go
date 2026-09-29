@@ -1,7 +1,7 @@
-// Package shell holds source-level guardrail tests over non-Go artifacts
-// (workflows, Dockerfile) — the same convention as the server repo's
-// internal/shell package.
-package shell
+// Package guardrails holds repo-wide source-level guardrail tests over
+// non-Go artifacts (workflows, Dockerfile, docs) — the same convention as the
+// server repo's test/guardrails package.
+package guardrails
 
 import (
 	"os"
