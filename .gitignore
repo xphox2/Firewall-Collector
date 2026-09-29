@@ -27,15 +27,28 @@ vendor/
 Thumbs.db
 desktop.ini
 
-# Claude Code local settings
+# Local editor/tool settings and working files (never commit)
 .claude/
-# Claude Code session transcripts (auto-saved next to the working dir;
-# do not commit — they leak the full session to the public repo).
+CLAUDE.md
+AGENTS.md
+# Tool session transcripts (auto-saved next to the working dir; they leak the
+# full session to the public repo).
 session-ses_*.md
+
+# Internal notes and audit reports stay outside the public repo
+tasks/
+docs/audit-20*
+docs/audit-archive/
+docs/AUDIT.md
+
+# Captures, dumps and root-level scratch files
+*.dump
+*.sql
+*.pcap
+/*.txt
 
 # Environment / secrets
 .env
 .env.*
 *.pem
 *.key
-tasks/

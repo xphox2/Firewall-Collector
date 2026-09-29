@@ -85,20 +85,66 @@ go build ./...
 go test -race ./...        # race detector on (matches CI)
 go vet ./...
 go mod tidy && git diff --exit-code go.mod go.sum   # no drift
-staticcheck ./...          # install: go install honnef.co/go/tools/cmd/staticcheck@latest
-govulncheck ./...          # install: go install golang.org/x/vuln/cmd/govulncheck@latest
+staticcheck ./...          # install: go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
+govulncheck ./...          # install: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
 ```
 
 If your editor is writing CRLF line endings, set
 `git config core.autocrlf false` and `git config core.eol lf`. Master
 uses LF; CRLF will appear as a "modified" file in CI.
 
+## Never commit
+
+This repository is public. Never commit:
+
+- **Real infrastructure data:** real public or LAN IP addresses, hostnames,
+  domains, device names, serial numbers, MAC addresses, usernames, or home
+  directory paths (`/Users/<name>`, `/home/<name>`).
+- **Captured material:** logs, configs, packet captures (`*.pcap`), database
+  dumps (`*.dump`, `*.sql`) or screenshots taken from a real network. Turn
+  them into synthetic fixtures first.
+- **Secrets:** keys, tokens, passwords, PSKs, webhook URLs — not even
+  "temporary" ones.
+- **Internal working material:** task notes (`tasks/`), audit reports,
+  scratch files, editor/tool settings and AI-assistant working files
+  (`.claude/`, `CLAUDE.md`, `AGENTS.md`, session transcripts).
+  `.gitignore` already covers these.
+
+Test data uses reserved ranges and names:
+
+| Role | Use |
+|---|---|
+| External / internet hosts | RFC 5737: `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`; IPv6 RFC 3849 `2001:db8::/32` |
+| "Our own" public space (WAN, VPN peers) | RFC 2544 benchmarking: `198.18.0.0/15` |
+| LANs | RFC 1918: `10/8`, `172.16/12`, `192.168/16` |
+| Names | `example.com`, `example.net`, `*.lab.example` |
+
+`test/guardrails/public_hygiene_test.go` enforces the address, path and
+internal-file rules in CI. A small reviewed allowlist in that file covers
+well-known resolvers and placeholders; every entry needs a reason.
+
+**Secret scanning.** CI runs [gitleaks](https://github.com/gitleaks/gitleaks)
+on every push and pull request (`.github/workflows/secret-scan.yml`, with
+`.gitleaks.toml`). To catch a secret before it is committed, install
+gitleaks locally and add a pre-commit hook:
+
+```bash
+cat > .git/hooks/pre-commit <<'HOOK'
+#!/bin/sh
+exec gitleaks protect --staged --redact --config .gitleaks.toml
+HOOK
+chmod +x .git/hooks/pre-commit
+```
+
+(`gitleaks git --pre-commit --staged` is the equivalent spelling in newer
+gitleaks releases.)
+
 ## Pull request process
 
 1. Branch from `master`: `git checkout -b audit-NNN-short-name`.
 2. Make your changes. Add tests. Bump `const version` in
-   `cmd/collector/main.go:45` per the patch-versioning rule
-   (1.3.42 → 1.3.43 → 1.3.44). Add a `## 1.3.x` section to
+   `cmd/collector/main.go` per the patch-versioning rule
+   (1.3.45 → 1.3.46 → 1.3.47). Add a `## 1.3.x` section to
    `CHANGELOG.md` at the top, matching the existing style.
 3. Commit. Do **not** include a `Co-Authored-By:` trailer.
 4. Push. Open a PR. Use the PR template.
