@@ -4,7 +4,10 @@
 
 Security dependency update.
 
-- **`golang.org/x/crypto` v0.52.0 → v0.57.0** (with the minimum versions it requires: `golang.org/x/net` v0.58.0, `golang.org/x/sys` v0.48.0). Fixes GO-2026-6354 and GO-2026-6355, which `govulncheck` reports as reachable from the SSH config-backup client (`internal/ssh`). No code changes.
+- **`golang.org/x/crypto` v0.52.0 → v0.57.0** (with the minimum versions it requires: `golang.org/x/net` v0.58.0, `golang.org/x/sys` v0.48.0). Fixes GO-2026-6354 and GO-2026-6355, which `govulncheck` reports as reachable from the SSH config-backup client (`internal/ssh`).
+- **Go toolchain 1.26.0 → 1.26.8** (`go.mod`) and Docker builder `golang:1.25-alpine` → `golang:1.26-alpine` (it was older than the `go.mod` requirement). Picks up the standard-library fixes for GO-2026-6218, GO-2026-6090, GO-2026-6089, GO-2026-5972 and GO-2026-5856 that `govulncheck` reports as reachable (TLS, HTTP server/client, URL parsing, ASN.1). CI follows `go.mod` via `go-version-file`.
+
+No code changes.
 
 ## 1.3.44 - 2026-08-29
 
