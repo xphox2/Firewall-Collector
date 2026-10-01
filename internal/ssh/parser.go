@@ -870,7 +870,7 @@ type ARPEntryInfo struct {
 // ParseARPTable parses FortiOS `get system arp` output:
 //
 //	Address           Age(min)   Hardware Addr      Interface
-//	192.168.105.1       0          00:09:0f:09:00:02  internal
+//	192.168.105.1     0          00:09:0f:09:00:02  internal
 //
 // Incomplete entries (MAC 00:00:00:00:00:00 or "Incomplete") and multicast
 // MACs are dropped — they can't attribute a link.
