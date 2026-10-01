@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.3.45 - 2026-09-29
+## 1.3.46 - 2026-10-01
 
 Public-repository hygiene: internal material removed, test data neutralised, secret scanning added, and one behaviour change for operators.
 
@@ -19,6 +19,15 @@ Public-repository hygiene: internal material removed, test data neutralised, sec
 - **Private denylist check** (`test/guardrails/private_denylist_test.go`): a local-only scan against a maintainer-held token list, enabled with `FWMON_DENYLIST` (and an optional keep-list via `FWMON_DENYLIST_KEEP`); skipped in CI.
 - **Secret scanning:** a `Secret Scan` workflow runs a pinned, checksum-verified gitleaks on every push and pull request (the introduced commits, with a full-history fallback), using the committed `.gitleaks.toml`, which extends the default rules and needs no allowlist.
 - `.gitignore` covers internal notes, audit reports, tool settings and instruction files, dumps, packet captures and root-level scratch files. `CONTRIBUTING.md` gains a "Never commit" section and documents a local `gitleaks` pre-commit hook.
+
+## 1.3.45 - 2026-10-01
+
+Security dependency update.
+
+- **`golang.org/x/crypto` v0.52.0 → v0.57.0** (with the minimum versions it requires: `golang.org/x/net` v0.58.0, `golang.org/x/sys` v0.48.0). Fixes GO-2026-6354 and GO-2026-6355, which `govulncheck` reports as reachable from the SSH config-backup client (`internal/ssh`).
+- **Go toolchain 1.26.0 → 1.26.8** (`go.mod`) and Docker builder `golang:1.25-alpine` → `golang:1.26-alpine` (it was older than the `go.mod` requirement). Picks up the standard-library fixes for GO-2026-6218, GO-2026-6090, GO-2026-6089, GO-2026-5972 and GO-2026-5856 that `govulncheck` reports as reachable (TLS, HTTP server/client, URL parsing, ASN.1). CI follows `go.mod` via `go-version-file`.
+
+No code changes.
 
 ## 1.3.44 - 2026-08-29
 
