@@ -10,10 +10,16 @@ variable on this page is wired there. If you find a mismatch, the
 
 ## Server connection
 
+> **Upgrade warning (1.3.45):** `PROBE_SERVER_URL` no longer has a built-in
+> default. Earlier images baked one in, so a container that never set the
+> variable relied on it silently. Before pulling 1.3.45 or later (including the
+> moving `:1.3`, `:stable` and `:latest` tags), set `PROBE_SERVER_URL`
+> explicitly in the container's environment, or the collector exits at startup.
+
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `PROBE_REGISTRATION_KEY` | **Yes** | — | Bearer token from the server's admin UI. Process refuses to start without it. |
-| `PROBE_SERVER_URL` | No | `https://stats.technicallabs.org` | Central server base URL. |
+| `PROBE_SERVER_URL` | **Yes** | — | Central server base URL (`http://` or `https://`). Process refuses to start without it. |
 | `PROBE_TLS_CERT` | No | — | Path to PEM client cert for mTLS. |
 | `PROBE_TLS_KEY` | No | — | Path to PEM client key. Refuses world-readable perms (`0o077` blocked on Unix). |
 | `PROBE_CA_CERT` | No | — | Path to PEM CA pool used to verify the server. |

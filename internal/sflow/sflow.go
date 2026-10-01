@@ -536,8 +536,7 @@ func (r *SFlowReceiver) parseFlowSample(data []byte, offset *int, format uint32,
 	// ONLY: the previous `|| seqNum > 0` clause emitted address-less garbage
 	// rows for agents sending record types we don't parse (every sample has a
 	// sequence number, so that clause was effectively always true) — found by
-	// the 2026-07-03 flow-protocol research (server repo,
-	// docs/flow-protocol-research-2026-07-03.md §3.6).
+	// the 2026-07-03 flow-protocol research.
 	if sample.SrcAddr != "" || sample.DstAddr != "" {
 		// Estimate bytes/packets from sampling
 		if sample.Bytes > 0 && samplingRate > 1 {

@@ -6,17 +6,21 @@ import (
 	"time"
 )
 
-// A real production FortiOS traffic line, captured from rust-01. Under the old
-// positional parse this produced hostname=`devid="FGT60FTK20081032"`,
-// app_name=`eventtime=1786237154998123660`, process_id=`tz="-0400"`,
+// A synthetic FortiOS traffic line in the exact shape FortiOS 7.x emits
+// (serial, addresses and timestamps are made up). The device-local date/time
+// carry a non-zero UTC offset (tz="-0500") and agree with eventtime, so a
+// parse that read date/time without the offset would land five hours off the
+// eventtime-derived timestamp asserted below. Under the old positional
+// parse this produced hostname=`devid="FGT60F0000000000"`,
+// app_name=`eventtime=1767225600123456789`, process_id=`tz="-0500"`,
 // message_id=`logid="0000000015"`, structured_data=`type="traffic"`, and a
 // message that began mid-record at `subtype=`.
-const prodFortiLine = `<189>date=2026-08-08 time=21:39:14 devname="FGT-60F" devid="FGT60FTK20081032" ` +
-	`eventtime=1786237154998123660 tz="-0400" logid="0000000015" type="traffic" subtype="forward" ` +
-	`level="notice" vd="root" srcip=51.161.8.211 srcport=46872 srcintf="wan1" action="accept"`
+const syntheticFortiLine = `<189>date=2025-12-31 time=19:00:00 devname="FGT-60F" devid="FGT60F0000000000" ` +
+	`eventtime=1767225600123456789 tz="-0500" logid="0000000015" type="traffic" subtype="forward" ` +
+	`level="notice" vd="root" srcip=203.0.113.211 srcport=40000 srcintf="wan1" action="accept"`
 
-func TestParseFortiOSKV_ProductionTrafficLine(t *testing.T) {
-	msg, err := ParseRFC5424([]byte(prodFortiLine))
+func TestParseFortiOSKV_TrafficLine(t *testing.T) {
+	msg, err := ParseRFC5424([]byte(syntheticFortiLine))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -52,7 +56,7 @@ func TestParseFortiOSKV_ProductionTrafficLine(t *testing.T) {
 	}
 
 	// eventtime is ns since epoch; date/time are device-local and deliberately unused.
-	want := time.Unix(0, 1786237154998123660).UTC()
+	want := time.Unix(0, 1767225600123456789).UTC()
 	if !msg.Timestamp.Equal(want) {
 		t.Errorf("Timestamp = %v, want %v (from eventtime)", msg.Timestamp, want)
 	}
@@ -96,8 +100,8 @@ func TestParseFortiEventTime(t *testing.T) {
 		ok   bool
 		want time.Time
 	}{
-		{"nanoseconds (FortiOS 7.x)", "1786237154998123660", true, time.Unix(0, 1786237154998123660).UTC()},
-		{"seconds (FortiOS 6.x)", "1786237154", true, time.Unix(1786237154, 0).UTC()},
+		{"nanoseconds (FortiOS 7.x)", "1767225600123456789", true, time.Unix(0, 1767225600123456789).UTC()},
+		{"seconds (FortiOS 6.x)", "1767225600", true, time.Unix(1767225600, 0).UTC()},
 		{"empty", "", false, time.Time{}},
 		{"not a number", "abc", false, time.Time{}},
 		{"zero", "0", false, time.Time{}},

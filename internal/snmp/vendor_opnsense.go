@@ -45,7 +45,7 @@ var (
 	onsOIDStorageUnits = ".1.3.6.1.2.1.25.2.3.1.4" // hrStorageAllocationUnits (bytes)
 	onsOIDStorageSize  = ".1.3.6.1.2.1.25.2.3.1.5" // hrStorageSize (in units)
 	onsOIDStorageUsed  = ".1.3.6.1.2.1.25.2.3.1.6" // hrStorageUsed (in units)
-	hrStorageFixedDisk = ".25.2.1.4"               // suffix of hrStorageTypes.fixedDisk (leading dot avoids false-matching ...125.2.1.4)
+	hrStorageFixedDisk = ".25.2.1.4"               // suffix of hrStorageTypes.fixedDisk (leading dot avoids false-matching a .125.2.1.4 suffix)
 
 	// --- UCD-SNMP-MIB laTable (load average) ---
 	onsBaseOIDLoad = ".1.3.6.1.4.1.2021.10.1.3" // laLoad column; .1/.2/.3 = 1/5/15 min

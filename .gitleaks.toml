@@ -1,0 +1,13 @@
+# gitleaks configuration for the public repository.
+#
+# Extends the built-in rule set with no allowlist: the tree and the history
+# introduced on top of master scan clean without one. Add an allowlist entry
+# only for a test file that deliberately carries a FAKE credential and is
+# actually flagged, with the reason next to it. Private, repo-specific rules
+# are never committed here; maintainers pass them locally with an extra
+# --config.
+
+title = "firewall-collector"
+
+[extend]
+useDefault = true

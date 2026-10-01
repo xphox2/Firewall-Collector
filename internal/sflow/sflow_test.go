@@ -1156,8 +1156,8 @@ func TestParseSFlowDatagram_8021QTaggedEthernet(t *testing.T) {
 	ip := make([]byte, 20)
 	ip[0] = 0x45
 	ip[9] = 6 // TCP
-	copy(ip[12:16], net.IPv4(192, 168, 5, 1).To4())
-	copy(ip[16:20], net.IPv4(192, 168, 5, 2).To4())
+	copy(ip[12:16], net.IPv4(192, 168, 105, 1).To4())
+	copy(ip[16:20], net.IPv4(192, 168, 105, 2).To4())
 	eth = append(eth, ip...)
 	tcp := make([]byte, 20)
 	binary.BigEndian.PutUint16(tcp[0:], 80)
@@ -1176,7 +1176,7 @@ func TestParseSFlowDatagram_8021QTaggedEthernet(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 flow sample, got %d", len(got))
 	}
-	if got[0].SrcAddr != "192.168.5.1" || got[0].DstAddr != "192.168.5.2" {
+	if got[0].SrcAddr != "192.168.105.1" || got[0].DstAddr != "192.168.105.2" {
 		t.Errorf("VLAN-tagged IPv4 not decoded: src=%q dst=%q", got[0].SrcAddr, got[0].DstAddr)
 	}
 	if got[0].SrcPort != 80 || got[0].DstPort != 1234 {

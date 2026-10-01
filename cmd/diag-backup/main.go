@@ -8,8 +8,8 @@
 // Example:
 //
 //	diag-backup \
-//	  -device-host=192.168.5.1 -device-user=admin -device-password='...' \
-//	  -listen-port=6969 -tftp-target=192.168.5.25
+//	  -device-host=192.168.105.1 -device-user=admin -device-password='...' \
+//	  -listen-port=6969 -tftp-target=192.168.105.25
 //
 // Notes
 //   - --tftp-target is what we tell the firewall to upload to. Often this is

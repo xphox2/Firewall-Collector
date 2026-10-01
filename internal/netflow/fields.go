@@ -1,8 +1,8 @@
 // Package netflow implements the collector's NetFlow v5/v9 + IPFIX receiver
 // (Tranche 3). This file holds the IANA IPFIX Information Element numbers the
 // parsers use across phases (v5 today; v9/IPFIX framing next phase) plus the
-// length-agnostic big-endian integer decoder mandated by the research report
-// (docs/flow-protocol-research-2026-07-03.md §2.2): v9 counter fields "can be
+// length-agnostic big-endian integer decoder that flow-protocol research
+// called for: v9 counter fields "can be
 // 8 bytes on core routers" (RFC 3954 §8) and IPFIX permits reduced-size
 // encoding of any unsigned IE (RFC 7011 §6.2), so no fixed-width read is safe.
 package netflow

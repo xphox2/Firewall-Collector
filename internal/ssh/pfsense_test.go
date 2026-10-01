@@ -48,9 +48,9 @@ func TestExtractXMLConfig_RootElementIsNotShared(t *testing.T) {
 	}
 }
 
-// TestExtractXMLConfig_ToleratesShellNoise covers the realistic capture: a login
-// banner before the document and a shell prompt after it must not end up in the
-// stored configuration, or every backup diffs on the banner.
+// TestExtractXMLConfig_ToleratesShellNoise covers output in the shape the device
+// emits: a login banner before the document and a shell prompt after it must
+// not end up in the stored configuration, or every backup diffs on the banner.
 func TestExtractXMLConfig_ToleratesShellNoise(t *testing.T) {
 	const want = `<?xml version="1.0"?><pfsense><system/></pfsense>`
 	raw := "Last login: Mon Jul 31 12:00:00 2026\n*** Welcome to pfSense ***\n" + want + "\nadmin@fw:~ # "

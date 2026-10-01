@@ -15,7 +15,7 @@ import (
 // ipv4FromTableIndex extracts the 4-octet IPv4 address from an ipAddrTable OID
 // index. Per RFC 1213 the ipAdEntAddr index is the bare 4-octet address, but
 // some agents (certain FortiOS builds) append an extra sub-identifier — e.g.
-// "192.168.25.254.1" instead of "192.168.25.254". Keeping the whole suffix
+// "192.168.125.254.1" instead of "192.168.125.254". Keeping the whole suffix
 // yields an unparseable address (net.ParseIP rejects 5 octets), so take the
 // first four octets and validate. Returns "" if not a valid IPv4 address.
 func ipv4FromTableIndex(suffix string) string {

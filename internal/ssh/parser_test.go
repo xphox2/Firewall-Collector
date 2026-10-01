@@ -562,8 +562,8 @@ func TestParseLicenseStatus_NoneStatus(t *testing.T) {
 // skipped, MACs canonical lowercase, incomplete/multicast entries dropped.
 func TestParseARPTable(t *testing.T) {
 	output := `Address           Age(min)   Hardware Addr      Interface
-192.168.5.1       0          00:09:0F:09:00:02  internal
-192.168.5.107     3          AA:BB:CC:00:55:01  lan2
+192.168.105.1       0          00:09:0F:09:00:02  internal
+192.168.105.107     3          AA:BB:CC:00:55:01  lan2
 10.0.0.9          1          00:00:00:00:00:00  wan1
 224.0.0.5         0          01:00:5E:00:00:05  internal
 garbage line
@@ -572,7 +572,7 @@ garbage line
 	if len(got) != 2 {
 		t.Fatalf("got %d entries, want 2: %+v", len(got), got)
 	}
-	if got[0].IPAddress != "192.168.5.1" || got[0].MACAddress != "00:09:0f:09:00:02" || got[0].Interface != "internal" {
+	if got[0].IPAddress != "192.168.105.1" || got[0].MACAddress != "00:09:0f:09:00:02" || got[0].Interface != "internal" {
 		t.Errorf("row 0 wrong: %+v", got[0])
 	}
 	if got[1].MACAddress != "aa:bb:cc:00:55:01" || got[1].Interface != "lan2" {
@@ -601,8 +601,8 @@ func TestParseBridgeFDB(t *testing.T) {
 fdb: size=256, used=6, num=6, depth=1
 Bridge internal host table
 port no  device  devname  mac addr                 ttl    attributes
-  3      9       internal3    E8:F6:D7:00:10:5B    88
-  1      7       internal1    e0:23:ff:6a:e5:d8    31     Hit(31)
+  3      9       internal3    02:A3:00:5A:4A:5B    88
+  1      7       internal1    02:a2:00:30:bf:d8    31     Hit(31)
   2      8       internal2    00:09:0f:09:00:07    0      Local Static
   4      10      internal4    01:00:5e:00:00:05    12
 `
@@ -610,10 +610,10 @@ port no  device  devname  mac addr                 ttl    attributes
 	if len(got) != 2 {
 		t.Fatalf("got %d entries, want 2: %+v", len(got), got)
 	}
-	if got[0].Interface != "internal3" || got[0].MACAddress != "e8:f6:d7:00:10:5b" {
+	if got[0].Interface != "internal3" || got[0].MACAddress != "02:a3:00:5a:4a:5b" {
 		t.Errorf("row 0 wrong (MAC must be lowercase): %+v", got[0])
 	}
-	if got[1].Interface != "internal1" || got[1].MACAddress != "e0:23:ff:6a:e5:d8" {
+	if got[1].Interface != "internal1" || got[1].MACAddress != "02:a2:00:30:bf:d8" {
 		t.Errorf("row 1 wrong: %+v", got[1])
 	}
 }
@@ -633,8 +633,8 @@ func TestParseFreeBSDBridgeList(t *testing.T) {
 // with and without the Vlan column (FreeBSD version drift); STATIC/STICKY,
 // multicast and zero MACs dropped.
 func TestParseFreeBSDBridgeFDB(t *testing.T) {
-	output := `	58:9c:fc:10:ff:a1 Vlan1 vtnet0 1141 flags=0<>
-	E8:F6:D7:00:10:5B Vlan1 igb1 900 flags=0<>
+	output := `	02:a4:00:4a:a5:a1 Vlan1 vtnet0 1141 flags=0<>
+	02:A3:00:5A:4A:5B Vlan1 igb1 900 flags=0<>
 	00:09:0f:09:00:07 Vlan1 igb0 0 flags=3<STATIC,STICKY>
 	01:00:5e:00:00:05 Vlan1 igb1 12 flags=0<>
 	aa:bb:cc:dd:ee:01 em0 300 flags=0<>
@@ -643,10 +643,10 @@ func TestParseFreeBSDBridgeFDB(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("got %d entries, want 3: %+v", len(got), got)
 	}
-	if got[0].Interface != "vtnet0" || got[0].MACAddress != "58:9c:fc:10:ff:a1" {
+	if got[0].Interface != "vtnet0" || got[0].MACAddress != "02:a4:00:4a:a5:a1" {
 		t.Errorf("row 0 wrong: %+v", got[0])
 	}
-	if got[1].Interface != "igb1" || got[1].MACAddress != "e8:f6:d7:00:10:5b" {
+	if got[1].Interface != "igb1" || got[1].MACAddress != "02:a3:00:5a:4a:5b" {
 		t.Errorf("row 1 wrong (MAC must be lowercase): %+v", got[1])
 	}
 	if got[2].Interface != "em0" {

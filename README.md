@@ -10,7 +10,7 @@
 > admin UI, and runbook.
 
 [![CI](https://img.shields.io/badge/CI-passing-brightgreen)](https://github.com/xphox2/Firewall-Collector/actions)
-[![Version](https://img.shields.io/badge/version-1.3.45-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.3.46-blue)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.25.0+-00ADD8)](go.mod)
 
@@ -256,12 +256,17 @@ reference is [docs/ENV-VARS.md](docs/ENV-VARS.md). Server-side env vars
 are in the server's
 [config.env.example](https://github.com/xphox2/Firewall-Monitoring/blob/master/config.env.example).
 
+> **Upgrade warning (1.3.45):** `PROBE_SERVER_URL` is now required and has no
+> built-in default. If your container relied on the old image default, set the
+> variable explicitly before pulling 1.3.45 or a moving tag (`:1.3`, `:stable`,
+> `:latest`), or the collector exits at startup.
+
 The most-frequently-set variables:
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
 | `PROBE_REGISTRATION_KEY` | **Yes** | — | Bearer token from the server's admin UI |
-| `PROBE_SERVER_URL` | No | `https://stats.technicallabs.org` | Central server base URL |
+| `PROBE_SERVER_URL` | **Yes** | — | Central server base URL (`http`/`https`); no default since 1.3.45 |
 | `PROBE_SNMP_TRAP_COMMUNITY` | No | — | Optional SNMP trap community allowlist; empty accepts any community (logs a warning at startup) |
 | `PROBE_TLS_CERT` / `PROBE_TLS_KEY` / `PROBE_CA_CERT` | No | — | mTLS to the server |
 | `PROBE_HEARTBEAT_INTERVAL` | No | `60` | Heartbeat period (s) |

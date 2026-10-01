@@ -11,7 +11,7 @@ import (
 func main() {
 	if len(os.Args) < 4 {
 		fmt.Println("Usage: tftp-test <collector-ip> <port> <device-id> <config-file>")
-		fmt.Println("Example: tftp-test 192.168.5.25 6969 1 config.txt")
+		fmt.Println("Example: tftp-test 192.168.105.25 6969 1 config.txt")
 		os.Exit(1)
 	}
 

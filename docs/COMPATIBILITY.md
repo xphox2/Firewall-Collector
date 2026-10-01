@@ -42,7 +42,7 @@ probes; new probes can register against a server that's already aware of
 the new `schema_version`), but the order is **not** required — the
 handshake is symmetric and both directions are backward-compatible.
 
-**Step 1.** Update the server (see [xphox2/Firewall-Monitoring/docs/UPGRADE-2026-06.md](https://github.com/xphox2/Firewall-Monitoring/blob/master/docs/UPGRADE-2026-06.md) for a runbook).
+**Step 1.** Update the server (see the upgrade section of the server's [docs/OPERATIONS.md](https://github.com/xphox2/Firewall-Monitoring/blob/master/docs/OPERATIONS.md) for a runbook).
 
 **Step 2.** Update each collector (the container's `stop_grace_period`
 matches the drain timeout, so `docker compose pull && up -d` is safe).

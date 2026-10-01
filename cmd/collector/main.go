@@ -9,6 +9,7 @@ import (
 	"log"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -46,7 +47,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.3.45"
+const version = "1.3.46"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -244,6 +245,13 @@ func main() {
 	if probeCfg.RegistrationKey == "" {
 		log.Fatal("PROBE_REGISTRATION_KEY environment variable is required")
 	}
+	serverURL, err := normalizeServerURL(probeCfg.ServerURL)
+	if err != nil {
+		log.Fatalf("PROBE_SERVER_URL: %v", err)
+	}
+	// Every relay endpoint is built by appending "/api/..." to this value, so
+	// it must be the normalised form (no surrounding space, no trailing slash).
+	probeCfg.ServerURL = serverURL
 
 	fmt.Println("========================================")
 	fmt.Println("  Firewall Collector Starting")
@@ -2848,6 +2856,30 @@ func (c *Collector) stop() {
 // ignore the operator's intent to invoke the diagnostic tool.
 func isSSHToolSubcommand(args []string) bool {
 	return len(args) > 0 && args[0] == "ssh-test"
+}
+
+// normalizeServerURL checks PROBE_SERVER_URL before the collector starts and
+// returns it in the form the relay concatenates endpoint paths onto:
+// surrounding whitespace and trailing slashes removed. The variable has no
+// built-in default, so an unset or malformed value must stop startup with a
+// clear message instead of registering against nothing. It must be an
+// absolute http:// or https:// URL with a host.
+func normalizeServerURL(raw string) (string, error) {
+	raw = strings.TrimRight(strings.TrimSpace(raw), "/")
+	if raw == "" {
+		return "", fmt.Errorf("environment variable is required (the base URL of your Firewall-Mon server, e.g. https://fwmon.example.com)")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("invalid URL %q: %v", raw, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("URL %q must use the http or https scheme", raw)
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("URL %q has no host", raw)
+	}
+	return raw, nil
 }
 
 // setupLoggerWith configures the process-wide slog default logger to

@@ -1,46 +1,44 @@
-## GitHub Actions Setup (Automatic Docker Builds)
+# Deploying the collector
 
-### Step 1: Already Done
-The code is already pushed to GitHub.
+The collector ships as a container image on Docker Hub:
+`xphox/firewall-collector`. Each release is tagged with its exact version
+(e.g. `:1.3.45`), plus the moving `:1.3`, `:stable` and `:latest` aliases.
 
-### Step 2: Add Docker Hub Secrets
+## Run it
 
-1. Go to: https://github.com/xphox2/Firewall-Collector/settings/secrets/actions
-2. Add these secrets:
+You need a registration key from the server's admin UI (Probes page) and
+the base URL of your Firewall-Mon server. Both are required; the collector
+exits at startup if either is missing.
 
-| Secret Name | Value |
-|-------------|-------|
-| `DOCKERHUB_USERNAME` | Your Docker Hub username |
-| `DOCKERHUB_TOKEN` | Your Docker Hub access token |
-
-**To get Docker Hub token:**
-- Go to https://hub.docker.com/settings/security
-- Click "New Access Token"
-- Give it a name, set permissions to "Read, Write, Delete"
-- Copy the token
-
-### Step 3: Trigger Build
-
-Push any commit to main branch:
 ```bash
-git add .
-git commit -m "Enable Docker auto-build"
-git push origin master
-```
-
-### Step 4: Check Build Status
-
-1. Go to **Actions** tab in your GitHub repo
-2. You should see the build running
-3. Once complete, image will be at: `docker.io/xphox/firewall-collector:1.3.42` (and `:1.3`, `:stable`, `:latest` aliases on the default branch)
-
----
-
-**Now anyone can run:**
-```bash
-docker run -d \
+docker run -d --name firewall-collector \
+  --network host \
+  --cap-add NET_RAW --cap-add NET_BIND_SERVICE \
+  -v firewall-collector-queue:/queue \
   -e PROBE_REGISTRATION_KEY=your-key \
-  xphox/firewall-collector:1.3
+  -e PROBE_SERVER_URL=https://your-server.example.com \
+  xphox/firewall-collector:1.3.45
 ```
 
-> Pin to a specific patch (e.g. `:1.3.42`) in `docker-compose.yml` for reproducible deployments. See **README.md > Upgrading** for the upgrade and rollback procedure.
+Or use the repository's `docker-compose.yml`: fill in
+`PROBE_REGISTRATION_KEY` and `PROBE_SERVER_URL`, then
+`docker compose up -d`.
+
+> **Upgrading to 1.3.45 or later:** `PROBE_SERVER_URL` no longer has a
+> built-in default. If your container relied on the old image default, set
+> the variable explicitly before pulling the new image.
+
+Pin an exact patch tag (e.g. `:1.3.45`) for reproducible deployments. See
+**README.md > Upgrading** for the upgrade and rollback procedure, and
+[docs/ENV-VARS.md](docs/ENV-VARS.md) for every setting.
+
+## Building your own image
+
+```bash
+docker build --build-arg BUILD_VERSION=1.3.45 -t firewall-collector:1.3.45 .
+```
+
+The repository's `.github/workflows/docker.yml` builds and pushes the image
+on every push to the default branch. A fork that wants to publish its own
+image sets two repository secrets: `DOCKERHUB_USERNAME` and
+`DOCKERHUB_TOKEN` (a Docker Hub access token with read/write scope).

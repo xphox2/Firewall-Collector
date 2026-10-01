@@ -568,7 +568,7 @@ var (
 	phase2ModeRegex   = regexp.MustCompile(`(?i)set\s+mode\s+(\S+)`)
 	phase2StatusRegex = regexp.MustCompile(`(?i)set\s+status\s+(\S+)`)
 	// FortiOS prints selectors as address + DOTTED NETMASK, e.g.
-	//   set src-subnet 192.168.13.0 255.255.255.0
+	//   set src-subnet 192.168.113.0 255.255.255.0
 	phase2SrcSubnetRegex = regexp.MustCompile(`(?i)set\s+src-subnet\s+(\S+)\s+(\S+)`)
 	phase2DstSubnetRegex = regexp.MustCompile(`(?i)set\s+dst-subnet\s+(\S+)\s+(\S+)`)
 )
@@ -870,7 +870,7 @@ type ARPEntryInfo struct {
 // ParseARPTable parses FortiOS `get system arp` output:
 //
 //	Address           Age(min)   Hardware Addr      Interface
-//	192.168.5.1       0          00:09:0f:09:00:02  internal
+//	192.168.105.1     0          00:09:0f:09:00:02  internal
 //
 // Incomplete entries (MAC 00:00:00:00:00:00 or "Incomplete") and multicast
 // MACs are dropped — they can't attribute a link.
@@ -1014,7 +1014,7 @@ func ParseFreeBSDBridgeList(output string) []string {
 
 // ParseFreeBSDBridgeFDB parses `ifconfig <bridge> addr` learned-address rows:
 //
-//	58:9c:fc:10:ff:a1 Vlan1 vtnet0 1141 flags=0<>
+//	02:a4:00:4a:a5:a1 Vlan1 vtnet0 1141 flags=0<>
 //
 // Fields: MAC, VLAN tag, member interface, expiry, flags. STATIC/STICKY rows
 // (the bridge's own or pinned MACs) and multicast/zero MACs are dropped.

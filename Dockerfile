@@ -54,8 +54,8 @@ RUN chmod 555 /app/firewall-collector && \
 USER 65534:65534
 
 # Server connection
+# PROBE_SERVER_URL has no default and must be set at run time.
 ENV PROBE_REGISTRATION_KEY=""
-ENV PROBE_SERVER_URL="https://stats.technicallabs.org"
 
 # Intervals (in seconds)
 ENV PROBE_HEARTBEAT_INTERVAL="60"
@@ -101,10 +101,10 @@ ARG BUILD_VERSION=dev
 LABEL org.opencontainers.image.title="Firewall Collector" \
       org.opencontainers.image.version="${BUILD_VERSION}" \
       org.opencontainers.image.description="Lightweight probe for collecting firewall stats" \
-      com.technicallabs.ports.snmp="162/udp - SNMP Trap receiver" \
-      com.technicallabs.ports.syslog="514/tcp+udp - Syslog receiver" \
-      com.technicallabs.ports.sflow="6343/udp - sFlow receiver" \
-      com.technicallabs.ports.tftp="69/udp - TFTP config backup receiver"
+      firewall-collector.ports.snmp="162/udp - SNMP Trap receiver" \
+      firewall-collector.ports.syslog="514/tcp+udp - Syslog receiver" \
+      firewall-collector.ports.sflow="6343/udp - sFlow receiver" \
+      firewall-collector.ports.tftp="69/udp - TFTP config backup receiver"
 
 STOPSIGNAL SIGTERM
 
