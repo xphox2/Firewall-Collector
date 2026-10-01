@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.45 - 2026-10-01
+
+Security dependency update.
+
+- **`golang.org/x/crypto` v0.52.0 → v0.57.0** (with the minimum versions it requires: `golang.org/x/net` v0.58.0, `golang.org/x/sys` v0.48.0). Fixes GO-2026-6354 and GO-2026-6355, which `govulncheck` reports as reachable from the SSH config-backup client (`internal/ssh`). No code changes.
+
 ## 1.3.44 - 2026-08-29
 
 Audit remediation (2026-08-27 engineering audit) — source-attribution binding for the sFlow and TFTP ingestion paths, so an allowlisted fleet device can no longer submit telemetry or config revisions in another monitored device's name. Each path uses the binding that is both a correct forgery guard AND safe for real HA/NAT topologies; every fix ships with a regression test that fails if the fix is reverted.
