@@ -10,9 +10,9 @@ variable on this page is wired there. If you find a mismatch, the
 
 ## Server connection
 
-> **Upgrade warning (1.3.45):** `PROBE_SERVER_URL` no longer has a built-in
+> **Upgrade warning (1.3.46):** `PROBE_SERVER_URL` no longer has a built-in
 > default. Earlier images baked one in, so a container that never set the
-> variable relied on it silently. Before pulling 1.3.45 or later (including the
+> variable relied on it silently. Before pulling 1.3.46 or later (including the
 > moving `:1.3`, `:stable` and `:latest` tags), set `PROBE_SERVER_URL`
 > explicitly in the container's environment, or the collector exits at startup.
 

@@ -124,8 +124,8 @@ func forbiddenPath(p string) string {
 		return "local tool settings (.claude/)"
 	case p == "docs/AUDIT.md", strings.HasPrefix(p, "docs/audit-20"), strings.HasPrefix(p, "docs/audit-archive/"):
 		return "internal audit report"
-	case base == "CLAUDE.md", base == "AGENTS.md":
-		return "tool working instructions"
+	case base == "CLAUDE.md", base == "AGENTS.md", base == "lessons.md":
+		return "tool working instructions / local working notes"
 	case strings.HasPrefix(base, "session-ses_") && strings.HasSuffix(base, ".md"):
 		return "tool session transcript"
 	}
@@ -144,7 +144,7 @@ func TestPublicHygiene_NoInternalPaths(t *testing.T) {
 func TestPublicHygiene_ForbiddenPathRules(t *testing.T) {
 	bad := []string{"tasks/x", "tasks/lessons.md", "scripts/a.py", ".claude/settings.local.json",
 		"docs/AUDIT.md", "docs/audit-2026-01-01.md", "docs/audit-archive/x.md", "CLAUDE.md",
-		"sub/AGENTS.md", "session-ses_1.md"}
+		"sub/AGENTS.md", "lessons.md", "docs/lessons.md", "session-ses_1.md"}
 	good := []string{"docs/FEATURES.md", "internal/tasks.go", "test/guardrails/x_test.go",
 		"docs/audit-log-feature.md", "README.md"}
 	for _, p := range bad {
@@ -440,6 +440,45 @@ func isWordByte(c byte) bool {
 	return c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 }
 
+// dashedRun matches four dash-separated 1-3 digit groups: an address written
+// the way reverse-DNS names spell it.
+var dashedRun = regexp.MustCompile(`[0-9]{1,3}(?:-[0-9]{1,3}){3}`)
+
+// scanDashedIPv4 returns public addresses written with dashes instead of
+// dots, the form reverse-DNS names use (A-B-C-D.rev.example.net, and after a
+// word such as cpe-A-B-C-D.example.net when a domain follows). A run that is
+// part of a longer token (a timestamp 2026-10-03T19-42-15, SVG path data
+// "s-3-2-3-9h18", a version) is not one. Zero-padded groups are accepted.
+func scanDashedIPv4(p string, data []byte) []ipFinding {
+	var out []ipFinding
+	s := string(data)
+	isLetter := func(b byte) bool { return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' }
+	isDigit := func(b byte) bool { return b >= '0' && b <= '9' }
+	for _, loc := range dashedRun.FindAllStringIndex(s, -1) {
+		start, end := loc[0], loc[1]
+		next, after := byte(0), byte(0)
+		if end < len(s) {
+			next = s[end]
+		}
+		if end+1 < len(s) {
+			after = s[end+1]
+		}
+		domainFollows := next == '.' && isLetter(after)
+		if start > 0 && (isWordByte(s[start-1]) || s[start-1] == '.' || s[start-1] == '-' && !domainFollows) {
+			continue
+		}
+		if isWordByte(next) || next == '-' || next == '.' && isDigit(after) {
+			continue
+		}
+		a, ok := parseV4(strings.Split(s[start:end], "-"))
+		if !ok || v4Allowed(a) || ipv4Allowlist[a.String()] != "" || ipv4FileAllowlist[p+"|"+a.String()] != "" {
+			continue
+		}
+		out = append(out, ipFinding{line: strings.Count(s[:start], "\n") + 1, lit: s[start:end]})
+	}
+	return out
+}
+
 // v6Candidate matches runs of hex digits, colons and dots containing at least
 // two colons; only candidates that parse as IPv6 count.
 var v6Candidate = regexp.MustCompile(`[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*`)
@@ -487,6 +526,9 @@ func TestPublicHygiene_NoPublicIPLiterals(t *testing.T) {
 	for _, f := range trackedTextFiles(t) {
 		for _, h := range scanIPv4(f.path, f.data) {
 			t.Errorf("%s:%d: public IPv4 literal %q — use RFC 5737 (external hosts), 198.18.0.0/15 (own public space) or RFC 1918 (LANs), or add a reviewed allowlist entry with a reason", f.path, h.line, h.lit)
+		}
+		for _, h := range scanDashedIPv4(f.path, f.data) {
+			t.Errorf("%s:%d: public IPv4 literal in dashed (reverse-DNS) form %q — use a reserved range, or add a reviewed allowlist entry with a reason", f.path, h.line, h.lit)
 		}
 		for _, h := range scanIPv6(f.data) {
 			t.Errorf("%s:%d: global IPv6 literal %q — use 2001:db8::/32 (RFC 3849), or add a reviewed allowlist entry with a reason", f.path, h.line, h.lit)
@@ -592,10 +634,35 @@ func TestPublicHygiene_IPv4Rules(t *testing.T) {
 		{"mib-2 table OID, column only", "oid .1.3.6.1.2.1.4.20.1.2", 0},
 		{"mib-2 bridge OID, column numbers only", "oid .1.3.6.1.2.1.17.7.1.4.5.1.1", 0},
 		{"enterprise OID with 1.4 before an address", "oid ." + ip("1", "3", "6", "1", "4", "1", "9", "1", "4", pub), 0},
+		// Zero-padded octets are the same address.
+		{"zero-padded public", "peer " + ip("009", "9", "009", "9"), 1},
+		{"zero-padded private", "peer " + ip("010", "000", "000", "001"), 0},
 	}
 	for _, c := range cases {
 		if got := len(scanIPv4("x.go", []byte(c.text))); got != c.want {
 			t.Errorf("%s: scanIPv4(%q) = %d findings, want %d", c.name, c.text, got, c.want)
+		}
+	}
+	dashed := strings.ReplaceAll(pub, ".", "-")
+	for _, c := range []struct {
+		text string
+		want int
+	}{
+		{"peer " + dashed, 1},
+		{"peer " + dashed + ".", 1},
+		{"rdns " + dashed + ".rev.example.net", 1},
+		{"rdns cpe-" + dashed + ".example.net", 1},
+		{"rdns " + strings.ReplaceAll(ip("009", "9", "009", "9"), ".", "-"), 1},
+		{"host ip-10-0-0-1 and 203-0-113-7.example.com", 0},
+		{"placeholder 1-2-3-4", 0},
+		{"stamp 2026-10-03-14-30 and 10-03-14-30-00 and T19-42-15-24h", 0},
+		{"build 1.2-3-4-5-6 and v" + dashed, 0},
+		{"range " + dashed + ".5 and " + dashed + "-7", 0},
+		{`<path d="M6 8c0 7-3 9-3 9h18s-3-2-3-9"/> and "11-8 11-8-11-8-11-8z"`, 0},
+		{"host ip-" + dashed, 0}, // a word before the dash: only an address with a domain after it counts
+	} {
+		if got := len(scanDashedIPv4("x.go", []byte(c.text))); got != c.want {
+			t.Errorf("scanDashedIPv4(%q) = %d findings, want %d", c.text, got, c.want)
 		}
 	}
 }

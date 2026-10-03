@@ -31,6 +31,7 @@ desktop.ini
 .claude/
 CLAUDE.md
 AGENTS.md
+lessons.md
 # Tool session transcripts (auto-saved next to the working dir; they leak the
 # full session to the public repo).
 session-ses_*.md
