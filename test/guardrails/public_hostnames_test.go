@@ -233,7 +233,7 @@ func scanHosts(text string, used map[string]bool) []hostFinding {
 		}
 		// A two-label run with a one- or two-letter head (r.local, x.net,
 		// it.ch) is a property access, unless it sits in a URL, is quoted
-		// on both sides, or follows "=" (HOST=fw.lan).
+		// on both sides, or follows "=" (HOST=<name>).
 		if len(labels) == 2 && len(labels[0]) < 3 && !hostContext(text, loc[0], loc[1]) {
 			skip = true
 		}
@@ -328,7 +328,7 @@ func TestPublicHygiene_HostRules(t *testing.T) {
 		{"npm install pkg@1.2.3 and user@1.2.3.4", 0},
 		// A longer run or a word before the name is not a separate name.
 		{"my_" + corp, 1},
-		{"x" + corp, 1}, // xmail.acme.com: still a host under acme.com
+		{"x" + corp, 1}, // a word glued to the name is still a host under the same domain
 	} {
 		if got := len(scanHosts(tc.text, nil)); got != tc.bad {
 			t.Errorf("scanHosts(%q) = %d hits, want %d: %+v", tc.text, got, tc.bad, scanHosts(tc.text, nil))
