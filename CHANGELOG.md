@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.47 - 2026-10-03
+
+### Fixed
+- Documentation: `PROBE_SERVER_URL` became required in **1.3.46**, not 1.3.45 — `README.md`, `DEPLOY.md` and `docs/ENV-VARS.md` now say so, and the example image tags no longer point at 1.3.45 (the last image with a baked-in default server URL). `PROBE_SERVER_URL` stays required with no default.
+- `docker.yml`: Docker Hub login and push are gated on the `DOCKERHUB_*` secrets being present (the server workflow's credentials check), so a fork, or a pull request from one, builds the image without failing at login.
+
+### Added
+- **Host-name and e-mail guard** (`test/guardrails/public_hostnames_test.go`): every tracked text file is scanned for host names and mailboxes. Only documentation names (example.com / example.net / example.org and the reserved .example, .test, .invalid and .localhost top-level domains) and a reviewed allowlist of public vendor, documentation and Go-module domains — including the project's public contact domain — pass. Site-local names (.local, .lan, .internal, .home.arpa, …) and reverse-DNS names are rejected whatever the allowlist says, and an in-addr.arpa name is checked as the address it spells. The allowlist stays tight: an entry nothing in the tree references fails the test, as does an entry without a reason.
+- The IP-literal guard also catches dash-separated reverse-DNS forms (A-B-C-D.rev.example.net); zero-padded octets (010.000.000.001 is 10.0.0.1) were already parsed and are now pinned by a test.
+- A root-level `lessons.md` (local working notes) is a forbidden tracked path and is gitignored, as in the server repo.
+
 ## 1.3.46 - 2026-10-01
 
 Public-repository hygiene: internal material removed, test data neutralised, secret scanning added, and one behaviour change for operators.
