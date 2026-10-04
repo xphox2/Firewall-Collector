@@ -138,8 +138,13 @@ type Collector struct {
 	cfgBackupTimers map[string]*time.Timer
 	lastBackupAt    map[uint]time.Time
 	cfgBackupMu     sync.Mutex
-	deviceMu        sync.RWMutex
-	ifaceIPMap      map[string]uint // interface IP → device ID cache
+	// unresolvedFortiOSLogged rate-limits the "FortiOS syslog from <ip> matches
+	// no registered device" hint to once per source IP per
+	// unresolvedFortiOSLogEvery; bounded (unresolvedFortiOSLogMaxIPs) because
+	// the source IP of unauthenticated UDP is attacker-chosen.
+	unresolvedFortiOSLogged map[string]time.Time
+	deviceMu                sync.RWMutex
+	ifaceIPMap              map[string]uint // interface IP → device ID cache
 	// ifaceIPAmbiguous maps an interface IP the cache has seen reported by 2+
 	// DIFFERENT devices to the SET of device IDs that share it — HA/CARP shared
 	// VIPs, A-P cluster synced interfaces, or a live IP-reassignment window.
@@ -2338,6 +2343,13 @@ func (c *Collector) configChangeFor(msg *relay.SyslogMessage) (relay.DeviceInfo,
 	}
 	deviceID := c.resolveDeviceByIP(msg.SourceIP)
 	if deviceID == 0 {
+		// Troubleshooting hint, framing-only (no body parsing): a FortiGate
+		// whose syslog source is not its registered management IP (NAT, a
+		// secondary interface) will never get syslog-triggered backups, and
+		// nothing else would say so.
+		if msg.Format == string(syslog.FormatFortiOSKV) && c.shouldLogUnresolvedFortiOS(msg.SourceIP, time.Now()) {
+			log.Printf("[Syslog→Backup] FortiOS syslog from %s matches no registered device — syslog-triggered config backups disabled for it (check management/NAT IP)", msg.SourceIP)
+		}
 		return relay.DeviceInfo{}, syslog.ConfigChangeEvent{}, false
 	}
 	dev, ok := c.findDeviceByID(deviceID)
@@ -2349,6 +2361,45 @@ func (c *Collector) configChangeFor(msg *relay.SyslogMessage) (relay.DeviceInfo,
 		return relay.DeviceInfo{}, syslog.ConfigChangeEvent{}, false
 	}
 	return dev, ev, true
+}
+
+// unresolvedFortiOSLogEvery is how often the unresolved-FortiOS-source hint
+// may repeat per source IP; unresolvedFortiOSLogMaxIPs bounds the map it
+// keeps. When the map is full, entries older than the interval are evicted
+// first; if none are, the hint is suppressed for new IPs rather than growing.
+const (
+	unresolvedFortiOSLogEvery  = 10 * time.Minute
+	unresolvedFortiOSLogMaxIPs = 1024
+)
+
+// shouldLogUnresolvedFortiOS reports whether the hint for ip is due at now
+// (first sighting, or unresolvedFortiOSLogEvery since the last one) and
+// records it. Goroutine-safe (syslog workers run concurrently).
+func (c *Collector) shouldLogUnresolvedFortiOS(ip string, now time.Time) bool {
+	c.cfgBackupMu.Lock()
+	defer c.cfgBackupMu.Unlock()
+	if c.unresolvedFortiOSLogged == nil {
+		c.unresolvedFortiOSLogged = map[string]time.Time{}
+	}
+	if last, ok := c.unresolvedFortiOSLogged[ip]; ok {
+		if now.Sub(last) < unresolvedFortiOSLogEvery {
+			return false
+		}
+		c.unresolvedFortiOSLogged[ip] = now
+		return true
+	}
+	if len(c.unresolvedFortiOSLogged) >= unresolvedFortiOSLogMaxIPs {
+		for k, t := range c.unresolvedFortiOSLogged {
+			if now.Sub(t) >= unresolvedFortiOSLogEvery {
+				delete(c.unresolvedFortiOSLogged, k)
+			}
+		}
+		if len(c.unresolvedFortiOSLogged) >= unresolvedFortiOSLogMaxIPs {
+			return false
+		}
+	}
+	c.unresolvedFortiOSLogged[ip] = now
+	return true
 }
 
 // configBackupDebounce is the production debounce window. Test code overrides

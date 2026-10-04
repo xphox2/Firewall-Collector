@@ -35,6 +35,23 @@ WRQ. The collector receives it and POSTs the config revision to the
 server (with `backup_quality="masked"` if the FortiGate is masking
 passwords, which is the default on FortiOS 7.2.1+).
 
+The trigger is keyed on the **sending device**, resolved strictly by
+the packet's source IP (management IP or a polled interface IP) and its
+vendor (`fortigate`) — never on anything in the body. The FortiGate's
+syslog framing does not matter (native, `set format rfc5424`, or via a
+BSD relay all work), but its syslog **must arrive from an IP the
+collector knows**. A FortiGate logging from a secondary interface or
+behind NAT is never matched, and the collector says so once per source
+IP every 10 minutes:
+
+```
+[Syslog→Backup] FortiOS syslog from 203.0.113.7 matches no registered device — syslog-triggered config backups disabled for it (check management/NAT IP)
+```
+
+Fix by setting `set source-ip <management-ip>` under
+`config log syslogd setting` on the FortiGate, or by registering the
+address it actually sends from.
+
 See [FORTIGATE-SNMP-SETUP.md](https://github.com/xphox2/Firewall-Monitoring/blob/master/docs/FORTIGATE-SNMP-SETUP.md)
 for the device-side walkthrough (SNMP/SNMP-trap config, required
 OIDs by category, recommended poll intervals, test commands).
@@ -62,7 +79,10 @@ Subcommands: `all` / `checksum` / `config` / `process` / `interface` /
 `firewall-collector-diag-backup` is a single-shot diagnostic binary
 that SSHes into the device, runs `execute backup config tftp`, waits
 for the upload, and emits a `VERDICT:` line. Useful when a probe is
-configured but config backups never appear on the server.
+configured but config backups never appear on the server. If only the
+*syslog-triggered* backups are missing while the scheduled SSH poll
+works, check the collector log for the "matches no registered device"
+hint above first — the trigger never saw the device.
 
 ```bash
 ./firewall-collector-diag-backup \

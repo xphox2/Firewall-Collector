@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"testing"
+	"time"
 
 	"firewall-collector/internal/relay"
 	"firewall-collector/internal/syslog"
@@ -57,5 +59,45 @@ func TestConfigChangeFor_ResolvesDeviceVendorFirst(t *testing.T) {
 		if dev, ev, ok := c.configChangeFor(parse(t, ip)); ok {
 			t.Errorf("%s (%q): FortiOS commit body scheduled a backup for device %d: %+v", name, ip, dev.ID, ev)
 		}
+	}
+}
+
+// TestShouldLogUnresolvedFortiOS_RateLimitAndBound: the unresolved-FortiOS
+// hint fires once per source IP, again only after unresolvedFortiOSLogEvery,
+// and the map it keeps cannot grow past unresolvedFortiOSLogMaxIPs under a
+// spoofed-source flood (new IPs are suppressed until old entries expire).
+func TestShouldLogUnresolvedFortiOS_RateLimitAndBound(t *testing.T) {
+	c := &Collector{}
+	t0 := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	if !c.shouldLogUnresolvedFortiOS("192.0.2.50", t0) {
+		t.Fatal("first sighting must log")
+	}
+	if c.shouldLogUnresolvedFortiOS("192.0.2.50", t0.Add(unresolvedFortiOSLogEvery-time.Second)) {
+		t.Error("repeat inside the interval must not log")
+	}
+	if !c.shouldLogUnresolvedFortiOS("192.0.2.50", t0.Add(unresolvedFortiOSLogEvery)) {
+		t.Error("repeat after the interval must log again")
+	}
+	if !c.shouldLogUnresolvedFortiOS("192.0.2.51", t0) {
+		t.Error("a different IP is independent")
+	}
+
+	// Flood: fill the map with distinct IPs at t0; the one past the cap is
+	// suppressed, and the map stays bounded.
+	for i := len(c.unresolvedFortiOSLogged); i < unresolvedFortiOSLogMaxIPs; i++ {
+		c.shouldLogUnresolvedFortiOS(fmt.Sprintf("2001:db8::%x", i), t0)
+	}
+	if c.shouldLogUnresolvedFortiOS("203.0.113.9", t0.Add(time.Minute)) {
+		t.Error("new IP with a full map of fresh entries must be suppressed")
+	}
+	if n := len(c.unresolvedFortiOSLogged); n != unresolvedFortiOSLogMaxIPs {
+		t.Errorf("map holds %d entries, want exactly the cap %d", n, unresolvedFortiOSLogMaxIPs)
+	}
+	// Once the entries are stale they are evicted and the new IP logs.
+	if !c.shouldLogUnresolvedFortiOS("203.0.113.9", t0.Add(unresolvedFortiOSLogEvery+time.Minute)) {
+		t.Error("new IP after the old entries expired must log")
+	}
+	if n := len(c.unresolvedFortiOSLogged); n > unresolvedFortiOSLogMaxIPs {
+		t.Errorf("map holds %d entries after eviction, want <= %d", n, unresolvedFortiOSLogMaxIPs)
 	}
 }
