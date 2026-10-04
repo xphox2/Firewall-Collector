@@ -241,12 +241,26 @@ func formatVarbindValue(v gosnmp.SnmpPDU) string {
 	return ""
 }
 
+// NormalizeTrapType returns the canonical spelling of a trap type: upper-case,
+// `-` to `_`, trimmed (`ha-state-change` -> `HA_STATE_CHANGE`). The server's
+// alert types, per-type policies and seeded trap rules all use this form (the
+// one the FortiGate profile has always written); the Palo Alto and SonicWall
+// profiles spell theirs in lower-kebab. Twin of the server's
+// snmp.NormalizeTrapType (0.11.291), which also applies it on receipt so a
+// pre-1.3.49 collector's lower-case names still match.
+func NormalizeTrapType(s string) string {
+	return strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(s), "-", "_"))
+}
+
+// lookupTrapOID searches all registered vendor profiles for the given trap OID.
+// The returned type is normalized (NormalizeTrapType), whatever the profile's
+// own spelling.
 func lookupTrapOID(oid string) (trapType string, severity string) {
 	vendorMu.RLock()
 	defer vendorMu.RUnlock()
 	for _, profile := range vendorRegistry {
 		if def, ok := profile.TrapOIDs()[oid]; ok {
-			return def.Type, def.Severity
+			return NormalizeTrapType(def.Type), def.Severity
 		}
 	}
 	return "", ""

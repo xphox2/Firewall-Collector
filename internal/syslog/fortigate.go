@@ -9,9 +9,9 @@ import (
 )
 
 // FortiEvent is the structured form of FortiGate event-log syslog lines that
-// we care about — primarily for config-change triggering. It is a
-// collector-internal type and is never sent to the server (the resulting
-// backup carries TriggerSource="syslog" instead).
+// we care about — primarily for config-change triggering, through the
+// fortios_kv ConfigChangeDetector in configchange.go. It is a
+// collector-internal type and is never sent to the server.
 type FortiEvent struct {
 	Logid   string
 	Type    string
@@ -46,10 +46,13 @@ func (e *FortiEvent) IsConfigChange() bool {
 	return e.Logid == LogidConfigAttr || e.Logid == LogidConfigObjAttr
 }
 
-// ParseFortiEvent extracts a FortiEvent from a SyslogMessage if the message
+// parseFortiEvent extracts a FortiEvent from a SyslogMessage if the message
 // body looks like FortiOS key=value event-log output. Returns nil for
-// non-FortiGate / non-event lines (no `logid=` token).
-func ParseFortiEvent(msg *relay.SyslogMessage) *FortiEvent {
+// non-FortiGate / non-event lines (no `logid=` token). The caller
+// (fortiOSConfigChange) only hands over lines from a device resolved as a
+// FortiGate, so the `logid=` gate here is a cheap pre-filter for the key=value
+// scan, not the vendor test.
+func parseFortiEvent(msg *relay.SyslogMessage) *FortiEvent {
 	if msg == nil || msg.Message == "" {
 		return nil
 	}

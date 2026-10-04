@@ -136,9 +136,13 @@ func GetVendorProfile(name string) VendorProfile {
 	return nil
 }
 
-// DefaultVendor returns the FortiGate vendor profile.
+// DefaultVendor returns the profile used when a vendor is empty or unknown:
+// the standards-only generic profile (MIB-II + HOST-RESOURCES, no enterprise
+// OIDs). Until 1.3.48 this was FortiGate, which polled FortiGate enterprise
+// OIDs against any unclassified device; the fallback to any registered profile
+// is kept only for registries without the generic profile (tests).
 func DefaultVendor() VendorProfile {
-	p := GetVendorProfile("fortigate")
+	p := GetVendorProfile("generic")
 	if p != nil {
 		return p
 	}

@@ -107,21 +107,32 @@
 
 ## Vendor profiles
 
-The collector ships with a `VendorProfile` registry; the default is
-FortiGate. The list is verified in `internal/snmp/vendor_test.go` (the
-compile-time `VendorProfile` satisfaction test).
+The collector ships with a `VendorProfile` registry; an empty or unknown
+vendor resolves to the standards-only **generic** profile (since 1.3.49 —
+until 1.3.48 it was FortiGate, which polled FortiGate enterprise OIDs against
+any unclassified device). The exact set below is pinned by
+`TestVendorRegistry_RegisteredNames` in `internal/snmp/vendor_test.go`, and
+each column is a provider interface the profile actually implements
+(`HAProvider`, `SDWANProvider`, `SecurityStatsProvider`, `LicenseProvider`,
+`VPNBaseOID`): a dash means the collector does not poll it for that vendor.
 
 | Vendor | Profile | HA | SD-WAN | Security stats | License | VPN |
 |---|---|---|---|---|---|---|
-| **fortigate** (default) | full | ✅ | ✅ | ✅ | ✅ | site-to-site + dialup + SSL |
-| **paloalto** | full | ✅ | ✅ | ✅ | ✅ | site-to-site + SSL |
-| **sonicwall** | full | ✅ | — | — | ✅ | site-to-site |
-| **cisco_asa** | full | ✅ (failover) | — | — | — | — |
-| **pfsense** | full | ✅ (CARP) | — | — | — | IPsec |
-| **opnsense** | full | ✅ (CARP) | — | — | — | IPsec |
-| **firewalla** | basic | — | — | — | — | — |
-| **linux_vpn** | basic | — | — | — | — | IPsec / WireGuard (generic) |
-| **bsd_vpn** | basic | — | — | — | — | IPsec (generic) |
+| **fortigate** | full | ✅ | ✅ | ✅ | ✅ | site-to-site + dialup + SSL (FORTINET-FORTIGATE-MIB) |
+| **paloalto** | full | ✅ | — | — | — | IPsec VTI (`tunnel.*` interfaces via IF-MIB) |
+| **sonicwall** | full | — | — | — | — | site-to-site (sonicSAStatTable) |
+| **cisco_asa** | full | ✅ (failover) | — | — | — | — (CDP neighbours instead) |
+| **pfsense** | full | — | — | — | — | OpenVPN / WireGuard / IPsec VTI (IF-MIB names) |
+| **opnsense** | full | — | — | — | — | OpenVPN / WireGuard / IPsec VTI (IF-MIB names); disk + load average |
+| **firewalla** | basic | — | — | — | — | WireGuard / OpenVPN / IPsec VTI (IF-MIB names) |
+| **unifi** | basic | — | — | — | — | WireGuard / OpenVPN / IPsec VTI (IF-MIB names) — *untested on real hardware; built from vendor docs* (1.3.49) |
+| **meraki** | basic | — | — | — | — | — — *untested on real hardware; built from vendor docs* (1.3.49) |
+| **generic** (default) | basic | — | — | — | — | — |
+
+`vendor_linux_vpn.go` / `vendor_bsd_vpn.go` are the shared IF-MIB VPN
+matchers the Linux- and BSD-based profiles above call; they are not
+registered profiles. CARP state on pfSense/OPNsense and SonicWall HA are
+not polled.
 
 To add a vendor: see [CUSTOM-VENDOR.md](CUSTOM-VENDOR.md).
 

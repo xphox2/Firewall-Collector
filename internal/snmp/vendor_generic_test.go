@@ -143,19 +143,28 @@ func TestGeneric_UnsupportedMetricFamilies(t *testing.T) {
 	}
 }
 
-// resolveVendor fallback semantics: empty/legacy vendor stays FortiGate
-// (load-bearing default), unknown strings resolve to generic — never to
-// FortiGate enterprise OIDs.
+// TestResolveVendor_EmptyIsGeneric: an empty vendor resolves to the
+// standards-only generic profile, not FortiGate. Until 1.3.48 "" was a
+// FortiGate alias (server-side Device.Vendor defaulted to "fortigate"), so a
+// device the operator never classified was polled with FortiGate enterprise
+// OIDs. Server 0.11.290 made generic the default and backfilled every empty
+// vendor (v71); this is the collector half of that change.
+func TestResolveVendor_EmptyIsGeneric(t *testing.T) {
+	s := &SNMPClient{} // resolveVendor does not touch connection state
+	if got := s.resolveVendor("").Name(); got != "generic" {
+		t.Errorf("resolveVendor(\"\") = %q, want generic (an unclassified device must not be polled with FortiGate enterprise OIDs)", got)
+	}
+}
+
+// resolveVendor fallback semantics: unknown strings resolve to generic — never
+// to FortiGate enterprise OIDs — and every registered name resolves to itself.
 func TestResolveVendor_FallbackSemantics(t *testing.T) {
 	s := &SNMPClient{} // resolveVendor does not touch connection state
 
-	if got := s.resolveVendor("").Name(); got != "fortigate" {
-		t.Errorf("resolveVendor(\"\") = %q, want fortigate (load-bearing legacy default)", got)
-	}
 	if got := s.resolveVendor("no-such-vendor").Name(); got != "generic" {
 		t.Errorf("resolveVendor(unknown) = %q, want generic", got)
 	}
-	for _, v := range []string{"fortigate", "paloalto", "cisco_asa", "sonicwall", "firewalla", "pfsense", "opnsense", "generic"} {
+	for _, v := range []string{"fortigate", "paloalto", "cisco_asa", "sonicwall", "firewalla", "pfsense", "opnsense", "generic", "unifi", "meraki"} {
 		if got := s.resolveVendor(v).Name(); got != v {
 			t.Errorf("resolveVendor(%q) = %q, want %q", v, got, v)
 		}

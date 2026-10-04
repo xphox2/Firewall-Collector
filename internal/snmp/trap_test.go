@@ -363,7 +363,9 @@ func TestTrapReceiver_VarbindScanFallback(t *testing.T) {
 }
 
 // TestLookupTrapOID verifies the cross-vendor lookup walks every registered
-// profile and returns the first match. Unknown OIDs yield ("", "").
+// profile and returns the first match, spelled canonically (the Palo Alto
+// profile writes `vpn-tunnel-up`; the server's alert types want
+// `VPN_TUNNEL_UP`). Unknown OIDs yield ("", "").
 func TestLookupTrapOID(t *testing.T) {
 	withCleanVendorRegistry(t, func() {
 		RegisterVendor(&FortiGateProfile{})
@@ -378,8 +380,8 @@ func TestLookupTrapOID(t *testing.T) {
 			{".1.3.6.1.4.1.12356.101.2.0.301", "VPN_TUNNEL_UP", "info"},
 			{".1.3.6.1.4.1.12356.101.2.0.601", "AV_VIRUS", "critical"},
 			// Palo Alto
-			{".1.3.6.1.4.1.25461.2.1.3.2.0.1746", "vpn-tunnel-up", "info"},
-			{".1.3.6.1.4.1.25461.2.1.3.2.0.916", "hw-fan-failure", "critical"},
+			{".1.3.6.1.4.1.25461.2.1.3.2.0.1746", "VPN_TUNNEL_UP", "info"},
+			{".1.3.6.1.4.1.25461.2.1.3.2.0.916", "HW_FAN_FAILURE", "critical"},
 			// Unknown
 			{".1.3.6.1.4.1.99999.1.2.3", "", ""},
 			{"", "", ""},

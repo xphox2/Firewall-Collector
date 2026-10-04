@@ -27,16 +27,20 @@ type VendorProfile interface {
 ```
 
 Features your device doesn't expose are one-line stubs (`""` for a
-`*BaseOID()`, `nil` for the matching `Parse*`). Six **optional**
+`*BaseOID()`, `nil` for the matching `Parse*`). Nine **optional**
 sub-interfaces are declared separately in the same file and picked up by
 type assertion when a profile implements them: `DialupVPNProvider`,
 `SSLVPNProvider`, `HAProvider`, `SecurityStatsProvider`, `SDWANProvider`,
-`LicenseProvider`.
+`LicenseProvider`, `StorageProvider`, `LoadProvider`, `CDPProvider`.
 
-In-tree registered profiles: `fortigate` (default), `paloalto`,
-`sonicwall`, `pfsense`, `opnsense`, `firewalla`. They register
+In-tree registered profiles: `generic` (the default for an empty or
+unknown vendor), `fortigate`, `paloalto`, `sonicwall`, `cisco_asa`,
+`pfsense`, `opnsense`, `firewalla`, `unifi`, `meraki`. They register
 themselves in `init()`. (`vendor_linux_vpn.go` / `vendor_bsd_vpn.go` are
-shared VPN-parsing helpers, not registered profiles.)
+shared VPN-parsing helpers, not registered profiles.) A profile for a
+device nobody on the project owns — `unifi` and `meraki` today — embeds
+`GenericProfile` and says "untested on real hardware; built from vendor
+docs" in its type comment until a fixture from a real device exists.
 
 To add a new profile:
 
@@ -46,9 +50,13 @@ To add a new profile:
    `internal/api/handlers/handlers.go` (server side, if the server also
    polls this vendor).
 4. Add a row to the [FEATURES.md](FEATURES.md#vendor-profiles) table.
-5. Add tests in `internal/snmp/vendor_test.go` (the existing
-   `TestVendorProfile_*` tests pin the registry size and the
-   `VendorProfile` interface satisfaction).
+5. Add the name to `registeredVendorNames` in
+   `internal/snmp/vendor_test.go` (`TestVendorRegistry_RegisteredNames`
+   pins the exact registry) and add parser tests for your profile.
+6. Update the `test/guardrails/vendor_default_guard_test.go` allowlist only
+   if your profile genuinely needs to spell a FortiGate default — it never
+   should; an empty or unknown vendor is `generic`.
 
 See the existing `vendor_fortigate.go` for a complete reference
-implementation that satisfies all six optional sub-interfaces.
+implementation that satisfies six of the nine optional sub-interfaces
+(all but `StorageProvider`, `LoadProvider` and `CDPProvider`).
