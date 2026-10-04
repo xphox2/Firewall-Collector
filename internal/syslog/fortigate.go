@@ -49,9 +49,9 @@ func (e *FortiEvent) IsConfigChange() bool {
 // parseFortiEvent extracts a FortiEvent from a SyslogMessage if the message
 // body looks like FortiOS key=value event-log output. Returns nil for
 // non-FortiGate / non-event lines (no `logid=` token). The caller
-// (fortiOSConfigChange) only hands over rows the framing dispatcher labelled
-// fortios_kv, so the `logid=` gate here is a cheap pre-filter for the
-// key=value scan, not the vendor test.
+// (fortiOSConfigChange) only hands over lines from a device resolved as a
+// FortiGate, so the `logid=` gate here is a cheap pre-filter for the key=value
+// scan, not the vendor test.
 func parseFortiEvent(msg *relay.SyslogMessage) *FortiEvent {
 	if msg == nil || msg.Message == "" {
 		return nil

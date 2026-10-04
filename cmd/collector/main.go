@@ -2299,8 +2299,8 @@ func (c *Collector) findDeviceByID(id uint) (relay.DeviceInfo, bool) {
 
 // handleSyslogMessage is the unified entry point for both TCP and UDP syslog
 // receivers. It always sends the message via relay (existing behavior) AND, if
-// the message is a config-change event for its framing (syslog.DetectConfigChange,
-// keyed on msg.Format), schedules a debounced backup for the source device.
+// the message is a config-change event for the sending device's vendor,
+// schedules a debounced backup for that device.
 func (c *Collector) handleSyslogMessage(msg *relay.SyslogMessage, probeID uint) {
 	if msg == nil {
 		return
@@ -2308,32 +2308,47 @@ func (c *Collector) handleSyslogMessage(msg *relay.SyslogMessage, probeID uint) 
 	msg.ProbeID = probeID
 	c.relayClient.SendSyslogMessage(msg)
 
-	ev, ok := syslog.DetectConfigChange(msg)
+	dev, ev, ok := c.configChangeFor(msg)
 	if !ok {
 		return
 	}
+	c.scheduleConfigBackup(dev, ev)
+}
 
-	// SECURITY (audit H1): the config-backup trigger drives an outbound SSH/TFTP
-	// fetch against the real firewall, so it must key off the packet's actual
-	// source IP — never a body-supplied DeviceID, which an attacker sending
-	// crafted syslog could set to any device. Resolve strictly by SourceIP.
+// configChangeFor resolves the device that sent msg and asks that device's
+// vendor detector (syslog.DetectConfigChange) whether the line is a config
+// commit. The device is resolved FIRST, and strictly by the packet's source
+// IP, for two reasons:
+//
+// SECURITY (audit H1): the config-backup trigger drives an outbound SSH/TFTP
+// fetch against the real firewall, so it must key off the actual source IP —
+// never a body-supplied DeviceID, which an attacker sending crafted syslog
+// could set to any device.
+//
+// Vendor-keyed detection: a FortiGate emits the same key=value body in its
+// native framing, with `set format rfc5424`, or behind a BSD relay header, so
+// the framing cannot say whose detector applies — the device's vendor can. A
+// line from an unknown source, or from a device whose vendor has no detector
+// (generic, non-FortiGate), is never a config change here, so a FortiOS event
+// id in a line aimed at some other box cannot schedule a FortiOS backup
+// against it (fetchConfigViaTFTP is additionally FortiGate-only).
+func (c *Collector) configChangeFor(msg *relay.SyslogMessage) (relay.DeviceInfo, syslog.ConfigChangeEvent, bool) {
 	if msg.SourceIP == "" {
-		return
+		return relay.DeviceInfo{}, syslog.ConfigChangeEvent{}, false
 	}
 	deviceID := c.resolveDeviceByIP(msg.SourceIP)
 	if deviceID == 0 {
-		log.Printf("[Syslog→Backup] config-change event from %s but no matching device (format=%s event=%s txn=%s path=%s)",
-			msg.SourceIP, ev.Format, ev.EventID, ev.TxnID, ev.Path)
-		return
+		return relay.DeviceInfo{}, syslog.ConfigChangeEvent{}, false
 	}
-
 	dev, ok := c.findDeviceByID(deviceID)
 	if !ok {
-		log.Printf("[Syslog→Backup] device id=%d not in current device list", deviceID)
-		return
+		return relay.DeviceInfo{}, syslog.ConfigChangeEvent{}, false
 	}
-
-	c.scheduleConfigBackup(dev, ev)
+	ev, ok := syslog.DetectConfigChange(dev.Vendor, msg)
+	if !ok {
+		return relay.DeviceInfo{}, syslog.ConfigChangeEvent{}, false
+	}
+	return dev, ev, true
 }
 
 // configBackupDebounce is the production debounce window. Test code overrides
