@@ -11,3 +11,5 @@
 <166>Oct  1 2025 05:01:53 asa-01 : %ASA-6-106015: Deny TCP (no connection) from 203.0.113.5/44321 to 192.0.2.1/22 flags SYN on interface outside
 <34>Oct 11 22:14:15 FGT60FTK00000000 sshd[123]: Accepted publickey for alice from 192.0.2.20 port 51234 ssh2
 <13>Oct 11 22:14:20 fw-example-01 note: the CEF: token later in a body does not relabel the row
+<34>Oct 1 22:14:15 fw-example-01 sshd[123]: unpadded single-digit day
+<166>Oct 1 2025 22:14:15 asa-01 : %ASA-6-106015: unpadded single-digit day, year form

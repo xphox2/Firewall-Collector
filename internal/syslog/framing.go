@@ -172,12 +172,57 @@ func parseRFC5424Strict(msg *relay.SyslogMessage, body []byte, now time.Time) {
 	}
 }
 
-// Widths of the two BSD timestamp spellings: RFC 3164 `Mmm dd hh:mm:ss` and
-// the Cisco ASA/IOS `Mmm dd yyyy hh:mm:ss` form (year inserted).
-const (
-	bsdTimestampLen     = 15
-	bsdYearTimestampLen = 20
-)
+// bsdTimestampEnd returns the length of the BSD timestamp that opens body:
+//
+//	Mmm d[d] [yyyy] hh:mm:ss
+//
+// with any amount of padding before the day (`Oct  1`, `Oct 1` and `Oct 11`
+// all occur in the wild), an optional 4-digit year (Cisco ASA/IOS), and the
+// time followed by a space or the end of the line. It returns 0 when the bytes
+// do not have that shape. The month itself was already checked by the gate.
+func bsdTimestampEnd(body []byte) int {
+	i := 3
+	for i < len(body) && body[i] == ' ' {
+		i++
+	}
+	day := i
+	for i < len(body) && i-day < 2 && body[i] >= '0' && body[i] <= '9' {
+		i++
+	}
+	if i == day || i >= len(body) || body[i] != ' ' {
+		return 0
+	}
+	i++
+	if j := i + 4; j < len(body) && body[j] == ' ' && allDigits(body[i:j]) {
+		i = j + 1 // optional year
+	}
+	if len(body) < i+8 {
+		return 0
+	}
+	for k, c := range body[i : i+8] {
+		if k == 2 || k == 5 {
+			if c != ':' {
+				return 0
+			}
+		} else if c < '0' || c > '9' {
+			return 0
+		}
+	}
+	i += 8
+	if i < len(body) && body[i] != ' ' {
+		return 0
+	}
+	return i
+}
+
+func allDigits(b []byte) bool {
+	for _, c := range b {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
 
 // parseBSD fills msg from an RFC 3164 payload:
 //
@@ -185,8 +230,9 @@ const (
 //	Mmm dd yyyy hh:mm:ss HOST TAG: MSG   (Cisco ASA/IOS spelling)
 //
 // It reports false — leaving msg untouched — when the bytes the month gate
-// matched are not a complete timestamp followed by a space or the end of the
-// line; the caller then stores the line raw rather than guessing columns.
+// matched are not a complete timestamp (bsdTimestampEnd) that also decodes
+// to a real date; the caller then stores the line raw rather than guessing
+// columns.
 //
 // The RFC 3164 timestamp carries no year or zone: the year is taken from now
 // (minus one when that would put the line more than bsdFutureSlack ahead,
@@ -197,11 +243,8 @@ const (
 // deliberately not derived from HOST: the server binds these rows by source
 // IP, and a body-derived id that is not the probe's would get the row dropped.
 func parseBSD(msg *relay.SyslogMessage, body []byte, now time.Time) bool {
-	tsLen := bsdTimestampLen
-	if len(body) >= bsdYearTimestampLen && body[6] == ' ' && body[11] == ' ' && body[14] == ':' {
-		tsLen = bsdYearTimestampLen
-	}
-	if len(body) < tsLen || (len(body) > tsLen && body[tsLen] != ' ') {
+	tsLen := bsdTimestampEnd(body)
+	if tsLen == 0 {
 		return false
 	}
 	ts, err := parseTimestamp(now, string(body[:tsLen]))

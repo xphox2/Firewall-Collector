@@ -128,5 +128,27 @@
     "priority": 13,
     "facility": 1,
     "severity": 5
+  },
+  {
+    "line": "\u003c34\u003eOct 1 22:14:15 fw-example-01 sshd[123]: unpadded single-digit day",
+    "format": "rfc3164",
+    "timestamp": "2025-10-01T22:14:15Z",
+    "hostname": "fw-example-01",
+    "app_name": "sshd",
+    "process_id": "123",
+    "message": "unpadded single-digit day",
+    "priority": 34,
+    "facility": 4,
+    "severity": 2
+  },
+  {
+    "line": "\u003c166\u003eOct 1 2025 22:14:15 asa-01 : %ASA-6-106015: unpadded single-digit day, year form",
+    "format": "rfc3164",
+    "timestamp": "2025-10-01T22:14:15Z",
+    "hostname": "asa-01",
+    "message": "%ASA-6-106015: unpadded single-digit day, year form",
+    "priority": 166,
+    "facility": 20,
+    "severity": 6
   }
 ]

@@ -528,3 +528,64 @@ func TestParse_CEF_RequiresPrefix(t *testing.T) {
 		}
 	}
 }
+
+// Some senders do not pad a single-digit day (`Oct 1`, 14-byte timestamp;
+// `Oct 1 2025`, 19 bytes). The timestamp length comes from token boundaries,
+// not a fixed width, so these parse exactly like the padded forms.
+func TestParse_BSD_UnpaddedDay(t *testing.T) {
+	now := time.Date(2025, 10, 12, 0, 0, 0, 0, time.UTC)
+	want := time.Date(2025, 10, 1, 22, 14, 15, 0, time.UTC)
+	cases := []struct {
+		line     string
+		host     string
+		app, pid string
+		msg      string
+	}{
+		{`<34>Oct 1 22:14:15 fw-example-01 sshd[123]: unpadded`, "fw-example-01", "sshd", "123", "unpadded"},
+		{`<34>Oct  1 22:14:15 fw-example-01 sshd[123]: padded`, "fw-example-01", "sshd", "123", "padded"},
+		{`<166>Oct 1 2025 22:14:15 asa-01 : %ASA-6-106015: unpadded year form`, "asa-01", "", "", "%ASA-6-106015: unpadded year form"},
+		{`<166>Oct  1 2025 22:14:15 asa-01 : %ASA-6-106015: padded year form`, "asa-01", "", "", "%ASA-6-106015: padded year form"},
+	}
+	for _, tc := range cases {
+		msg, err := parseSyslog([]byte(tc.line), now)
+		if err != nil {
+			t.Fatalf("%q: unexpected error: %v", tc.line, err)
+		}
+		if msg.Format != string(FormatRFC3164) {
+			t.Errorf("%q: Format = %q, want rfc3164", tc.line, msg.Format)
+		}
+		if !msg.Timestamp.Equal(want) {
+			t.Errorf("%q: Timestamp = %v, want %v", tc.line, msg.Timestamp, want)
+		}
+		if msg.Hostname != tc.host || msg.AppName != tc.app || msg.ProcessID != tc.pid || msg.Message != tc.msg {
+			t.Errorf("%q: got host=%q app=%q pid=%q msg=%q, want %q %q %q %q",
+				tc.line, msg.Hostname, msg.AppName, msg.ProcessID, msg.Message, tc.host, tc.app, tc.pid, tc.msg)
+		}
+	}
+}
+
+func TestBSDTimestampEnd(t *testing.T) {
+	tests := []struct {
+		in   string
+		want int
+	}{
+		{"Oct 11 22:14:15 host", 15},
+		{"Oct 11 22:14:15", 15},
+		{"Oct  1 22:14:15 host", 15},
+		{"Oct 1 22:14:15 host", 14},
+		{"Oct 11 2025 22:14:15 host", 20},
+		{"Oct 1 2025 22:14:15 host", 19},
+		{"Oct 11 22:14", 0},
+		{"Oct 11 22:14:15x host", 0},
+		{"Oct 11 22:14:15host", 0},
+		{"Oct 111 22:14:15 host", 0},
+		{"Oct 11 202 22:14:15 host", 0},
+		{"Oct 11 22-14-15 host", 0},
+		{"Oct ", 0},
+	}
+	for _, tt := range tests {
+		if got := bsdTimestampEnd([]byte(tt.in)); got != tt.want {
+			t.Errorf("bsdTimestampEnd(%q) = %d, want %d", tt.in, got, tt.want)
+		}
+	}
+}
