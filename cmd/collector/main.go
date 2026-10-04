@@ -47,7 +47,7 @@ var (
 	lastHeartbeat   time.Time
 )
 
-const version = "1.3.48"
+const version = "1.3.49"
 
 // deviceSNMP is the subset of *snmp.SNMPClient that pollDevice uses. Declaring
 // it as an interface lets tests inject a fake client in place of a live SNMP
@@ -493,7 +493,8 @@ func main() {
 	})
 	fmt.Printf("  -> Polling every %v, device refresh every %v\n\n", probeCfg.PollInterval, probeCfg.DeviceRefreshInterval)
 
-	// Start SSH polling for FortiGate devices
+	// Start SSH config-backup polling (FortiGate, OPNsense, pfSense, Palo Alto;
+	// other vendors are skipped by the ssh.NewConfigBackupClient factory)
 	fmt.Println("[5/6] Starting SSH polling...")
 	safego.Go("ssh:polling", c.sshPollingLoop)
 	fmt.Printf("  -> SSH polling every %v\n\n", 5*time.Minute)
@@ -879,10 +880,11 @@ func (c *Collector) runStartupDiagnostic() {
 		fmt.Printf("  [Diagnostic] BASIC SNMP OK (%v): sysObjectID = %v\n", elapsed.Round(time.Millisecond), basicResult)
 	}
 
-	// Test 2: Vendor-specific system status
+	// Test 2: Vendor-specific system status. An empty vendor is the
+	// standards-only generic profile (1.3.49), not FortiGate.
 	vendor := target.Vendor
 	if vendor == "" {
-		vendor = "fortigate"
+		vendor = "generic"
 	}
 	fmt.Println()
 	fmt.Printf("  [Diagnostic] === Test 2: Vendor-specific poll (vendor=%s) ===\n", vendor)
@@ -893,7 +895,7 @@ func (c *Collector) runStartupDiagnostic() {
 		fmt.Printf("  [Diagnostic] VENDOR POLL FAILED (%v): %v\n", elapsed.Round(time.Millisecond), err)
 		if basicErr == nil {
 			fmt.Println("  [Diagnostic] >>> Basic SNMP works but vendor OIDs fail!")
-			fmt.Println("  [Diagnostic] >>> This device may not be a FortiGate, or FortiGate MIB is not enabled.")
+			fmt.Printf("  [Diagnostic] >>> This device may not be a %s, or its enterprise MIB is not enabled.\n", vendor)
 		}
 	} else {
 		fmt.Printf("  [Diagnostic] VENDOR POLL OK (%v): %s — CPU=%.1f%% Mem=%.1f%% Sessions=%d\n",
@@ -1225,12 +1227,13 @@ func (c *Collector) sendSSHARPTable(dev relay.DeviceInfo, output string) {
 }
 
 // isFortiGateVendor reports whether a device vendor string denotes FortiGate.
-// An empty vendor is treated as FortiGate for legacy device records — matching
-// the SNMP vendor resolver and the SSH client factory default — so empty-vendor
-// FortiGates keep their FortiGate-only behavior (TFTP capture, server-inferred
-// backup quality) instead of being misclassified as another vendor.
+// Only the literal "fortigate" does: an empty vendor is generic (1.3.49, same
+// as the SNMP vendor resolver and the SSH client factory), so an unclassified
+// device never gets the FortiGate-only paths (TFTP capture via FortiOS CLI,
+// server-inferred backup quality). The server backfilled every empty vendor
+// before this build (0.11.290, migration v71), so no real FortiGate loses them.
 func isFortiGateVendor(vendor string) bool {
-	return vendor == "" || vendor == "fortigate"
+	return vendor == "fortigate"
 }
 
 func (c *Collector) checkAndSendConfigRevision(dev relay.DeviceInfo, checksum string, client ssh.ConfigBackupClient) {
@@ -1861,9 +1864,11 @@ func (c *Collector) pollDevice(dev relay.DeviceInfo, collectTopology bool) {
 		}
 	}
 
+	// An empty vendor is the standards-only generic profile (1.3.49), not
+	// FortiGate; name it so the poll-duration metric label says what was polled.
 	vendor := dev.Vendor
 	if vendor == "" {
-		vendor = "fortigate"
+		vendor = "generic"
 	}
 
 	// Observability: time the poll so the histogram records actual
@@ -2294,8 +2299,8 @@ func (c *Collector) findDeviceByID(id uint) (relay.DeviceInfo, bool) {
 
 // handleSyslogMessage is the unified entry point for both TCP and UDP syslog
 // receivers. It always sends the message via relay (existing behavior) AND, if
-// the message is a FortiGate config-change event, schedules a debounced backup
-// for the source device.
+// the message is a config-change event for its framing (syslog.DetectConfigChange,
+// keyed on msg.Format), schedules a debounced backup for the source device.
 func (c *Collector) handleSyslogMessage(msg *relay.SyslogMessage, probeID uint) {
 	if msg == nil {
 		return
@@ -2303,8 +2308,8 @@ func (c *Collector) handleSyslogMessage(msg *relay.SyslogMessage, probeID uint) 
 	msg.ProbeID = probeID
 	c.relayClient.SendSyslogMessage(msg)
 
-	ev := syslog.ParseFortiEvent(msg)
-	if !ev.IsConfigChange() {
+	ev, ok := syslog.DetectConfigChange(msg)
+	if !ok {
 		return
 	}
 
@@ -2317,8 +2322,8 @@ func (c *Collector) handleSyslogMessage(msg *relay.SyslogMessage, probeID uint) 
 	}
 	deviceID := c.resolveDeviceByIP(msg.SourceIP)
 	if deviceID == 0 {
-		log.Printf("[Syslog→Backup] config-change event from %s but no matching device (logid=%s cfgtid=%s cfgpath=%s)",
-			msg.SourceIP, ev.Logid, ev.Cfgtid, ev.Cfgpath)
+		log.Printf("[Syslog→Backup] config-change event from %s but no matching device (format=%s event=%s txn=%s path=%s)",
+			msg.SourceIP, ev.Format, ev.EventID, ev.TxnID, ev.Path)
 		return
 	}
 
@@ -2349,7 +2354,7 @@ const maxPendingConfigBackupsPerDevice = 4
 // scheduleConfigBackup runs `fetchConfigViaTFTP` on the given device after the
 // configBackupDebounce window, keyed on (deviceID, cfgtid). Production entry
 // point — wraps scheduleConfigBackupWith to inject the actual TFTP fetch.
-func (c *Collector) scheduleConfigBackup(dev relay.DeviceInfo, ev *syslog.FortiEvent) {
+func (c *Collector) scheduleConfigBackup(dev relay.DeviceInfo, ev syslog.ConfigChangeEvent) {
 	c.scheduleConfigBackupWith(dev, ev, configBackupDebounce, func() {
 		// Per-device throttle: collapse cfgtid variance into one fetch per window.
 		c.cfgBackupMu.Lock()
@@ -2365,19 +2370,19 @@ func (c *Collector) scheduleConfigBackup(dev relay.DeviceInfo, ev *syslog.FortiE
 		c.lastBackupAt[dev.ID] = time.Now()
 		c.cfgBackupMu.Unlock()
 
-		log.Printf("[Syslog→Backup] firing TFTP backup for %s (logid=%s cfgtid=%s cfgpath=%s)",
-			dev.Name, ev.Logid, ev.Cfgtid, ev.Cfgpath)
+		log.Printf("[Syslog→Backup] firing TFTP backup for %s (event=%s txn=%s path=%s)",
+			dev.Name, ev.EventID, ev.TxnID, ev.Path)
 		c.fetchConfigViaTFTP(dev, "", "syslog")
 	})
 }
 
 // scheduleConfigBackupWith is the testable core. Two events with the same
-// (deviceID, cfgtid) within the debounce window collapse to a single fire of
-// `action`. Different cfgtids are independent timers. If cfgtid is empty
-// (rare — some events don't carry one), the key degrades to "<deviceID>:_"
-// so we still get one backup per device per debounce window.
-func (c *Collector) scheduleConfigBackupWith(dev relay.DeviceInfo, ev *syslog.FortiEvent, debounce time.Duration, action func()) {
-	tid := ev.Cfgtid
+// (deviceID, TxnID) within the debounce window collapse to a single fire of
+// `action`. Different transaction ids are independent timers. If TxnID is
+// empty (rare — some events don't carry one), the key degrades to
+// "<deviceID>:_" so we still get one backup per device per debounce window.
+func (c *Collector) scheduleConfigBackupWith(dev relay.DeviceInfo, ev syslog.ConfigChangeEvent, debounce time.Duration, action func()) {
+	tid := ev.TxnID
 	if tid == "" {
 		tid = "_"
 	}
@@ -2415,8 +2420,8 @@ func (c *Collector) scheduleConfigBackupWith(dev relay.DeviceInfo, ev *syslog.Fo
 	})
 	c.cfgBackupMu.Unlock()
 
-	log.Printf("[Syslog→Backup] queued backup for %s in %v (logid=%s cfgtid=%s cfgpath=%s action=%s user=%s)",
-		dev.Name, debounce, ev.Logid, ev.Cfgtid, ev.Cfgpath, ev.Action, ev.User)
+	log.Printf("[Syslog→Backup] queued backup for %s in %v (event=%s txn=%s path=%s action=%s user=%s)",
+		dev.Name, debounce, ev.EventID, ev.TxnID, ev.Path, ev.Action, ev.User)
 }
 
 // resolveDeviceByIP maps an sFlow agent IP to a device ID from the known device list

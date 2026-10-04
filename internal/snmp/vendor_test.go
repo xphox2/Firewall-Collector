@@ -1,6 +1,8 @@
 package snmp
 
 import (
+	"reflect"
+	"sort"
 	"sync"
 	"testing"
 
@@ -26,7 +28,7 @@ func TestVendorRegistry_RegisterAndGet(t *testing.T) {
 // TestVendorRegistry_NotFoundReturnsNil ensures that asking for an unknown
 // vendor returns nil rather than a zero-valued VendorProfile interface.
 // Callers depend on this nil-check in snmp.go:resolveVendor to fall back to
-// DefaultVendor().
+// DefaultVendor() (the generic profile).
 func TestVendorRegistry_NotFoundReturnsNil(t *testing.T) {
 	withCleanVendorRegistry(t, func() {
 		if got := GetVendorProfile("nonexistent-vendor-xyz"); got != nil {
@@ -82,22 +84,26 @@ func TestVendorRegistry_ConcurrentAccess(t *testing.T) {
 	})
 }
 
-// TestDefaultVendor_PrefersFortigate verifies that when multiple vendors are
-// registered, DefaultVendor returns the FortiGate profile (not just any
-// random vendor). This is the documented behavior in vendor.go:DefaultVendor.
-func TestDefaultVendor_PrefersFortigate(t *testing.T) {
+// TestDefaultVendor_PrefersGeneric verifies that when multiple vendors are
+// registered, DefaultVendor returns the standards-only generic profile (not
+// FortiGate, not just any random vendor). Until 1.3.48 the default was
+// FortiGate, so an unclassified device was polled with FortiGate enterprise
+// OIDs; since 1.3.49 (server 0.11.290) an empty or unknown vendor is generic
+// on both sides.
+func TestDefaultVendor_PrefersGeneric(t *testing.T) {
 	withCleanVendorRegistry(t, func() {
-		// Register non-fortigate vendors first so the map iteration order
-		// (which is non-deterministic) would otherwise pick them.
+		// Register other vendors first so the map iteration order (which is
+		// non-deterministic) would otherwise pick them.
 		RegisterVendor(&stubVendorProfile{name: "paloalto"})
+		RegisterVendor(&FortiGateProfile{})
 		RegisterVendor(&stubVendorProfile{name: "pfsense"})
 
-		forti := &FortiGateProfile{}
-		RegisterVendor(forti)
+		generic := &GenericProfile{}
+		RegisterVendor(generic)
 
 		got := DefaultVendor()
-		if got != forti {
-			t.Errorf("DefaultVendor() = %v, want FortiGateProfile (matching 'fortigate' lookup)", got)
+		if got != generic {
+			t.Errorf("DefaultVendor() = %v, want GenericProfile (matching 'generic' lookup)", got)
 		}
 	})
 }
@@ -116,17 +122,20 @@ func TestDefaultVendor_StableOrder_AcrossCalls(t *testing.T) {
 		}
 
 		// Register 5 vendors in an order chosen to avoid a HashSeed that
-		// would make fortigate the first-iterated entry by luck.
+		// would make generic the first-iterated entry by luck.
 		RegisterVendor(&stubVendorProfile{name: "alpha"})
 		RegisterVendor(&stubVendorProfile{name: "bravo"})
 		RegisterVendor(&stubVendorProfile{name: "charlie"})
 		RegisterVendor(&stubVendorProfile{name: "delta"})
-		forti := &FortiGateProfile{}
-		RegisterVendor(forti)
+		generic := &GenericProfile{}
+		RegisterVendor(generic)
 		RegisterVendor(&stubVendorProfile{name: "echo"})
 
-		// All 100 calls should return the same FortiGateProfile instance.
+		// All 100 calls should return the same GenericProfile instance.
 		first := DefaultVendor()
+		if first != generic {
+			t.Fatalf("DefaultVendor() = %v, want the registered GenericProfile", first)
+		}
 		for i := 0; i < 100; i++ {
 			got := DefaultVendor()
 			if got != first {
@@ -136,20 +145,57 @@ func TestDefaultVendor_StableOrder_AcrossCalls(t *testing.T) {
 	})
 }
 
-// TestDefaultVendor_FallbackWhenFortigateMissing verifies the second branch
-// of DefaultVendor: if "fortigate" is not registered, it returns *some*
+// TestDefaultVendor_FallbackWhenGenericMissing verifies the second branch
+// of DefaultVendor: if "generic" is not registered, it returns *some*
 // registered profile (any one) so the collector can still function with
-// a non-FortiGate fleet.
-func TestDefaultVendor_FallbackWhenFortigateMissing(t *testing.T) {
+// a registry that has no generic profile.
+func TestDefaultVendor_FallbackWhenGenericMissing(t *testing.T) {
 	withCleanVendorRegistry(t, func() {
 		pa := &PaloAltoProfile{}
 		RegisterVendor(pa)
 
 		got := DefaultVendor()
 		if got != pa {
-			t.Errorf("DefaultVendor() with no fortigate = %v, want PaloAltoProfile fallback", got)
+			t.Errorf("DefaultVendor() with no generic = %v, want PaloAltoProfile fallback", got)
 		}
 	})
+}
+
+// registeredVendorNames is the exact set of profiles the collector ships.
+// unifi and meraki (1.3.49) are standards-only profiles built from vendor docs
+// and untested on real hardware.
+var registeredVendorNames = []string{
+	"cisco_asa", "firewalla", "fortigate", "generic", "meraki", "opnsense",
+	"paloalto", "pfsense", "sonicwall", "unifi",
+}
+
+// TestVendorRegistry_RegisteredNames pins the production registry (the one
+// the init() functions fill) to the exact set above, so a profile cannot be
+// added, renamed or dropped without the docs (FEATURES.md, ARCHITECTURE.md,
+// CUSTOM-VENDOR.md) and the server's validVendors list being updated with it.
+// Every name must also round-trip through the resolver as itself: the vendor
+// name is what rules and capability profiles key on, so a clone of the
+// generic profile must come back under its own name, not as generic.
+func TestVendorRegistry_RegisteredNames(t *testing.T) {
+	vendorMu.RLock()
+	got := make([]string, 0, len(vendorRegistry))
+	for name, p := range vendorRegistry {
+		got = append(got, name)
+		if p.Name() != name {
+			t.Errorf("registry key %q holds profile named %q", name, p.Name())
+		}
+	}
+	vendorMu.RUnlock()
+	sort.Strings(got)
+	if !reflect.DeepEqual(got, registeredVendorNames) {
+		t.Fatalf("registered vendor profiles = %v, want exactly %v", got, registeredVendorNames)
+	}
+	s := &SNMPClient{} // resolveVendor does not touch connection state
+	for _, name := range registeredVendorNames {
+		if r := s.resolveVendor(name).Name(); r != name {
+			t.Errorf("resolveVendor(%q) = %q, want %q", name, r, name)
+		}
+	}
 }
 
 // TestIsValidPDU verifies the package-private filter that excludes

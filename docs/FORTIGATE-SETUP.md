@@ -73,5 +73,8 @@ configured but config backups never appear on the server.
 
 ## Vendor profile
 
-The collector's default vendor is FortiGate. Other vendors supported
-by the collector: see [FEATURES.md](FEATURES.md#vendor-profiles).
+Tag the device `fortigate` on the server: since 1.3.49 an empty or
+unknown vendor is polled with the standards-only generic profile (no
+FortiGate enterprise OIDs, no TFTP/SSH config backup), not as a FortiGate.
+Other vendors supported by the collector: see
+[FEATURES.md](FEATURES.md#vendor-profiles).

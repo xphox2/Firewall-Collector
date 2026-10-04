@@ -34,7 +34,7 @@ func TestScheduleConfigBackupWith_DebouncesSameCfgtid(t *testing.T) {
 	var fires int32
 	action := func() { atomic.AddInt32(&fires, 1) }
 
-	ev := &syslog.FortiEvent{Cfgtid: "100", Logid: syslog.LogidConfigObjAttr}
+	ev := syslog.ConfigChangeEvent{TxnID: "100", EventID: syslog.LogidConfigObjAttr}
 
 	// Five events within ~5ms, all sharing cfgtid=100 — should collapse to ONE fire.
 	for i := 0; i < 5; i++ {
@@ -66,7 +66,7 @@ func TestScheduleConfigBackupWith_LaterEventResetsTimer(t *testing.T) {
 	dev := relay.DeviceInfo{ID: 7, Name: "fw-test"}
 	var fires int32
 	action := func() { atomic.AddInt32(&fires, 1) }
-	ev := &syslog.FortiEvent{Cfgtid: "100", Logid: syslog.LogidConfigAttr}
+	ev := syslog.ConfigChangeEvent{TxnID: "100", EventID: syslog.LogidConfigAttr}
 
 	c.scheduleConfigBackupWith(dev, ev, testDebounce, action)
 	time.Sleep(testDebounce / 2) // halfway through the window
@@ -95,8 +95,8 @@ func TestScheduleConfigBackupWith_DifferentCfgtidsFireSeparately(t *testing.T) {
 	var fires int32
 	action := func() { atomic.AddInt32(&fires, 1) }
 
-	c.scheduleConfigBackupWith(dev, &syslog.FortiEvent{Cfgtid: "100"}, testDebounce, action)
-	c.scheduleConfigBackupWith(dev, &syslog.FortiEvent{Cfgtid: "200"}, testDebounce, action)
+	c.scheduleConfigBackupWith(dev, syslog.ConfigChangeEvent{TxnID: "100"}, testDebounce, action)
+	c.scheduleConfigBackupWith(dev, syslog.ConfigChangeEvent{TxnID: "200"}, testDebounce, action)
 
 	if !waitFor(testDebounce*4, func() bool { return atomic.LoadInt32(&fires) == 2 }) {
 		t.Errorf("expected 2 fires (one per distinct cfgtid), got %d", atomic.LoadInt32(&fires))
@@ -112,7 +112,7 @@ func TestScheduleConfigBackupWith_DifferentDevicesFireSeparately(t *testing.T) {
 
 	devA := relay.DeviceInfo{ID: 7, Name: "fw-a"}
 	devB := relay.DeviceInfo{ID: 8, Name: "fw-b"}
-	ev := &syslog.FortiEvent{Cfgtid: "100"}
+	ev := syslog.ConfigChangeEvent{TxnID: "100"}
 
 	c.scheduleConfigBackupWith(devA, ev, testDebounce, action)
 	c.scheduleConfigBackupWith(devB, ev, testDebounce, action)
@@ -130,7 +130,7 @@ func TestScheduleConfigBackupWith_EmptyCfgtidStillDebounces(t *testing.T) {
 	dev := relay.DeviceInfo{ID: 7, Name: "fw-test"}
 	var fires int32
 	action := func() { atomic.AddInt32(&fires, 1) }
-	ev := &syslog.FortiEvent{Cfgtid: ""} // explicitly empty
+	ev := syslog.ConfigChangeEvent{TxnID: ""} // explicitly empty
 
 	for i := 0; i < 3; i++ {
 		c.scheduleConfigBackupWith(dev, ev, testDebounce, action)

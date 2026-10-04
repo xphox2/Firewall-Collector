@@ -11,7 +11,7 @@ func TestParseFortiEventConfigObjAttr(t *testing.T) {
 	msg := &relay.SyslogMessage{
 		Message: `date=2025-04-10 time=05:01:53 logid="0100044547" type="event" subtype="system" level="information" vd="root" user="admin" ui="GUI(10.32.22.115)" action="Add" cfgtid=126746708 cfgpath="firewall.policy" cfgobj="8" cfgattr="name[testconfig]"`,
 	}
-	ev := ParseFortiEvent(msg)
+	ev := parseFortiEvent(msg)
 	if ev == nil {
 		t.Fatal("expected non-nil FortiEvent")
 	}
@@ -45,7 +45,7 @@ func TestParseFortiEventConfigAttr(t *testing.T) {
 	msg := &relay.SyslogMessage{
 		Message: `date=2025-04-10 time=05:23:12 logid="0100044546" type="event" subtype="system" level="information" ui="jsconsole(10.32.22.115)" action="Edit" cfgtid=821297153 cfgpath="system.global" cfgattr="admintimeout[5->120]" msg="Edit system.global"`,
 	}
-	ev := ParseFortiEvent(msg)
+	ev := parseFortiEvent(msg)
 	if ev == nil {
 		t.Fatal("expected non-nil FortiEvent")
 	}
@@ -61,7 +61,7 @@ func TestParseFortiEventNonConfigEvent(t *testing.T) {
 	msg := &relay.SyslogMessage{
 		Message: `logid="0102043008" type="event" subtype="user" action="login" user="admin"`,
 	}
-	ev := ParseFortiEvent(msg)
+	ev := parseFortiEvent(msg)
 	if ev == nil {
 		t.Fatal("expected non-nil FortiEvent (any logid produces one)")
 	}
@@ -74,17 +74,17 @@ func TestParseFortiEventNoLogid(t *testing.T) {
 	msg := &relay.SyslogMessage{
 		Message: `<14>some random non-FortiGate syslog line`,
 	}
-	ev := ParseFortiEvent(msg)
+	ev := parseFortiEvent(msg)
 	if ev != nil {
 		t.Errorf("non-FortiGate body must return nil, got %+v", ev)
 	}
 }
 
 func TestParseFortiEventEmptyMessage(t *testing.T) {
-	if ev := ParseFortiEvent(&relay.SyslogMessage{Message: ""}); ev != nil {
+	if ev := parseFortiEvent(&relay.SyslogMessage{Message: ""}); ev != nil {
 		t.Errorf("empty body must return nil, got %+v", ev)
 	}
-	if ev := ParseFortiEvent(nil); ev != nil {
+	if ev := parseFortiEvent(nil); ev != nil {
 		t.Errorf("nil msg must return nil, got %+v", ev)
 	}
 }

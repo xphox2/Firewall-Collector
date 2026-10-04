@@ -19,13 +19,14 @@ type ConfigBackupClient interface {
 // vendor. FortiGate drives the FortiOS CLI; OPNsense and pfSense read
 // /conf/config.xml over a FreeBSD shell (differing only in the XML root element,
 // which is why they are separate clients); Palo Alto (PAN-OS) captures
-// `show config running` XML. An empty vendor defaults to FortiGate (legacy
-// behavior, same as the SNMP vendor resolver). Unknown vendors return an error
-// so the caller logs-and-skips rather than mis-driving a device with the wrong
-// CLI dialect.
+// `show config running` XML. Unknown vendors — and an empty one, since 1.3.49
+// — return an error so the caller logs-and-skips rather than mis-driving a
+// device with the wrong CLI dialect: an unclassified device is "generic" on
+// both sides now (server 0.11.290 backfilled every empty vendor), and there is
+// no generic CLI to drive.
 func NewConfigBackupClient(vendor, host string, port int, username, password string) (ConfigBackupClient, error) {
 	switch vendor {
-	case "fortigate", "":
+	case "fortigate":
 		return NewFortiGateClient(host, port, username, password), nil
 	case "opnsense":
 		return NewOPNsenseClient(host, port, username, password), nil

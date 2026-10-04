@@ -245,18 +245,19 @@ func (s *SNMPClient) GetRaw(oids []string) (string, error) {
 	}
 }
 
+// resolveVendor maps a device's vendor string to its registered profile. An
+// empty or unknown vendor resolves to the standards-only generic profile (since
+// 1.3.49, matching the server's 0.11.290 default) rather than polling FortiGate
+// enterprise OIDs against a box that may not be one. Empty is no longer a
+// FortiGate alias: the server backfilled every empty vendor to its real value
+// before this build (migration v71), so a device that still reports "" has
+// never been classified and is polled as what it is known to be — a generic
+// SNMP agent.
 func (s *SNMPClient) resolveVendor(vendor string) VendorProfile {
 	if vendor == "" {
-		// Legacy/empty vendor values have always meant FortiGate
-		// (server-side Device.Vendor defaults to "fortigate") — keep that mapping.
-		vendor = "fortigate"
+		vendor = "generic"
 	}
 	profile := GetVendorProfile(vendor)
-	if profile == nil {
-		// Unknown vendor strings resolve to the standards-only generic
-		// profile rather than polling FortiGate enterprise OIDs.
-		profile = GetVendorProfile("generic")
-	}
 	if profile == nil {
 		profile = DefaultVendor()
 	}

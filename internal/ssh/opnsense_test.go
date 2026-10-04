@@ -13,7 +13,7 @@ func TestNewConfigBackupClient_VendorDispatch(t *testing.T) {
 		wantPaloAlto  bool
 	}{
 		{vendor: "fortigate", wantFortiGate: true},
-		{vendor: "", wantFortiGate: true}, // legacy default
+		{vendor: "", wantErr: true}, // no default: an unclassified device is generic, which has no CLI
 		{vendor: "opnsense", wantOPNsense: true},
 		{vendor: "paloalto", wantPaloAlto: true},
 		{vendor: "pfsense", wantPfSense: true},
