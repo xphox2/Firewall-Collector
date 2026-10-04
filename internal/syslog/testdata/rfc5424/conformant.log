@@ -1,0 +1,7 @@
+# RFC 5424 (synthetic). Conformant `<PRI>1 ` lines plus the lenient `<PRI> 1 ` spelling the old parser was built for.
+<13>1 2025-04-10T05:01:53Z fw-example-01 app 42 ID1 - body
+<165>1 2025-04-10T05:01:53.003Z fw-example-02 evntslog - ID47 [exampleSDID@32473 iut="3" eventSource="Application" eventID="1011"] An application event log entry
+<34>1 2025-04-10T05:01:53.000000-07:00 fw-example-01 sshd 123 - - Failed password for invalid user admin from 203.0.113.5 port 44321 ssh2
+<189> 1 2025-04-10T05:01:53.000000-07:00 FGT-1000 fglog 1234 MSG-001 [origin] date=2025-04-10 time=05:01:53 logid="0100044547"
+<13>1 - fw-example-01 app - - - no timestamp
+<13>1 2025-04-10T05:01:53Z fw-example-01

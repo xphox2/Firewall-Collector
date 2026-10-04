@@ -28,6 +28,7 @@
 | Per-device vendor OID profile (FortiGate, Palo Alto, Cisco ASA, SonicWall, pfSense, OPNsense, Firewalla, generic Linux/BSD VPN) | Stable | [Probe] | 1.0.0 |
 | SNMP trap receiver (UDP/162, V1 enterprise + V2c specific-trap, community filter) | Stable | [Probe] | 1.0.0 |
 | Syslog receiver — TCP + UDP, RFC 5424 + FortiGate hostname/SD device-ID extraction | Stable | [Probe] | 1.0.0 |
+| Syslog framing dispatcher — FortiOS key=value, conformant RFC 5424, RFC 3164 (BSD), Meraki epoch framing, CEF body post-flag (UniFi SIEM stream); every row carries a `format` hint (`fortios_kv`, `rfc5424`, `rfc3164`, `meraki`, `cef`, `raw`). UniFi/Meraki built from documented formats, untested on real hardware | Stable | [Probe] | 1.3.48 |
 | sFlow v5 receiver (UDP/6343, formats 1 and 3, Ethernet + 802.1Q VLAN, IPv4/IPv6 + TCP/UDP) | Stable | [Probe] | 1.0.0 |
 | ICMP ping collector (latency + loss, 10-concurrent semaphore) | Stable | [Probe] | 1.0.0 |
 | SSH config + telemetry polling (FortiGate: checksum, full config, process top, interface list, sensor list, performance, VPN phase-1/phase-2, HA) | Stable | [Probe] | 1.0.0 |

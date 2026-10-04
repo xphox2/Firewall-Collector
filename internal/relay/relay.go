@@ -190,6 +190,10 @@ type SyslogMessage struct {
 	Facility       int       `json:"facility"`
 	Severity       int       `json:"severity"`
 	SourceIP       string    `json:"source_ip"`
+	// Format is the syslog framing the collector parsed the line with
+	// (fortios_kv, rfc5424, rfc3164, meraki, cef, raw). Additive hint, omitted
+	// when empty; an older server ignores the key. Added 1.3.48.
+	Format string `json:"format,omitempty"`
 }
 
 type FlowSample struct {

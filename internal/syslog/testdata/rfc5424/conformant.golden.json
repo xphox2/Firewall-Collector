@@ -1,0 +1,79 @@
+[
+  {
+    "line": "\u003c13\u003e1 2025-04-10T05:01:53Z fw-example-01 app 42 ID1 - body",
+    "format": "rfc5424",
+    "timestamp": "2025-04-10T05:01:53Z",
+    "hostname": "fw-example-01",
+    "app_name": "app",
+    "process_id": "42",
+    "message_id": "ID1",
+    "message": "body",
+    "priority": 13,
+    "facility": 1,
+    "severity": 5
+  },
+  {
+    "line": "\u003c165\u003e1 2025-04-10T05:01:53.003Z fw-example-02 evntslog - ID47 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] An application event log entry",
+    "format": "rfc5424",
+    "timestamp": "2025-04-10T05:01:53.003Z",
+    "hostname": "fw-example-02",
+    "app_name": "evntslog",
+    "process_id": "-",
+    "message_id": "ID47",
+    "structured_data": "[exampleSDID@32473",
+    "message": "iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] An application event log entry",
+    "priority": 165,
+    "facility": 20,
+    "severity": 5
+  },
+  {
+    "line": "\u003c34\u003e1 2025-04-10T05:01:53.000000-07:00 fw-example-01 sshd 123 - - Failed password for invalid user admin from 203.0.113.5 port 44321 ssh2",
+    "format": "rfc5424",
+    "timestamp": "2025-04-10T05:01:53-07:00",
+    "hostname": "fw-example-01",
+    "app_name": "sshd",
+    "process_id": "123",
+    "message_id": "-",
+    "message": "Failed password for invalid user admin from 203.0.113.5 port 44321 ssh2",
+    "priority": 34,
+    "facility": 4,
+    "severity": 2
+  },
+  {
+    "line": "\u003c189\u003e 1 2025-04-10T05:01:53.000000-07:00 FGT-1000 fglog 1234 MSG-001 [origin] date=2025-04-10 time=05:01:53 logid=\"0100044547\"",
+    "format": "rfc5424",
+    "timestamp": "2025-04-10T05:01:53-07:00",
+    "hostname": "FGT-1000",
+    "app_name": "fglog",
+    "process_id": "1234",
+    "message_id": "MSG-001",
+    "structured_data": "[origin]",
+    "message": "date=2025-04-10 time=05:01:53 logid=\"0100044547\"",
+    "priority": 189,
+    "facility": 23,
+    "severity": 5,
+    "device_id": 1000
+  },
+  {
+    "line": "\u003c13\u003e1 - fw-example-01 app - - - no timestamp",
+    "format": "rfc5424",
+    "timestamp": "2025-10-12T00:00:00Z",
+    "hostname": "fw-example-01",
+    "app_name": "app",
+    "process_id": "-",
+    "message_id": "-",
+    "message": "no timestamp",
+    "priority": 13,
+    "facility": 1,
+    "severity": 5
+  },
+  {
+    "line": "\u003c13\u003e1 2025-04-10T05:01:53Z fw-example-01",
+    "format": "rfc5424",
+    "timestamp": "2025-04-10T05:01:53Z",
+    "hostname": "fw-example-01",
+    "priority": 13,
+    "facility": 1,
+    "severity": 5
+  }
+]

@@ -1,0 +1,50 @@
+[
+  {
+    "line": "\u003c189\u003edate=2025-04-10 time=05:01:53 devname=\"fw-example-01\" devid=\"FGT60FTK00000000\" eventtime=1744286513000000000 tz=\"-0700\" logid=\"0000000013\" type=\"traffic\" subtype=\"forward\" level=\"notice\" vd=\"root\" srcip=192.0.2.10 srcport=51234 srcintf=\"port1\" srcintfrole=\"lan\" dstip=198.51.100.7 dstport=443 dstintf=\"port2\" dstintfrole=\"wan\" sessionid=12345 proto=6 action=\"accept\" policyid=1 policytype=\"policy\" service=\"HTTPS\" sentbyte=1200 rcvdbyte=5400 duration=12",
+    "format": "fortios_kv",
+    "timestamp": "2025-04-10T12:01:53Z",
+    "hostname": "fw-example-01",
+    "app_name": "traffic",
+    "message_id": "0000000013",
+    "message": "date=2025-04-10 time=05:01:53 devname=\"fw-example-01\" devid=\"FGT60FTK00000000\" eventtime=1744286513000000000 tz=\"-0700\" logid=\"0000000013\" type=\"traffic\" subtype=\"forward\" level=\"notice\" vd=\"root\" srcip=192.0.2.10 srcport=51234 srcintf=\"port1\" srcintfrole=\"lan\" dstip=198.51.100.7 dstport=443 dstintf=\"port2\" dstintfrole=\"wan\" sessionid=12345 proto=6 action=\"accept\" policyid=1 policytype=\"policy\" service=\"HTTPS\" sentbyte=1200 rcvdbyte=5400 duration=12",
+    "priority": 189,
+    "facility": 23,
+    "severity": 5
+  },
+  {
+    "line": "\u003c189\u003edate=2025-04-10 time=05:01:54 devname=\"fw-example-01\" devid=\"FGT60FTK00000000\" eventtime=1744286514000000000 tz=\"-0700\" logid=\"0000000013\" type=\"traffic\" subtype=\"forward\" level=\"notice\" vd=\"root\" srcip=203.0.113.5 srcport=44321 srcintf=\"port2\" dstip=192.0.2.1 dstport=22 dstintf=\"port1\" proto=6 action=\"deny\" policyid=0 service=\"SSH\"",
+    "format": "fortios_kv",
+    "timestamp": "2025-04-10T12:01:54Z",
+    "hostname": "fw-example-01",
+    "app_name": "traffic",
+    "message_id": "0000000013",
+    "message": "date=2025-04-10 time=05:01:54 devname=\"fw-example-01\" devid=\"FGT60FTK00000000\" eventtime=1744286514000000000 tz=\"-0700\" logid=\"0000000013\" type=\"traffic\" subtype=\"forward\" level=\"notice\" vd=\"root\" srcip=203.0.113.5 srcport=44321 srcintf=\"port2\" dstip=192.0.2.1 dstport=22 dstintf=\"port1\" proto=6 action=\"deny\" policyid=0 service=\"SSH\"",
+    "priority": 189,
+    "facility": 23,
+    "severity": 5
+  },
+  {
+    "line": "\u003c188\u003edate=2025-04-10 time=05:02:00 devname=\"fw-example-01\" devid=\"FGT60FTK00000000\" eventtime=1744286520 tz=\"-0700\" logid=\"0100044547\" type=\"event\" subtype=\"system\" level=\"information\" vd=\"root\" logdesc=\"Object attribute configured\" user=\"alice\" ui=\"ssh(192.0.2.20)\" action=\"Edit\" cfgtid=1 cfgpath=\"firewall.policy\" cfgobj=\"1\" cfgattr=\"comments[-\u003etest]\" msg=\"Edit firewall.policy 1\"",
+    "format": "fortios_kv",
+    "timestamp": "2025-04-10T12:02:00Z",
+    "hostname": "fw-example-01",
+    "app_name": "event",
+    "message_id": "0100044547",
+    "message": "date=2025-04-10 time=05:02:00 devname=\"fw-example-01\" devid=\"FGT60FTK00000000\" eventtime=1744286520 tz=\"-0700\" logid=\"0100044547\" type=\"event\" subtype=\"system\" level=\"information\" vd=\"root\" logdesc=\"Object attribute configured\" user=\"alice\" ui=\"ssh(192.0.2.20)\" action=\"Edit\" cfgtid=1 cfgpath=\"firewall.policy\" cfgobj=\"1\" cfgattr=\"comments[-\u003etest]\" msg=\"Edit firewall.policy 1\"",
+    "priority": 188,
+    "facility": 23,
+    "severity": 4
+  },
+  {
+    "line": "\u003c189\u003edate=2025-04-10 time=05:02:01 devid=\"FGT60FTK00000000\" logid=\"0000000013\" type=\"traffic\" subtype=\"forward\" srcip=192.0.2.11 dstip=198.51.100.8 action=\"accept\"",
+    "format": "fortios_kv",
+    "timestamp": "2025-10-12T00:00:00Z",
+    "hostname": "FGT60FTK00000000",
+    "app_name": "traffic",
+    "message_id": "0000000013",
+    "message": "date=2025-04-10 time=05:02:01 devid=\"FGT60FTK00000000\" logid=\"0000000013\" type=\"traffic\" subtype=\"forward\" srcip=192.0.2.11 dstip=198.51.100.8 action=\"accept\"",
+    "priority": 189,
+    "facility": 23,
+    "severity": 5
+  }
+]

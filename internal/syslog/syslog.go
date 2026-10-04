@@ -468,33 +468,53 @@ func (u *UDPSyslogReceiver) serveConn(conn *net.UDPConn) error {
 	return nil
 }
 
-// --- RFC 5424 Parser ---
+// --- Syslog framing dispatcher ---
 
+// ParseRFC5424 parses one syslog datagram. The name is historical: it is the
+// framing dispatcher (see detectFraming) and handles FortiOS key=value,
+// conformant and lenient RFC 5424, RFC 3164 (BSD), Meraki epoch-framed lines
+// and, as a last resort, any line with a valid PRI. Every returned message has
+// Format set.
 func ParseRFC5424(data []byte) (*relay.SyslogMessage, error) {
+	return parseSyslog(data, time.Now())
+}
+
+// parseSyslog is ParseRFC5424 with the clock injected: now is the fallback
+// timestamp and supplies the year for RFC 3164 lines.
+func parseSyslog(data []byte, now time.Time) (*relay.SyslogMessage, error) {
 	if len(data) == 0 {
 		return nil, nil
 	}
 
 	msg := &relay.SyslogMessage{
-		Timestamp: time.Now(),
+		Timestamp: now,
 	}
 
-	parts := bytes.SplitN(data, []byte(" "), 11)
-	if len(parts) < 3 {
-		return nil, fmt.Errorf("invalid syslog format: too few parts")
-	}
-
-	priority, err := parsePriority(parts[0])
+	priEnd := bytes.IndexByte(data, '>') + 1
+	priority, err := parsePriority(data[:priEnd])
 	if err != nil {
 		return nil, err
+	}
+	if priEnd >= len(data) {
+		return nil, fmt.Errorf("invalid syslog format: nothing after PRI")
 	}
 	msg.Priority = priority.facility*8 + priority.severity
 	msg.Facility = priority.facility
 	msg.Severity = priority.severity
 
+	// Before the dispatcher, everything that was not FortiOS went through one
+	// positional RFC 5424 split that read parts[1] as VERSION and parts[2] as
+	// TIMESTAMP. That was only right for the lenient `<PRI> 1 ...` spelling:
+	// a conformant `<PRI>1 TS HOST ...` line was shifted one column (the
+	// timestamp landed in the VERSION slot and HOST was fed to parseTimestamp),
+	// an RFC 3164 line had its TAG in app_name and the first message word in
+	// process_id, and a Meraki epoch never parsed — all three fell back to
+	// time.Now(). The byte gates in detectFraming route each family to its own
+	// column parser instead.
+	//
 	// FortiOS traffic/event logs are key=value, not RFC 5424, and running them
-	// through the positional parse below shredded every field one column left of
-	// where it belonged: hostname held `devid="..."`, app_name held
+	// through a positional parse shredded every field one column left of where
+	// it belonged: hostname held `devid="..."`, app_name held
 	// `eventtime=<nanoseconds>` (unique per message), process_id held `tz="..."`,
 	// message_id held `logid="..."`, structured_data held `type="..."`, and the
 	// message began mid-record at `subtype=`.
@@ -504,54 +524,32 @@ func ParseRFC5424(data []byte) (*relay.SyslogMessage, error) {
 	// one summary row per raw row — and the nanosecond value wasted ~28 bytes on
 	// each of ~92M production rows.
 	//
-	// The gate is STRUCTURAL, not `logid=`. FortiOS writes `date=` immediately
-	// after the PRI with no space, where RFC 5424 has ` VERSION TIMESTAMP`.
-	// Gating on `logid=` would be wrong: a genuine RFC 5424 line may carry
-	// `logid=` in its body — TestParseRFC5424_FortiGateTypical's fixture does
-	// exactly that — and routing it here would break its parse.
-	if body, ok := fortiOSBody(data); ok {
-		parseFortiOSKV(msg, body)
-		return msg, nil
+	// The FortiOS gate is STRUCTURAL, not `logid=`. FortiOS writes `date=`
+	// immediately after the PRI with no space, where RFC 5424 has ` VERSION
+	// TIMESTAMP`. Gating on `logid=` would be wrong: a genuine RFC 5424 line may
+	// carry `logid=` in its body — TestParseRFC5424_FortiGateTypical's fixture
+	// does exactly that — and routing it here would break its parse.
+	format, bodyStart := detectFraming(data, priEnd)
+	body := data[bodyStart:]
+	switch format {
+	case FormatFortiOSKV:
+		parseFortiOSKV(msg, string(body))
+	case FormatRFC5424:
+		parseRFC5424Strict(msg, body, now)
+	case FormatRFC3164:
+		parseBSD(msg, body, now)
+	case FormatMeraki:
+		parseMeraki(msg, body, now)
+	default:
+		msg.Message = string(body)
 	}
 
-	version := 1
-	if len(parts) > 1 && len(parts[1]) > 0 {
-		if v := bytesToInt(parts[1]); v > 0 {
-			version = v
-		}
+	// CEF is a body encoding, not a header family: keep the columns of whatever
+	// header carried it and only relabel the row.
+	if format != FormatFortiOSKV && isCEFBody(msg.Message) {
+		format = FormatCEF
 	}
-
-	if len(parts) > 2 {
-		ts, err := parseTimestamp(version, string(parts[2]))
-		if err != nil {
-			msg.Timestamp = time.Now()
-		} else {
-			msg.Timestamp = ts
-		}
-	}
-
-	if len(parts) > 3 {
-		msg.Hostname = string(parts[3])
-	}
-	if len(parts) > 4 {
-		msg.AppName = string(parts[4])
-	}
-	if len(parts) > 5 {
-		msg.ProcessID = string(parts[5])
-	}
-	if len(parts) > 6 {
-		msg.MessageID = string(parts[6])
-	}
-	if len(parts) > 7 {
-		structuredData := string(parts[7])
-		if structuredData != "-" {
-			msg.StructuredData = structuredData
-			msg.DeviceID = extractDeviceID(msg.Hostname, structuredData)
-		}
-	}
-	if len(parts) > 8 {
-		msg.Message = string(bytes.Join(parts[8:], []byte(" ")))
-	}
+	msg.Format = string(format)
 
 	return msg, nil
 }
@@ -593,30 +591,6 @@ func parsePriority(b []byte) (priorityResult, error) {
 		facility: val / 8,
 		severity: val % 8,
 	}, nil
-}
-
-func parseTimestamp(version int, ts string) (time.Time, error) {
-	ts = strings.TrimSpace(ts)
-	if ts == "-" || ts == "" {
-		return time.Now(), nil
-	}
-
-	formats := []string{
-		"2006-01-02T15:04:05.000000Z07:00",
-		"2006-01-02T15:04:05.000Z",
-		"2006-01-02T15:04:05Z07:00",
-		"2006-01-02T15:04:05Z",
-		"Jan  2 15:04:05",
-		"2006-01-02 15:04:05",
-	}
-
-	for _, format := range formats {
-		if t, err := time.Parse(format, ts); err == nil {
-			return t, nil
-		}
-	}
-
-	return time.Now(), fmt.Errorf("failed to parse timestamp: %s", ts)
 }
 
 func extractDeviceID(hostname, structuredData string) uint {

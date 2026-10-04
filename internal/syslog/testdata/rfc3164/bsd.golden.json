@@ -1,0 +1,98 @@
+[
+  {
+    "line": "\u003c34\u003eOct 11 22:14:15 fw-example-01 sshd[123]: Failed password for invalid user admin from 203.0.113.5 port 44321 ssh2",
+    "format": "rfc3164",
+    "timestamp": "2025-10-11T22:14:15Z",
+    "hostname": "fw-example-01",
+    "app_name": "sshd",
+    "process_id": "123",
+    "message": "Failed password for invalid user admin from 203.0.113.5 port 44321 ssh2",
+    "priority": 34,
+    "facility": 4,
+    "severity": 2
+  },
+  {
+    "line": "\u003c4\u003eOct 11 22:14:15 fw-example-01 kernel: [WAN_LOCAL-D-2147483647] DESCR=\"[WAN_LOCAL]Drop All Other Traf\" IN=eth4 OUT= MAC=00:00:5e:00:53:01:00:00:5e:00:53:02:08:00 SRC=203.0.113.5 DST=192.0.2.1 LEN=40 TOS=0x00 PREC=0x00 TTL=52 ID=0 DF PROTO=TCP SPT=44321 DPT=22 WINDOW=1024 RES=0x00 SYN URGP=0",
+    "format": "rfc3164",
+    "timestamp": "2025-10-11T22:14:15Z",
+    "hostname": "fw-example-01",
+    "app_name": "kernel",
+    "message": "[WAN_LOCAL-D-2147483647] DESCR=\"[WAN_LOCAL]Drop All Other Traf\" IN=eth4 OUT= MAC=00:00:5e:00:53:01:00:00:5e:00:53:02:08:00 SRC=203.0.113.5 DST=192.0.2.1 LEN=40 TOS=0x00 PREC=0x00 TTL=52 ID=0 DF PROTO=TCP SPT=44321 DPT=22 WINDOW=1024 RES=0x00 SYN URGP=0",
+    "priority": 4,
+    "facility": 0,
+    "severity": 4
+  },
+  {
+    "line": "\u003c4\u003eOct 11 22:14:16 fw-example-01 kernel: [LAN_IN-A-3001] DESCR=\"allow lan to wan\" IN=br0 OUT=eth4 MAC=00:00:5e:00:53:03:00:00:5e:00:53:04:08:00 SRC=192.0.2.10 DST=198.51.100.7 LEN=60 TOS=0x00 PREC=0x00 TTL=63 ID=54321 DF PROTO=UDP SPT=51234 DPT=53 LEN=40",
+    "format": "rfc3164",
+    "timestamp": "2025-10-11T22:14:16Z",
+    "hostname": "fw-example-01",
+    "app_name": "kernel",
+    "message": "[LAN_IN-A-3001] DESCR=\"allow lan to wan\" IN=br0 OUT=eth4 MAC=00:00:5e:00:53:03:00:00:5e:00:53:04:08:00 SRC=192.0.2.10 DST=198.51.100.7 LEN=60 TOS=0x00 PREC=0x00 TTL=63 ID=54321 DF PROTO=UDP SPT=51234 DPT=53 LEN=40",
+    "priority": 4,
+    "facility": 0,
+    "severity": 4
+  },
+  {
+    "line": "\u003c30\u003eOct  1 05:01:53 fw-example-01 dnsmasq[456]: query[A] www.example.com from 192.0.2.20",
+    "format": "rfc3164",
+    "timestamp": "2025-10-01T05:01:53Z",
+    "hostname": "fw-example-01",
+    "app_name": "dnsmasq",
+    "process_id": "456",
+    "message": "query[A] www.example.com from 192.0.2.20",
+    "priority": 30,
+    "facility": 3,
+    "severity": 6
+  },
+  {
+    "line": "\u003c30\u003eOct  1 05:01:53 fw-example-01 dnsmasq-dhcp[456]: DHCPACK(br0) 192.0.2.20 00:00:5e:00:53:14 alice-laptop",
+    "format": "rfc3164",
+    "timestamp": "2025-10-01T05:01:53Z",
+    "hostname": "fw-example-01",
+    "app_name": "dnsmasq-dhcp",
+    "process_id": "456",
+    "message": "DHCPACK(br0) 192.0.2.20 00:00:5e:00:53:14 alice-laptop",
+    "priority": 30,
+    "facility": 3,
+    "severity": 6
+  },
+  {
+    "line": "\u003c13\u003eOct 11 22:14:17 fw-example-01 message without a tag",
+    "format": "rfc3164",
+    "timestamp": "2025-10-11T22:14:17Z",
+    "hostname": "fw-example-01",
+    "message": "message without a tag",
+    "priority": 13,
+    "facility": 1,
+    "severity": 5
+  },
+  {
+    "line": "\u003c13\u003eOct 11 22:14:18 fw-example-01 cron: ",
+    "format": "rfc3164",
+    "timestamp": "2025-10-11T22:14:18Z",
+    "hostname": "fw-example-01",
+    "app_name": "cron",
+    "priority": 13,
+    "facility": 1,
+    "severity": 5
+  },
+  {
+    "line": "\u003c13\u003eOct 11 22:14:19 fw-example-01",
+    "format": "rfc3164",
+    "timestamp": "2025-10-11T22:14:19Z",
+    "hostname": "fw-example-01",
+    "priority": 13,
+    "facility": 1,
+    "severity": 5
+  },
+  {
+    "line": "\u003c13\u003eOct 11 22:14",
+    "format": "rfc3164",
+    "timestamp": "2025-10-12T00:00:00Z",
+    "message": "Oct 11 22:14",
+    "priority": 13,
+    "facility": 1,
+    "severity": 5
+  }
+]

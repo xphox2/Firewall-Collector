@@ -1,0 +1,56 @@
+[
+  {
+    "line": "\u003c13\u003esomething without a recognised header",
+    "format": "raw",
+    "timestamp": "2025-10-12T00:00:00Z",
+    "message": "something without a recognised header",
+    "priority": 13,
+    "facility": 1,
+    "severity": 5
+  },
+  {
+    "line": "\u003c0\u003e- - - - - - -",
+    "format": "raw",
+    "timestamp": "2025-10-12T00:00:00Z",
+    "message": "- - - - - - -",
+    "priority": 0,
+    "facility": 0,
+    "severity": 0
+  },
+  {
+    "line": "\u003c13\u003e  two leading spaces",
+    "format": "raw",
+    "timestamp": "2025-10-12T00:00:00Z",
+    "message": "  two leading spaces",
+    "priority": 13,
+    "facility": 1,
+    "severity": 5
+  },
+  {
+    "line": "\u003c13\u003e2025-04-10T05:01:53Z fw-example-01 no version token",
+    "format": "raw",
+    "timestamp": "2025-10-12T00:00:00Z",
+    "message": "2025-04-10T05:01:53Z fw-example-01 no version token",
+    "priority": 13,
+    "facility": 1,
+    "severity": 5
+  },
+  {
+    "line": "\u003c13\u003e1 not-a-timestamp fw-example-01 app - - - body",
+    "format": "raw",
+    "timestamp": "2025-10-12T00:00:00Z",
+    "message": "1 not-a-timestamp fw-example-01 app - - - body",
+    "priority": 13,
+    "facility": 1,
+    "severity": 5
+  },
+  {
+    "line": "\u003c13\u003eFoo 11 22:14:15 fw-example-01 not a month",
+    "format": "raw",
+    "timestamp": "2025-10-12T00:00:00Z",
+    "message": "Foo 11 22:14:15 fw-example-01 not a month",
+    "priority": 13,
+    "facility": 1,
+    "severity": 5
+  }
+]

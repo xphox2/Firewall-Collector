@@ -10,7 +10,7 @@
 > admin UI, and runbook.
 
 [![CI](https://img.shields.io/badge/CI-passing-brightgreen)](https://github.com/xphox2/Firewall-Collector/actions)
-[![Version](https://img.shields.io/badge/version-1.3.47-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.3.48-blue)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.25.0+-00ADD8)](go.mod)
 
@@ -47,9 +47,10 @@ AUDIT-NNN row exists.
 - **[Probe] SNMP trap receiver** (UDP/162). V1 enterprise + V2c
   specific-trap OID classification with severity. Community string
   enforcement, goroutine-per-trap, panic-recovery.
-- **[Probe] Syslog receiver** (TCP + UDP, 514). RFC 5424 parser with 6
-  timestamp formats, FortiGate hostname + structured-data device-ID
-  extraction.
+- **[Probe] Syslog receiver** (TCP + UDP, 514). Syslog framing dispatcher:
+  FortiOS key=value, RFC 5424, RFC 3164 (BSD), Meraki epoch-framed and CEF
+  bodies (UniFi SIEM stream), each labelled with a `format` hint on the
+  wire; FortiGate hostname + structured-data device-ID extraction.
 - **[Probe] sFlow v5 receiver** (UDP/6343). Ethernet + 802.1Q VLAN,
   IPv4/IPv6 + TCP/UDP. `FuzzParseSFlowDatagram` target.
 - **[Probe] ICMP ping collector** (latency + loss, 10-concurrent
