@@ -1,0 +1,11 @@
+# Valid PRI, no recognised header: whole body is the message, timestamp is the receive time.
+<13>something without a recognised header
+<0>- - - - - - -
+<13>  two leading spaces
+<13>2025-04-10T05:01:53Z fw-example-01 no version token
+<13>1 not-a-timestamp fw-example-01 app - - - body
+<13>Foo 11 22:14:15 fw-example-01 not a month
+<13>Oct 11 22:14
+<13>Oct 11 22:14:15x fw-example-01 timestamp glued to the next token
+<13>Oct 32 22:14:15 fw-example-01 impossible day
+<13>Oct 11 22:14:15fw-example-01

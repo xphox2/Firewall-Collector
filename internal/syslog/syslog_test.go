@@ -183,34 +183,51 @@ func TestParseRFC5424_FortiGateTypical(t *testing.T) {
 }
 
 func TestParseRFC5424_BSD3164Format(t *testing.T) {
-	// BSD-style syslog lines (RFC 3164) lack the RFC 5424 VERSION field.
-	// The parser splits on space and grabs <PRI>Oct as the first token
-	// (the closing > of PRI is not followed by a space, so the timestamp
-	// month ends up glued to the priority). The version slot then gets
-	// the day-of-month, the timestamp slot gets HH:MM:SS alone, and
-	// parseTimestamp can't make sense of any of the formats it tries
-	// (none match a bare "22:14:15") and falls back to time.Now().
-	// The line is still "accepted" — no hard error is returned — but
-	// every metadata field after PRI is mis-aligned. This test pins
-	// that current best-effort behaviour so it can't silently change.
-	line := `<34>Oct 11 22:14:15 fw-host sshd[123]: Failed password for invalid user admin from 10.0.0.1`
+	// BSD-style syslog lines (RFC 3164) lack the RFC 5424 VERSION field and
+	// carry a year-less `Mmm dd hh:mm:ss` timestamp. Before the framing
+	// dispatcher the positional parser split on spaces: the TAG landed in
+	// app_name as `sshd[123]:`, the first message word in process_id, and
+	// parseTimestamp was handed a bare `22:14:15` and fell back to time.Now().
+	// The dispatcher routes the line to parseBSD; the year comes from the
+	// injected clock.
+	now := time.Date(2025, 10, 12, 0, 0, 0, 0, time.UTC)
+	line := `<34>Oct 11 22:14:15 fw-example-01 sshd[123]: Failed password for invalid user admin from 203.0.113.5`
 
-	msg, err := ParseRFC5424([]byte(line))
+	msg, err := parseSyslog([]byte(line), now)
 	if err != nil {
-		t.Fatalf("BSD-style line should not return error (falls back to time.Now()), got: %v", err)
+		t.Fatalf("BSD-style line should not return error, got: %v", err)
 	}
 	if msg == nil {
 		t.Fatal("expected non-nil message")
 	}
 
 	if msg.Priority != 34 {
-		t.Errorf("Priority: got %d, want 34 (best-effort BSD extraction)", msg.Priority)
+		t.Errorf("Priority: got %d, want 34", msg.Priority)
 	}
 	if msg.Facility != 4 {
 		t.Errorf("Facility: got %d, want 4 (34/8)", msg.Facility)
 	}
 	if msg.Severity != 2 {
 		t.Errorf("Severity: got %d, want 2 (34%%8)", msg.Severity)
+	}
+	if msg.Hostname != "fw-example-01" {
+		t.Errorf("Hostname: got %q, want %q", msg.Hostname, "fw-example-01")
+	}
+	if msg.AppName != "sshd" {
+		t.Errorf("AppName: got %q, want %q", msg.AppName, "sshd")
+	}
+	if msg.ProcessID != "123" {
+		t.Errorf("ProcessID: got %q, want %q", msg.ProcessID, "123")
+	}
+	wantTime := time.Date(2025, 10, 11, 22, 14, 15, 0, time.UTC)
+	if !msg.Timestamp.Equal(wantTime) {
+		t.Errorf("Timestamp: got %v, want %v (year from the injected clock)", msg.Timestamp, wantTime)
+	}
+	if msg.Message != "Failed password for invalid user admin from 203.0.113.5" {
+		t.Errorf("Message: got %q", msg.Message)
+	}
+	if msg.Format != string(FormatRFC3164) {
+		t.Errorf("Format: got %q, want %q", msg.Format, FormatRFC3164)
 	}
 }
 
@@ -312,8 +329,10 @@ func TestParsePriority_OutOfRange(t *testing.T) {
 }
 
 func TestParseTimestamp_AllSixFormats(t *testing.T) {
-	// All six timestamp formats declared at syslog.go:342-349, plus
-	// edge cases (nil marker, empty, garbage).
+	// The timestamp layouts parseTimestamp (framing.go) accepts — the four RFC
+	// 5424 forms, RFC 3164 and the Cisco year-bearing BSD form — plus edge
+	// cases (nil marker, empty, garbage). The epoch form has its own test
+	// (TestParseTimestamp_Epoch).
 	tests := []struct {
 		name    string
 		ts      string
@@ -344,8 +363,16 @@ func TestParseTimestamp_AllSixFormats(t *testing.T) {
 			ts:   "Oct 11 05:01:53",
 		},
 		{
-			name: "simple yyyy-MM-dd HH:mm:ss",
-			ts:   "2025-04-10 05:01:53",
+			// Dropped in 1.3.48: a space-separated form can never reach
+			// parseTimestamp (every caller hands it one space-delimited
+			// token) so the layout was dead code.
+			name:    "simple yyyy-MM-dd HH:mm:ss (no longer accepted)",
+			ts:      "2025-04-10 05:01:53",
+			wantErr: true,
+		},
+		{
+			name: "Cisco ASA Mmm dd yyyy hh:mm:ss",
+			ts:   "Oct 11 2025 22:14:15",
 		},
 		{
 			name: "nil marker",
@@ -369,7 +396,7 @@ func TestParseTimestamp_AllSixFormats(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ts, err := parseTimestamp(1, tt.ts)
+			ts, err := parseTimestamp(time.Now(), tt.ts)
 			if tt.wantErr {
 				if err == nil {
 					t.Errorf("expected error for %q", tt.ts)
@@ -626,6 +653,16 @@ func FuzzParseRFC5424(f *testing.F) {
 		`<13>1 2025-04-10T05:01:53.000000-07:00 fw-host kernel: [1234.567] oops`,
 		`<<<>>>`,
 		`<-1> 1 2025-04-10T05:01:53.000000-07:00 h a p m - - msg`,
+		// Dispatcher families (1.3.48): Meraki epoch, conformant <PRI>1 TS,
+		// NILVALUE timestamp, CEF body, Cisco year-bearing BSD, short BSD.
+		`<134>1 1712725313.123456 fw-example-01 flows src=192.0.2.10 dst=198.51.100.7 pattern: allow all`,
+		`<13>1 2025-04-10T05:01:53Z fw-example-01 app 42 ID1 - body`,
+		`<13>1 - fw-example-01 app - - - no timestamp`,
+		`<14>Oct 11 22:14:15 fw-example-01 CEF:0|Ubiquiti|UniFi Network|9.3.45|201|Threat Detected and Blocked|7|src=203.0.113.5`,
+		`<166>Oct 11 2025 22:14:15 asa-01 : %ASA-6-302013: Built outbound TCP connection`,
+		`<13>Oct 11 22:14`,
+		`<13>1 1712725313.`,
+		`<13>`,
 	}
 	for _, s := range seeds {
 		f.Add(s)

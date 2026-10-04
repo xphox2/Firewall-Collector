@@ -1,0 +1,9 @@
+# Cisco Meraki (synthetic, built from the documented samples; untested on real hardware): `<PRI>1 <epoch.frac> <device name> <category> <body>`.
+<134>1 1712725313.123456 fw-example-01 flows src=192.0.2.10 dst=198.51.100.7 mac=00:00:5E:00:53:0A protocol=udp sport=55719 dport=53 pattern: allow all
+<134>1 1712725313.223456 fw-example-01 flows src=203.0.113.5 dst=192.0.2.1 protocol=tcp sport=44321 dport=22 pattern: 1 all
+<134>1 1712725313.323456 fw-example-01 urls src=192.0.2.10:63735 dst=198.51.100.80:80 mac=00:00:5E:00:53:0A agent='Mozilla/5.0' request: GET http://www.example.com/index.html
+<134>1 1712725313.423456 fw-example-01 security_event ids_alerted signature=1:39867:3 priority=3 timestamp=1712725313.400000 shost=00:00:5E:00:53:0A direction=egress protocol=udp/ip src=192.0.2.10:49243 dst=198.51.100.53:53 decision=blocked message: INDICATOR-COMPROMISE Suspicious .tk dns query
+<134>1 1712725313.523456 fw-example-01 events type=vpn_connectivity_change vpn_type='site-to-site' peer_contact='203.0.113.9:51856' peer_ident='fw-example-02' connectivity='false'
+<134>1 1712725314 fw-example-03 events port 3 status changed from 100fdx to down
+<134>1 1712725314.5 fw-example-03 events
+<134>1 1712725315 FGT60FTK00000000 events an FGT-named Meraki host keeps DeviceID 0

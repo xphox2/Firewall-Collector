@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.3.48 - 2026-10-04
+
+### Fixed
+- **Syslog framing dispatcher** (`internal/syslog/framing.go`). `ParseRFC5424` keeps its name but now classifies each datagram by cheap byte gates on what follows the PRI and routes it to a per-family column parser, instead of one positional RFC 5424 split that was only right for the lenient `<PRI> 1 ...` spelling:
+  - **Conformant RFC 5424** (`<PRI>1 TIMESTAMP HOST ...`, no space after `>`) was shifted one column: the timestamp landed in the VERSION slot, HOST was fed to the timestamp parser and failed to the receive time. Now parsed on its correct columns; the RFC NILVALUE timestamp (`-`) is accepted.
+  - **RFC 3164 / BSD** (`<PRI>Mmm dd hh:mm:ss HOST TAG[pid]: MSG`) had the TAG in `app_name` as `sshd[123]:` and the first message word in `process_id`, and its timestamp fell back to the receive time. Now `app_name`=TAG, `process_id`=pid, `message`=MSG; the year-less timestamp takes its year from the collector clock (minus one when the line would otherwise be more than 7 days in the future, so a device clock a few days fast is not misdated by a year) and is interpreted in the collector's local zone. The Cisco ASA/IOS spelling with the year inserted (`<PRI>Mmm dd yyyy hh:mm:ss HOST : %ASA-...`) is accepted on the same branch; in both forms the day may be padded (`Oct  1`) or not (`Oct 1`). A line whose month gate matches but whose timestamp is incomplete or not followed by a space is stored `raw`, not half-parsed.
+  - **Meraki** `<PRI>1 <epoch.frac> <device> <category> <body>` never parsed its epoch (every row was stamped with the receive time). Now `timestamp`=epoch, `hostname`=device name, `app_name`=category (`flows`, `urls`, `security_event`, `events`, ...), `message`=body. Built from Meraki's documented samples; untested on real hardware.
+  - BSD and Meraki rows leave `device_id` at 0: the server binds them by source IP, and an id derived from a FortiGate-looking host name would be rejected there as not the probe's. RFC 5424 keeps deriving it from structured data as before.
+  - A line with a valid PRI and no recognised header is stored whole as `raw` (`message`=body, `timestamp`=receive time) rather than guessing columns.
+  - The never-reachable `yyyy-MM-dd HH:mm:ss` timestamp layout (space-separated, so no caller could ever hand it over as one token) is dropped.
+  - The FortiOS key=value stream is byte-for-byte unchanged (`TestParse_FortiOSKV_ByteForByteUnchanged`, plus a golden fixture).
+- **Upgrade note:** `hostname` and `app_name` of non-FortiOS syslog sources become correct, so `syslog_summaries` groups and any operator rule keyed on those two fields for BSD, conformant RFC 5424 or Meraki senders will change (for BSD senders `app_name` loses its `[pid]:` suffix). Timestamps of those rows become the line's own time instead of the receive time; the server's existing clamp on future/pre-2000 timestamps still applies.
+
+### Added
+- **`format` hint on every syslog row** (`relay.SyslogMessage.Format`, JSON `format`, omitempty): `fortios_kv`, `rfc5424`, `rfc3164`, `meraki`, `cef` or `raw`. Additive — no schema bump; an older server ignores the key. `cef` is a body post-flag: a body that starts with `CEF:` (optionally behind one `TAG: ` token; the UniFi SIEM stream, built from the documented format and untested on real hardware) keeps the columns of whichever syslog header carried it and is relabelled. A body that merely mentions `CEF:` further in is not.
+- Golden fixtures under `internal/syslog/testdata/<format>/` (synthetic data only; `UPDATE_GOLDEN=1 go test ./internal/syslog/ -run TestParse_Golden` regenerates) and discriminating tests for each dispatcher branch, the BSD year rollover, the Meraki epoch and the CEF passthrough.
+
 ## 1.3.47 - 2026-10-03
 
 ### Fixed
