@@ -263,6 +263,19 @@ func TestParse_BSD_YearRollover(t *testing.T) {
 	if !msg.Timestamp.Equal(want) {
 		t.Errorf("Timestamp: got %v, want %v (current year)", msg.Timestamp, want)
 	}
+
+	// The slack is a week (bsdFutureSlack): a device clock 3 days fast keeps
+	// the current year; 8 days ahead is taken as last year.
+	msg, _ = parseSyslog([]byte(`<13>Jan  4 00:00:00 fw-example-01 cron[7]: fast clock`), now)
+	want = time.Date(2026, 1, 4, 0, 0, 0, 0, time.UTC)
+	if !msg.Timestamp.Equal(want) {
+		t.Errorf("3 days ahead: got %v, want %v (within slack, current year)", msg.Timestamp, want)
+	}
+	msg, _ = parseSyslog([]byte(`<13>Jan  9 00:10:00 fw-example-01 cron[7]: too far`), now)
+	want = time.Date(2025, 1, 9, 0, 10, 0, 0, time.UTC)
+	if !msg.Timestamp.Equal(want) {
+		t.Errorf("8 days ahead: got %v, want %v (beyond slack, previous year)", msg.Timestamp, want)
+	}
 }
 
 // The FortiOS key=value stream is the dominant production input and must come
@@ -399,5 +412,119 @@ func TestSyslogMessage_FormatOmittedWhenEmpty(t *testing.T) {
 	}
 	if !bytes.Contains(data, []byte(`"format":"rfc3164"`)) {
 		t.Errorf("Format must be sent as `format`: %s", data)
+	}
+}
+
+// BSD and Meraki rows are bound to a device by source IP on the server. A
+// DeviceID derived from the HOST column would be checked against the probe's
+// own id there and, when it differs (any FortiGate-looking host name does),
+// the row would be discarded — so these parsers must leave it 0.
+func TestParse_BSDAndMeraki_DeviceIDNotDerived(t *testing.T) {
+	now := time.Date(2025, 10, 12, 0, 0, 0, 0, time.UTC)
+	lines := []string{
+		`<34>Oct 11 22:14:15 FGT60FTK00000000 sshd[123]: x`,
+		`<34>Oct 11 22:14:15 FGT-1000 sshd[123]: x`,
+		`<134>1 1712725313.123456 FGT60FTK00000000 events x`,
+		`<134>1 1712725313.123456 fgt-1000 flows src=192.0.2.10`,
+	}
+	for _, line := range lines {
+		msg, err := parseSyslog([]byte(line), now)
+		if err != nil {
+			t.Fatalf("%q: unexpected error: %v", line, err)
+		}
+		if msg.DeviceID != 0 {
+			t.Errorf("%q: DeviceID = %d, want 0 (bound by source IP; a body-derived id gets the row dropped)", line, msg.DeviceID)
+		}
+	}
+}
+
+// The month gate only looks at `Mmm d`; a line that then fails to carry a
+// full timestamp followed by a space is stored raw, not half-parsed.
+func TestParse_BSD_InvalidTimestampFallsBackToRaw(t *testing.T) {
+	now := time.Date(2025, 10, 12, 0, 0, 0, 0, time.UTC)
+	lines := []string{
+		`<13>Oct 11 22:14`,
+		`<13>Oct 11 22:14:15x fw-example-01 glued`,
+		`<13>Oct 11 22:14:15fw-example-01`,
+		`<13>Oct 32 22:14:15 fw-example-01 impossible day`,
+		`<13>Oct 11 2025 22:14:15x asa-01 glued year form`,
+	}
+	for _, line := range lines {
+		msg, err := parseSyslog([]byte(line), now)
+		if err != nil {
+			t.Fatalf("%q: unexpected error: %v", line, err)
+		}
+		if msg.Format != string(FormatRaw) {
+			t.Errorf("%q: Format = %q, want raw", line, msg.Format)
+		}
+		if msg.Hostname != "" || msg.AppName != "" {
+			t.Errorf("%q: columns guessed from a bad timestamp: Hostname=%q AppName=%q", line, msg.Hostname, msg.AppName)
+		}
+		if want := line[len("<13>"):]; msg.Message != want {
+			t.Errorf("%q: Message = %q, want the whole body %q", line, msg.Message, want)
+		}
+		if !msg.Timestamp.Equal(now) {
+			t.Errorf("%q: Timestamp = %v, want now", line, msg.Timestamp)
+		}
+	}
+}
+
+// Cisco ASA/IOS insert the year: `Mmm dd yyyy hh:mm:ss HOST : %ASA-...`.
+func TestParse_CiscoASA_YearForm(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	line := `<166>Oct 11 2025 22:14:15 asa-01 : %ASA-6-302013: Built outbound TCP connection 12345 for outside:198.51.100.7/443 (198.51.100.7/443) to inside:192.0.2.10/51234 (203.0.113.2/51234)`
+	msg, err := parseSyslog([]byte(line), now)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if msg.Format != string(FormatRFC3164) {
+		t.Errorf("Format = %q, want rfc3164", msg.Format)
+	}
+	if msg.Hostname != "asa-01" {
+		t.Errorf("Hostname = %q, want asa-01", msg.Hostname)
+	}
+	want := time.Date(2025, 10, 11, 22, 14, 15, 0, time.UTC)
+	if !msg.Timestamp.Equal(want) {
+		t.Errorf("Timestamp = %v, want %v (year from the line, not the clock)", msg.Timestamp, want)
+	}
+	if !strings.HasPrefix(msg.Message, "%ASA-6-302013: Built") {
+		t.Errorf("Message = %q, want it to start at %%ASA-6-302013", msg.Message)
+	}
+
+	// Single-digit day, same form.
+	msg, err = parseSyslog([]byte(`<166>Oct  1 2025 05:01:53 asa-01 : %ASA-6-106015: Deny TCP`), now)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want = time.Date(2025, 10, 1, 5, 1, 53, 0, time.UTC)
+	if !msg.Timestamp.Equal(want) || msg.Hostname != "asa-01" {
+		t.Errorf("single-digit day: Timestamp=%v Hostname=%q, want %v asa-01", msg.Timestamp, msg.Hostname, want)
+	}
+}
+
+// Only a body that IS a CEF record (optionally behind one `TAG: `) is
+// relabelled; a body that mentions `CEF:` further in is not.
+func TestParse_CEF_RequiresPrefix(t *testing.T) {
+	now := time.Date(2025, 10, 12, 0, 0, 0, 0, time.UTC)
+	cases := []struct {
+		line string
+		want Format
+	}{
+		{`<14>Oct 11 22:14:15 fw-example-01 CEF:0|Ubiquiti|UniFi Network|9.3.45|201|x|7|src=203.0.113.5`, FormatCEF},
+		{`<14>Oct 11 22:14:16 fw-example-01 unifi: CEF:0|Ubiquiti|UniFi Network|9.3.45|400|x|1|`, FormatCEF},
+		{`<14>1 2025-10-11T22:14:15Z fw-example-01 - - - - CEF:0|Ubiquiti|UniFi OS|4.1.13|1005|x|3|`, FormatCEF},
+		{`<14>CEF:0|Ubiquiti|UniFi Network|9.3.45|512|x|5|`, FormatCEF},
+		{`<13>Oct 11 22:14:20 fw-example-01 note: the CEF: token later in a body does not relabel the row`, FormatRFC3164},
+		{`<13>Oct 11 22:14:20 fw-example-01 sshd[1]: user typed CEF:0|a|b|c|d|e|f|`, FormatRFC3164},
+		{`<13>mentions CEF:0|a|b|c|d|e|f| after a word`, FormatRaw},
+	}
+	for _, tc := range cases {
+		msg, err := parseSyslog([]byte(tc.line), now)
+		if err != nil {
+			t.Fatalf("%q: unexpected error: %v", tc.line, err)
+		}
+		if msg.Format != string(tc.want) {
+			t.Errorf("%q: Format = %q, want %q", tc.line, msg.Format, tc.want)
+		}
 	}
 }

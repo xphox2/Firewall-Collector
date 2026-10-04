@@ -74,5 +74,16 @@
     "priority": 134,
     "facility": 16,
     "severity": 6
+  },
+  {
+    "line": "\u003c134\u003e1 1712725315 FGT60FTK00000000 events an FGT-named Meraki host keeps DeviceID 0",
+    "format": "meraki",
+    "timestamp": "2024-04-10T05:01:55Z",
+    "hostname": "FGT60FTK00000000",
+    "app_name": "events",
+    "message": "an FGT-named Meraki host keeps DeviceID 0",
+    "priority": 134,
+    "facility": 16,
+    "severity": 6
   }
 ]

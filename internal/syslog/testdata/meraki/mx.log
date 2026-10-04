@@ -6,3 +6,4 @@
 <134>1 1712725313.523456 fw-example-01 events type=vpn_connectivity_change vpn_type='site-to-site' peer_contact='203.0.113.9:51856' peer_ident='fw-example-02' connectivity='false'
 <134>1 1712725314 fw-example-03 events port 3 status changed from 100fdx to down
 <134>1 1712725314.5 fw-example-03 events
+<134>1 1712725315 FGT60FTK00000000 events an FGT-named Meraki host keeps DeviceID 0

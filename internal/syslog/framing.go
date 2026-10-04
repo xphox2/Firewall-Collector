@@ -36,7 +36,7 @@ const (
 	FormatRaw Format = "raw"
 )
 
-// cefSniffLen bounds how far into the message body the CEF post-flag looks.
+// cefSniffLen bounds how long a leading `TAG: ` may be before a CEF record.
 const cefSniffLen = 64
 
 // detectFraming classifies a datagram by cheap byte gates on what follows the
@@ -172,32 +172,47 @@ func parseRFC5424Strict(msg *relay.SyslogMessage, body []byte, now time.Time) {
 	}
 }
 
-// bsdTimestampLen is the fixed width of `Mmm dd hh:mm:ss`.
-const bsdTimestampLen = 15
+// Widths of the two BSD timestamp spellings: RFC 3164 `Mmm dd hh:mm:ss` and
+// the Cisco ASA/IOS `Mmm dd yyyy hh:mm:ss` form (year inserted).
+const (
+	bsdTimestampLen     = 15
+	bsdYearTimestampLen = 20
+)
 
 // parseBSD fills msg from an RFC 3164 payload:
 //
 //	Mmm dd hh:mm:ss HOST TAG[pid]: MSG
+//	Mmm dd yyyy hh:mm:ss HOST TAG: MSG   (Cisco ASA/IOS spelling)
 //
-// The timestamp carries no year or zone: the year is taken from now (minus one
-// when that would put the line more than 24 h in the future, i.e. a line from
-// late December read in early January) and the zone is the collector's. The
-// TAG is the token after HOST only when it ends in `:`; otherwise the line has
-// no tag and everything after HOST is the message (the UniFi SIEM stream, for
-// one, writes `HOST CEF:0|...`).
-func parseBSD(msg *relay.SyslogMessage, body []byte, now time.Time) {
-	if len(body) < bsdTimestampLen {
-		msg.Message = string(body)
-		return
+// It reports false — leaving msg untouched — when the bytes the month gate
+// matched are not a complete timestamp followed by a space or the end of the
+// line; the caller then stores the line raw rather than guessing columns.
+//
+// The RFC 3164 timestamp carries no year or zone: the year is taken from now
+// (minus one when that would put the line more than bsdFutureSlack ahead,
+// i.e. a line from late December read in early January) and the zone is the
+// collector's. The TAG is the token after HOST only when it ends in `:`;
+// otherwise the line has no tag and everything after HOST is the message
+// (the UniFi SIEM stream, for one, writes `HOST CEF:0|...`). DeviceID is
+// deliberately not derived from HOST: the server binds these rows by source
+// IP, and a body-derived id that is not the probe's would get the row dropped.
+func parseBSD(msg *relay.SyslogMessage, body []byte, now time.Time) bool {
+	tsLen := bsdTimestampLen
+	if len(body) >= bsdYearTimestampLen && body[6] == ' ' && body[11] == ' ' && body[14] == ':' {
+		tsLen = bsdYearTimestampLen
 	}
-	if ts, err := parseTimestamp(now, string(body[:bsdTimestampLen])); err == nil {
-		msg.Timestamp = ts
+	if len(body) < tsLen || (len(body) > tsLen && body[tsLen] != ' ') {
+		return false
 	}
-	rest := bytes.TrimLeft(body[bsdTimestampLen:], " ")
+	ts, err := parseTimestamp(now, string(body[:tsLen]))
+	if err != nil {
+		return false
+	}
+	msg.Timestamp = ts
+	rest := bytes.TrimLeft(body[tsLen:], " ")
 
 	host, rest := nextToken(rest)
 	msg.Hostname = host
-	msg.DeviceID = extractDeviceID(host, "")
 
 	if i := bytes.IndexByte(rest, ' '); (i > 0 && rest[i-1] == ':') || (i < 0 && len(rest) > 0 && rest[len(rest)-1] == ':') {
 		tag, after := nextToken(rest)
@@ -210,6 +225,7 @@ func parseBSD(msg *relay.SyslogMessage, body []byte, now time.Time) {
 		rest = after
 	}
 	msg.Message = string(rest)
+	return true
 }
 
 // parseMeraki fills msg from a Meraki payload after `1 `:
@@ -218,6 +234,7 @@ func parseBSD(msg *relay.SyslogMessage, body []byte, now time.Time) {
 //
 // CATEGORY is the dashboard role token (flows, urls, security_event, events,
 // ...) and lands in AppName so it can group like FortiOS `type` does.
+// DeviceID stays 0 (bound by source IP on the server, as for parseBSD).
 // Built from Meraki's documented samples; untested on real hardware.
 func parseMeraki(msg *relay.SyslogMessage, body []byte, now time.Time) {
 	epoch, rest := nextToken(body)
@@ -225,7 +242,6 @@ func parseMeraki(msg *relay.SyslogMessage, body []byte, now time.Time) {
 		msg.Timestamp = ts
 	}
 	msg.Hostname, rest = nextToken(rest)
-	msg.DeviceID = extractDeviceID(msg.Hostname, "")
 	msg.AppName, rest = nextToken(rest)
 	msg.Message = string(rest)
 }
@@ -240,24 +256,39 @@ func nextToken(b []byte) (string, []byte) {
 	return string(b[:i]), bytes.TrimLeft(b[i+1:], " ")
 }
 
-// isCEFBody reports whether a message body is a CEF record: `CEF:` within its
-// first cefSniffLen bytes (a few senders prefix it with a free-text tag).
+// isCEFBody reports whether a message body is a CEF record: it starts with
+// `CEF:`, optionally after one `TAG: ` token (a sender that keeps a syslog tag
+// in front of the record). A body that merely mentions CEF further in is not
+// one.
 func isCEFBody(message string) bool {
-	if len(message) > cefSniffLen {
-		message = message[:cefSniffLen]
+	if strings.HasPrefix(message, "CEF:") {
+		return true
 	}
-	return strings.Contains(message, "CEF:")
+	if i := strings.IndexByte(message, ' '); i > 0 && i < cefSniffLen && message[i-1] == ':' {
+		return strings.HasPrefix(message[i+1:], "CEF:")
+	}
+	return false
 }
 
-// bsdTimestampLayout is Go's reference form of `Mmm dd hh:mm:ss`; the
-// double space absorbs the padding of a single-digit day.
-const bsdTimestampLayout = "Jan  2 15:04:05"
+// Go reference forms of the BSD timestamps; the double space absorbs the
+// padding of a single-digit day.
+const (
+	bsdTimestampLayout     = "Jan  2 15:04:05"
+	bsdYearTimestampLayout = "Jan  2 2006 15:04:05"
+)
 
-// parseTimestamp decodes a syslog TIMESTAMP field. Besides the RFC 5424 and
-// loose ISO forms it accepts a Unix epoch with optional fraction (Meraki) and
-// the RFC 3164 `Mmm dd hh:mm:ss` form, which has no year or zone: those are
-// taken from now (year rolled back by one if the result would be more than
-// 24 h ahead of now). "-" and "" mean "no timestamp" and yield now.
+// bsdFutureSlack is how far ahead of now a year-less RFC 3164 timestamp may
+// land before it is taken to belong to the previous year. A week absorbs a
+// device clock that runs days fast without misdating it by a year; a line
+// from late December read in early January still rolls back.
+const bsdFutureSlack = 7 * 24 * time.Hour
+
+// parseTimestamp decodes a syslog TIMESTAMP field. Besides the RFC 5424 forms
+// it accepts a Unix epoch with optional fraction (Meraki), the Cisco
+// `Mmm dd yyyy hh:mm:ss` form and the RFC 3164 `Mmm dd hh:mm:ss` form, which
+// has no year or zone: those are taken from now (year rolled back by one if
+// the result would be more than bsdFutureSlack ahead of now). "-" and "" mean
+// "no timestamp" and yield now.
 func parseTimestamp(now time.Time, ts string) (time.Time, error) {
 	ts = strings.TrimSpace(ts)
 	if ts == "-" || ts == "" {
@@ -275,7 +306,6 @@ func parseTimestamp(now time.Time, ts string) (time.Time, error) {
 		"2006-01-02T15:04:05.000Z",
 		"2006-01-02T15:04:05Z07:00",
 		"2006-01-02T15:04:05Z",
-		"2006-01-02 15:04:05",
 	}
 	for _, format := range formats {
 		if t, err := time.Parse(format, ts); err == nil {
@@ -283,9 +313,12 @@ func parseTimestamp(now time.Time, ts string) (time.Time, error) {
 		}
 	}
 
+	if t, err := time.ParseInLocation(bsdYearTimestampLayout, ts, now.Location()); err == nil {
+		return t, nil
+	}
 	if t, err := time.ParseInLocation(bsdTimestampLayout, ts, now.Location()); err == nil {
 		t = t.AddDate(now.Year(), 0, 0)
-		if t.After(now.Add(24 * time.Hour)) {
+		if t.After(now.Add(bsdFutureSlack)) {
 			t = t.AddDate(-1, 0, 0)
 		}
 		return t, nil

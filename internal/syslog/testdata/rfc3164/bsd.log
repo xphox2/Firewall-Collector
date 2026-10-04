@@ -1,4 +1,4 @@
-# RFC 3164 / BSD (synthetic): sshd, UniFi legacy device syslog (kernel netfilter LOG prefix + dnsmasq; built from documented formats, untested on real hardware), a tag-less line.
+# RFC 3164 / BSD (synthetic): sshd, UniFi legacy device syslog (kernel netfilter LOG prefix + dnsmasq; built from documented formats, untested on real hardware), a tag-less line, Cisco ASA year-bearing form, an FGT-named host (DeviceID must stay 0: bound by source IP).
 <34>Oct 11 22:14:15 fw-example-01 sshd[123]: Failed password for invalid user admin from 203.0.113.5 port 44321 ssh2
 <4>Oct 11 22:14:15 fw-example-01 kernel: [WAN_LOCAL-D-2147483647] DESCR="[WAN_LOCAL]Drop All Other Traf" IN=eth4 OUT= MAC=00:00:5e:00:53:01:00:00:5e:00:53:02:08:00 SRC=203.0.113.5 DST=192.0.2.1 LEN=40 TOS=0x00 PREC=0x00 TTL=52 ID=0 DF PROTO=TCP SPT=44321 DPT=22 WINDOW=1024 RES=0x00 SYN URGP=0
 <4>Oct 11 22:14:16 fw-example-01 kernel: [LAN_IN-A-3001] DESCR="allow lan to wan" IN=br0 OUT=eth4 MAC=00:00:5e:00:53:03:00:00:5e:00:53:04:08:00 SRC=192.0.2.10 DST=198.51.100.7 LEN=60 TOS=0x00 PREC=0x00 TTL=63 ID=54321 DF PROTO=UDP SPT=51234 DPT=53 LEN=40
@@ -7,4 +7,7 @@
 <13>Oct 11 22:14:17 fw-example-01 message without a tag
 <13>Oct 11 22:14:18 fw-example-01 cron: 
 <13>Oct 11 22:14:19 fw-example-01
-<13>Oct 11 22:14
+<166>Oct 11 2025 22:14:15 asa-01 : %ASA-6-302013: Built outbound TCP connection 12345 for outside:198.51.100.7/443 (198.51.100.7/443) to inside:192.0.2.10/51234 (203.0.113.2/51234)
+<166>Oct  1 2025 05:01:53 asa-01 : %ASA-6-106015: Deny TCP (no connection) from 203.0.113.5/44321 to 192.0.2.1/22 flags SYN on interface outside
+<34>Oct 11 22:14:15 FGT60FTK00000000 sshd[123]: Accepted publickey for alice from 192.0.2.20 port 51234 ssh2
+<13>Oct 11 22:14:20 fw-example-01 note: the CEF: token later in a body does not relabel the row

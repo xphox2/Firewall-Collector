@@ -52,5 +52,41 @@
     "priority": 13,
     "facility": 1,
     "severity": 5
+  },
+  {
+    "line": "\u003c13\u003eOct 11 22:14",
+    "format": "raw",
+    "timestamp": "2025-10-12T00:00:00Z",
+    "message": "Oct 11 22:14",
+    "priority": 13,
+    "facility": 1,
+    "severity": 5
+  },
+  {
+    "line": "\u003c13\u003eOct 11 22:14:15x fw-example-01 timestamp glued to the next token",
+    "format": "raw",
+    "timestamp": "2025-10-12T00:00:00Z",
+    "message": "Oct 11 22:14:15x fw-example-01 timestamp glued to the next token",
+    "priority": 13,
+    "facility": 1,
+    "severity": 5
+  },
+  {
+    "line": "\u003c13\u003eOct 32 22:14:15 fw-example-01 impossible day",
+    "format": "raw",
+    "timestamp": "2025-10-12T00:00:00Z",
+    "message": "Oct 32 22:14:15 fw-example-01 impossible day",
+    "priority": 13,
+    "facility": 1,
+    "severity": 5
+  },
+  {
+    "line": "\u003c13\u003eOct 11 22:14:15fw-example-01",
+    "format": "raw",
+    "timestamp": "2025-10-12T00:00:00Z",
+    "message": "Oct 11 22:14:15fw-example-01",
+    "priority": 13,
+    "facility": 1,
+    "severity": 5
   }
 ]

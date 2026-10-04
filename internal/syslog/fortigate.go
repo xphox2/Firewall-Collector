@@ -1,7 +1,6 @@
 package syslog
 
 import (
-	"bytes"
 	"strconv"
 	"strings"
 	"time"
@@ -142,26 +141,12 @@ func parseKVPairs(s string) map[string]string {
 	return out
 }
 
-// fortiOSBody reports whether a datagram is FortiOS key=value output and, if so,
-// returns everything after the PRI.
-//
-// The discriminator is that FortiOS writes `date=` immediately after the closing
-// `>` with no space, whereas RFC 5424 always has ` VERSION TIMESTAMP` there. It
-// deliberately does NOT test for `logid=`: that token also appears inside the
-// body of genuine RFC 5424 messages, so keying on it would misroute them.
-func fortiOSBody(data []byte) (string, bool) {
-	end := bytes.IndexByte(data, '>')
-	if end < 0 || end+1 >= len(data) {
-		return "", false
-	}
-	body := data[end+1:]
-	if !bytes.HasPrefix(body, []byte("date=")) {
-		return "", false
-	}
-	return string(body), true
-}
-
-// parseFortiOSKV fills a message from a FortiOS key=value record.
+// parseFortiOSKV fills a message from a FortiOS key=value record. The
+// dispatcher (detectFraming) routes here on the structural gate — FortiOS
+// writes `date=` immediately after the closing `>` with no space, whereas RFC
+// 5424 always has ` VERSION TIMESTAMP` there. The gate deliberately does NOT
+// test for `logid=`: that token also appears inside the body of genuine RFC
+// 5424 messages, so keying on it would misroute them.
 //
 // Message keeps the WHOLE record rather than starting at `subtype=`, so
 // logid/type/devname stop being lost to the header columns. That is additive for

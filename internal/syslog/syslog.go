@@ -537,7 +537,12 @@ func parseSyslog(data []byte, now time.Time) (*relay.SyslogMessage, error) {
 	case FormatRFC5424:
 		parseRFC5424Strict(msg, body, now)
 	case FormatRFC3164:
-		parseBSD(msg, body, now)
+		// The month gate is cheap; parseBSD checks the whole timestamp and
+		// declines a line that only looked like one.
+		if !parseBSD(msg, body, now) {
+			format = FormatRaw
+			msg.Message = string(data[priEnd:])
+		}
 	case FormatMeraki:
 		parseMeraki(msg, body, now)
 	default:
