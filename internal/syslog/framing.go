@@ -11,9 +11,12 @@ import (
 )
 
 // Format names the syslog framing a datagram was parsed with. It is sent to the
-// server as the `format` hint on every syslog row (omitempty, additive — no
-// schema bump) so consumers can pick a body parser without re-sniffing the
-// line.
+// server as the `format` hint on every syslog row so consumers can pick a body
+// parser without re-sniffing the line. Shipped in 1.3.48 as an additive hint;
+// relay schema v6 (1.3.50) makes it a contract: every row parseSyslog returns
+// carries one of the values below, and a v6 server skips its re-framing
+// fallback on that promise. Adding a value or leaving a branch unlabelled is a
+// wire-format change (see relay.SchemaVersionMax).
 type Format string
 
 const (

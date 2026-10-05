@@ -10,7 +10,7 @@
 > admin UI, and runbook.
 
 [![CI](https://img.shields.io/badge/CI-passing-brightgreen)](https://github.com/xphox2/Firewall-Collector/actions)
-[![Version](https://img.shields.io/badge/version-1.3.49-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.3.50-blue)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.25.0+-00ADD8)](go.mod)
 
@@ -321,7 +321,8 @@ the 1-pager version is [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
 
 | Collector | Talks to server | Notes |
 |---|---|---|
-| **1.2.108+** (incl. 1.3.x) | 0.10.382+ (recommended), 0.10.380+ (works, field ignored) | Advertises `schema_version` on register |
+| **1.3.50+** (schema v6) | 0.11.296+ for v6; any 0.10.382+ otherwise (auto-falls back to v5) | Syslog framing contract — `format` hint guaranteed on every syslog row; no new endpoint. Deploy the server first |
+| 1.2.108 – 1.3.49 | 0.10.382+ (recommended), 0.10.380+ (works, field ignored) | Advertises `schema_version` on register |
 | 1.2.78 – 1.2.107 | any 0.10.x | Pre-handshake; field omitted → server assumes v1 |
 | < 1.2.78 | unsupported | Missing disk-spillover and several hardening fixes |
 

@@ -54,6 +54,7 @@
 |---|---|---|---|
 | Registration + approval handshake | Stable | [Probe] + [Server] | 1.0.0 |
 | `schema_version` handshake (HTTP 426 on mismatch) | Stable | [Probe] + [Server] | 1.2.108 / 0.10.382 |
+| Schema v6 syslog framing contract — `format` hint and dispatcher-parsed header columns guaranteed on every syslog row; no new endpoint or payload; auto-fallback to v5 against an older server | Stable | [Probe] + [Server] | 1.3.50 / 0.11.296 |
 | Re-registration on 401/403/404 (rate-limited, 10-min cooldown after 5 fails) | Stable | [Probe] | 1.0.0 |
 | Heartbeat (default 60 s, "offline" on graceful shutdown) | Stable | [Probe] | 1.0.0 |
 | Per-stream `SpilloverQueue` — in-memory + BoltDB disk persistence | Stable | [Probe] | 1.2.101 / 1.2.104 (AUDIT-058) |
