@@ -191,8 +191,10 @@ type SyslogMessage struct {
 	Severity       int       `json:"severity"`
 	SourceIP       string    `json:"source_ip"`
 	// Format is the syslog framing the collector parsed the line with
-	// (fortios_kv, rfc5424, rfc3164, meraki, cef, raw). Additive hint, omitted
-	// when empty; an older server ignores the key. Added 1.3.48.
+	// (fortios_kv, rfc5424, rfc3164, meraki, cef, raw). Added 1.3.48 as an
+	// additive hint (omitted when empty; an older server ignores the key);
+	// since schema v6 (1.3.50) it is a contract — the dispatcher sets it on
+	// every row and the server trusts it instead of re-framing the line.
 	Format string `json:"format,omitempty"`
 }
 
@@ -541,9 +543,20 @@ type Config struct {
 // gated on negotiated schema ≥ 5. These are state snapshots with server-side
 // replace semantics, sent via doSnapshotSend (never spooled — a replayed old
 // snapshot would revert newer state).
+// v6 is the SYSLOG FRAMING CONTRACT (collector 1.3.50 / server 0.11.296): no
+// new endpoint or payload. A collector registered at ≥ 6 guarantees that every
+// syslog row carries a non-empty `format` hint (SyslogMessage.Format) and that
+// its RFC 3164 / RFC 5424 / Meraki header columns came from the framing
+// dispatcher (internal/syslog/framing.go, 1.3.48), so the server normalizes
+// those rows without the re-framing fallback it still applies to v5 rows. The
+// collector gates nothing on v6 — the dispatcher labels every row whatever
+// the negotiated version — so against a server that advertises only 1-5 the
+// 426 fallback in Register re-registers as v5 and nothing else changes.
+// Deploy the server first. Min stays 1; raising it to 6 is a later transition
+// release.
 const (
 	SchemaVersionMin = 1
-	SchemaVersionMax = 5
+	SchemaVersionMax = 6
 )
 
 // AgentVersion is the collector's own software version, reported on register

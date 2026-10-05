@@ -103,14 +103,41 @@ de-duplicated per `PROBE_FLOW_DEDUP` before relay.
 ## Schema-version handshake
 
 On register the relay sends `schema_version: SchemaVersionMax` (currently
-`1`). The server validates and replies with one of:
+`6`). The server validates and replies with one of:
 
 - **200 + echo**: happy path. The probe logs the version the server
   selected.
 - **426 (Upgrade Required)**: the server's `X-Probe-Schema-Version-Supported`
-  header names the range it accepts. The probe surfaces an actionable
-  error pointing at `MIGRATING.md` and **does not lose on-disk queue data**.
+  header names the range it accepts. If that range contains a lower version
+  this collector speaks (`SchemaVersionMin` is `1`), the probe re-registers
+  at the highest mutually-supported one and logs the downgrade; only a range
+  with no overlap surfaces an error pointing at `MIGRATING.md`. Either way
+  the probe **does not lose on-disk queue data**.
 - **Absent field (old server)**: defaults to v1, fully backward-compatible.
+
+Every feature a version adds is gated on the *negotiated* version, so a
+collector that fell back behaves exactly like the older release:
+
+| Schema | Collector / server | Adds | Gate |
+|---|---|---|---|
+| v1 | 1.2.108 / 0.10.382 | the handshake itself | — |
+| v2 | 1.2.145 | sFlow interface counter samples (`/flow-counters`) | send only at ≥ 2 |
+| v3 | 1.3.10 / 0.11.73 | `disk_usage` + `load_average` on the heartbeat | send only at ≥ 3 |
+| v4 | 1.3.14 / 0.11.75 | server→collector command channel (`pending_commands`, `/command-result`) | both directions at ≥ 4 |
+| v5 | 1.3.15 / 0.11.94 | L2 topology snapshots (`/topology-entries`, `/topology-neighbors`) | send only at ≥ 5 |
+| v6 | 1.3.50 / 0.11.296 | **syslog framing contract**: no new endpoint or payload. Every syslog row carries a non-empty `format` hint and header columns parsed by the framing dispatcher (`internal/syslog/framing.go`); a v6 server normalizes those rows without its re-framing fallback (still applied to v5 rows). | nothing on the collector — the dispatcher labels every row at any version; the server keys on the probe's registered version |
+
+Deploy the server first for v6: a 1.3.50 collector against a server that
+advertises `1-5` gets a 426 and renegotiates as v5. The negotiated version
+is fixed for the life of the registration — a collector that fell back stays
+v5 until it re-registers (restart, or a 401/403/404 from the server), so
+restart collectors after the server upgrade. Raising `SchemaVersionMin` to 6
+(dropping the server's re-framing fallback) is a later transition release.
+
+The v6 contract covers rows the 1.3.48+ dispatcher parsed. Rows replayed
+from an on-disk spool written by a pre-1.3.48 collector (an upgrade while
+the server was unreachable) carry no `format`; the server handles those
+per-row and re-frames them.
 
 The full contract, including the server's response shape, is documented in
 [xphox2/Firewall-Monitoring/MIGRATING.md](https://github.com/xphox2/Firewall-Monitoring/blob/master/MIGRATING.md).
