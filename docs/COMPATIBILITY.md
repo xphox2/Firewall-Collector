@@ -31,11 +31,12 @@
 
 | Collector version | Talks to server | Notes |
 |---|---|---|
-| **1.3.50+** (current, **schema v6**) | 0.11.296+ for v6; any 0.11.x otherwise (auto-falls back to v5) | Negotiates **schema v6** — the **syslog framing contract**. No new endpoint or payload: a v6 collector guarantees the `format` hint (`fortios_kv`, `rfc5424`, `rfc3164`, `meraki`, `cef`, `raw`) on every syslog row and header columns parsed by the 1.3.48 framing dispatcher, so the server normalizes its rows without the re-framing fallback it still applies to v5 rows. The collector gates nothing on v6 (the dispatcher labels every row at any version), so against a ≤ 0.11.295 server it takes the 426 and re-registers as v5 with nothing else changed. **Deploy the server first.** Raising `SchemaVersionMin` to 6 is a later transition release. |
+| **1.3.50+** (current, **schema v6**) | 0.11.296+ for v6; any 0.11.x otherwise (auto-falls back to v5) | Negotiates **schema v6** — the **syslog framing contract**. No new endpoint or payload: a v6 collector guarantees the `format` hint (`fortios_kv`, `rfc5424`, `rfc3164`, `meraki`, `cef`, `raw`) on every syslog row and header columns parsed by the 1.3.48 framing dispatcher, so the server normalizes its rows without the re-framing fallback it still applies to v5 rows. The collector gates nothing on v6 (the dispatcher labels every row at any version), so against a ≤ 0.11.295 server it takes the 426 and re-registers as v5 with nothing else changed. **Deploy the server first**, then restart the collectors (see Step 3). The contract covers rows the 1.3.48+ dispatcher parsed: rows replayed from an on-disk spool written by a pre-1.3.48 collector carry no `format` and the server handles those per-row (re-frames them). Raising `SchemaVersionMin` to 6 is a later transition release. |
 | 1.3.15 – 1.3.49 (**schema v5**) | 0.11.94+ for L2 topology; any 0.11.x otherwise | Negotiates **schema v5** — L2 topology snapshots for the port-to-port connection map: `POST /probes/:id/topology-entries` (ARP + MAC-table rows) and `POST /probes/:id/topology-neighbors` (LLDP/CDP), collected every 5th SNMP cycle. Both sends are gated on the negotiated schema ≥ 5, so against a ≤ 0.11.93 server nothing changes. Snapshots are never spooled: a failed send is dropped and the next cycle resends the complete state (the server REPLACES a device's rows per batch — replaying an old snapshot would revert newer state). |
 | 1.3.14 (**schema v4**) | 0.11.75+ for the command channel; any 0.11.x otherwise | Negotiates **schema v4** — the first server→collector COMMAND CHANNEL: the heartbeat response may carry `pending_commands`, which the collector executes (only the `noop` type so far) and acknowledges via `POST /api/probes/:id/command-result`, idempotent by `command_id`. Both directions are gated on the negotiated schema ≥ 4, so against a ≤ 0.11.74 server nothing changes (no parsing, no result POSTs, no 404 churn). Command payloads may later carry credentials — run the relay over **HTTPS**; payloads are never logged. Deploy the server first; the collector follows at any time. |
 | 1.3.10 – 1.3.13 | 0.11.73+ for disk/load; any 0.11.x otherwise | Negotiates **schema v3**. Sends `disk_usage` + `load_average` only when the server negotiates ≥ 3; against an older (v2) server those two sends no-op, everything else works. |
-| 1.2.137 – 1.3.9 | 0.10.382+ (recommended), 0.10.380+ (works, field ignored) | Advertises `schema_version` on register (v2). |
+| 1.2.145 – 1.3.9 (**schema v2**) | 0.10.382+ (recommended), 0.10.380+ (works, field ignored) | Negotiates **schema v2** — sFlow interface counter samples to `POST /probes/:id/flow-counters`, sent only when the server negotiated ≥ 2. |
+| 1.2.108 – 1.2.144 | 0.10.382+ (recommended), 0.10.380+ (works, field ignored) | Advertises `schema_version` on register (v1). |
 | 1.2.78 – 1.2.107 | any 0.10.x | Pre-handshake. Field omitted → server assumes v1. |
 | < 1.2.78 | unsupported | Missing disk-spillover (1.2.101) and several other hardening fixes. |
 
@@ -55,6 +56,10 @@ matches the drain timeout, so `docker compose pull && up -d` is safe).
 `schema_version: 6` for every re-registered 1.3.50+ probe on a 0.11.296+
 server (0.11.75+ persists the negotiated version on the probe row). A
 lower value means the probe fell back — the server is older than the
-collector's `SchemaVersionMax`, or the range overlapped only partially;
-check the probe's logs (`re-registering as vN`) and the server's
+collector's `SchemaVersionMax`, or the range overlapped only partially.
+The negotiated version is fixed until the probe re-registers (a restart,
+or a 401/403/404 from the server), so a collector upgraded **before** the
+server stays at v5 after the server catches up: restart it once the
+server is on 0.11.296+. Otherwise check the probe's logs
+(`re-registering as vN`) and the server's
 [MIGRATING.md](https://github.com/xphox2/Firewall-Monitoring/blob/master/MIGRATING.md).
