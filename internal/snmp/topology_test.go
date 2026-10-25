@@ -170,7 +170,9 @@ func TestParseLLDPRemTable(t *testing.T) {
 	if n.RemotePortID != "port7" || n.RemotePortDesc != "uplink" {
 		t.Errorf("port id/desc wrong: %+v", n)
 	}
-	if n.RemoteSysName != "fw-branch[31m" {
+	// safeString turns the ESC into a space (device strings keep word
+	// boundaries); printableOrMAC then has no control character left to drop.
+	if n.RemoteSysName != "fw-branch [31m" {
 		t.Errorf("control characters not stripped: %q", n.RemoteSysName)
 	}
 }

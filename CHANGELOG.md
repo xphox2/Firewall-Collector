@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.3.51 - 2026-10-24
+
+### Security
+- **SNMP traps are filtered before they are decoded.** The receiver used
+  gosnmp's `TrapListener`, which fully BER-decodes every datagram (all
+  varbinds, OIDs and values) before the rate limiter and the community check
+  ran — and the community check ran on a spawned goroutine, after a log line.
+  So a forged or flooding sender paid the whole decode cost per packet. The
+  receiver now owns its UDP socket and filters in cost order: the
+  per-source/global rate limiter, then the community read straight from the
+  SNMPv1/v2c message header (no PDU decode; constant-time compare as before;
+  its "community mismatch" log stays behind the limiter so it cannot be
+  used to flood the log), then the full decode, whose community must agree
+  with the header. Only authenticated, in-budget traps reach the relay. With
+  no `PROBE_SNMP_TRAP_COMMUNITY` set the receiver still accepts any community
+  (unchanged, with the existing startup warning).
+- INFORMs are still acknowledged; a decoder panic on a crafted body drops that
+  datagram instead of killing the receiver. The receive buffer is 64 KiB (was
+  4 KiB), so a large trap is no longer truncated into a decode error, and a
+  bind failure on start is reported immediately instead of after a 2-second
+  wait. `TestHeaderCommunity`, `TestHandleDatagram_DropsBeforeDecode` and
+  `TestTrapReceiver_EndToEnd` (real UDP: forged trap dropped, INFORM relayed
+  and acknowledged, `Stop` ends the read loop) pin the behaviour.
+- **Device strings are cleaned at the SNMP funnel.** `safeString`, which every
+  vendor profile uses for device-supplied text (sysName, sysDescr, interface
+  aliases, tunnel and sensor names, LLDP identifiers), returned raw bytes. It
+  now makes them valid UTF-8 (invalid bytes become U+FFFD), drops NUL padding
+  and turns every other C0/C1 control character into a space, so a device (or
+  whoever can set its sysName/ifAlias) can no longer push CR/LF or terminal
+  escapes into relayed rows and logs. Trap varbind text (OctetString values
+  in the relayed trap message) goes through the same cleaning. Twin of
+  server finding D-31.
+  `TestSafeString_*` and `TestParseSystemStatus_HostnameControlCharsStripped`
+  pin it.
+- **Go 1.26.10 and `golang.org/x/net` v0.60.0.** `govulncheck` (CI-gating) now
+  reports reachable standard-library advisories fixed in Go 1.26.9/1.26.10
+  (`net/http`, `net/textproto`, `crypto/tls`, `crypto/x509`) and `x/net`
+  advisories fixed in v0.60.0; the `go` directive and `x/net` are bumped to
+  match the server.
+
 ## 1.3.50 - 2026-10-04
 
 ### Changed
