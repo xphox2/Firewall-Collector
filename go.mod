@@ -1,6 +1,6 @@
 module firewall-collector
 
-go 1.26.8
+go 1.26.10
 
 require (
 	github.com/gosnmp/gosnmp v1.43.2
@@ -8,7 +8,7 @@ require (
 	golang.org/x/crypto v0.57.0
 )
 
-require golang.org/x/net v0.58.0
+require golang.org/x/net v0.60.0
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect

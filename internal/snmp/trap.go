@@ -2,10 +2,13 @@ package snmp
 
 import (
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"log"
 	"net"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"firewall-collector/internal/ratelimit"
@@ -24,10 +27,16 @@ type TrapReceiver struct {
 	listenAddr string
 	port       int
 	community  string
-	server     *gosnmp.TrapListener
 	handler    func(*relay.TrapEvent)
 	limiter    *ratelimit.Limiter
 	onRateDrop func()
+
+	// The receiver owns its UDP socket so over-rate and wrong-community
+	// datagrams are dropped before gosnmp's full decode. done is closed when
+	// the read loop exits.
+	conn     *net.UDPConn
+	done     chan struct{}
+	stopOnce sync.Once
 }
 
 // SetRateLimiter attaches a per-source-IP rate limiter. Traps from a source over
@@ -43,7 +52,6 @@ func NewTrapReceiver(listenAddr string, port int, community string) *TrapReceive
 		listenAddr: listenAddr,
 		port:       port,
 		community:  community,
-		server:     gosnmp.NewTrapListener(),
 	}
 }
 
@@ -54,58 +62,140 @@ func (t *TrapReceiver) Start(handler func(*relay.TrapEvent)) error {
 
 	t.handler = handler
 
-	t.server.OnNewTrap = func(packet *gosnmp.SnmpPacket, addr *net.UDPAddr) {
-		// Per-source rate limit BEFORE spawning the per-trap goroutine, so a
-		// flooding source can't drive unbounded goroutine creation.
-		if t.limiter != nil && addr != nil && !t.limiter.Allow(addr.IP.String()) {
-			if t.onRateDrop != nil {
-				t.onRateDrop()
-			}
-			return
-		}
-		safego.Go("snmpTrap:"+addr.IP.String(), func() {
-			// The community is a shared secret used to authenticate the trap;
-			// it is deliberately omitted from this log line so it is not exposed
-			// to log readers or log shipping.
-			log.Printf("[SNMP Trap] Received trap from %s (%d varbinds, version %s)",
-				addr.IP, len(packet.Variables), packet.Version)
+	listenAddr := net.JoinHostPort(t.listenAddr, strconv.Itoa(t.port))
+	log.Printf("[SNMP Trap] Starting listener on %s", listenAddr)
+	addr, err := net.ResolveUDPAddr("udp", listenAddr)
+	if err != nil {
+		return fmt.Errorf("trap listener failed: %w", err)
+	}
+	conn, err := net.ListenUDP("udp", addr)
+	if err != nil {
+		return fmt.Errorf("trap listener failed: %w", err)
+	}
+	t.conn = conn
+	t.done = make(chan struct{})
+	safego.Go("snmpTrap:listen", t.readLoop)
+	return nil
+}
 
-			if !t.allowCommunity(packet.Community, addr.IP.String()) {
+// trapReadBuf is the receive buffer: the largest UDP payload, so no datagram
+// is silently truncated into a decode error.
+const trapReadBuf = 65535
+
+func (t *TrapReceiver) readLoop() {
+	defer close(t.done)
+	buf := make([]byte, trapReadBuf)
+	for {
+		n, addr, err := t.conn.ReadFromUDP(buf)
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
 				return
 			}
-			trap := t.parseTrap(packet, addr)
-			if trap != nil && t.handler != nil {
-				log.Printf("[SNMP Trap] Accepted: type=%s severity=%s from %s", trap.TrapType, trap.Severity, trap.SourceIP)
-				t.handler(trap)
+			log.Printf("[SNMP Trap] read error: %v", err)
+			continue
+		}
+		if resp := t.handleDatagram(buf[:n], addr); resp != nil {
+			if _, err := t.conn.WriteToUDP(resp, addr); err != nil {
+				log.Printf("[SNMP Trap] inform response to %s: %v", addr.IP, err)
 			}
-		})
-	}
-
-	listenAddr := fmt.Sprintf("%s:%d", t.listenAddr, t.port)
-	log.Printf("[SNMP Trap] Starting listener on %s", listenAddr)
-
-	errCh := make(chan error, 1)
-	safego.Go("snmpTrap:listen", func() {
-		if err := t.server.Listen(listenAddr); err != nil {
-			errCh <- err
 		}
-		close(errCh)
-	})
-
-	select {
-	case err := <-errCh:
-		if err != nil {
-			return fmt.Errorf("trap listener failed: %w", err)
-		}
-		return nil
-	case <-time.After(2 * time.Second):
-		return nil
 	}
 }
 
+// handleDatagram filters one datagram in cost order, so a flood is shed as
+// early as possible: the per-source/global rate limiter, then the community
+// read from the raw header (no PDU decode; its mismatch log sits behind the
+// limiter so a forged flood cannot flood the log), then the full decode. The
+// decoded trap is parsed and relayed on its own goroutine. Returns the
+// response to send for an InformRequest, else nil.
+func (t *TrapReceiver) handleDatagram(msg []byte, addr *net.UDPAddr) []byte {
+	if t.limiter != nil && !t.limiter.Allow(addr.IP.String()) {
+		if t.onRateDrop != nil {
+			t.onRateDrop()
+		}
+		return nil
+	}
+	if t.community != "" {
+		// A malformed or SNMPv3 header yields "", which allowCommunity rejects.
+		community, _ := headerCommunity(msg)
+		if !t.allowCommunity(community, addr.IP.String()) {
+			return nil
+		}
+	}
+
+	// The decoded packet's OctetString values alias the datagram, the relay
+	// goroutine below reads them after the read loop has moved on, and the
+	// loop reuses its buffer: decode a private copy (only for datagrams that
+	// passed the cheap checks above).
+	packet, err := decodeTrap(append([]byte(nil), msg...))
+	if err != nil {
+		return nil
+	}
+	// The decoder must agree with the header check; anything else is a
+	// crafted header and is dropped.
+	if t.community != "" && !t.allowCommunity(packet.Community, addr.IP.String()) {
+		return nil
+	}
+
+	safego.Go("snmpTrap:"+addr.IP.String(), func() {
+		if beforeRelay != nil {
+			beforeRelay()
+		}
+		// The community is a shared secret used to authenticate the trap;
+		// it is deliberately omitted from this log line so it is not exposed
+		// to log readers or log shipping.
+		log.Printf("[SNMP Trap] Received trap from %s (%d varbinds, version %s)",
+			addr.IP, len(packet.Variables), packet.Version)
+		trap := t.parseTrap(packet, addr)
+		if trap != nil && t.handler != nil {
+			log.Printf("[SNMP Trap] Accepted: type=%s severity=%s from %s", trap.TrapType, trap.Severity, trap.SourceIP)
+			t.handler(trap)
+		}
+	})
+
+	if packet.PDUType == gosnmp.InformRequest {
+		// RFC 3416 4.2.7: acknowledge with the same varbinds, noError. A
+		// shallow struct copy: only the header fields change, so the relay
+		// goroutine's packet keeps its PDU type.
+		ack := *packet
+		ack.PDUType = gosnmp.GetResponse
+		ack.Error = gosnmp.NoError
+		ack.ErrorIndex = 0
+		out, err := ack.MarshalMsg()
+		if err != nil {
+			return nil
+		}
+		return out
+	}
+	return nil
+}
+
+// beforeRelay, when set (tests), runs at the start of each relay goroutine,
+// before the decoded packet is read.
+var beforeRelay func()
+
+// decodeTrap runs gosnmp's full decoder. The recover covers only the decoder
+// so a crafted body cannot kill the receiver.
+func decodeTrap(msg []byte) (packet *gosnmp.SnmpPacket, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			packet, err = nil, fmt.Errorf("trap decode panic: %v", r)
+		}
+	}()
+	return gosnmp.Default.UnmarshalTrap(msg, false)
+}
+
 func (t *TrapReceiver) Stop() {
-	t.server.Close()
-	log.Println("[SNMP Trap] Listener stopped")
+	t.stopOnce.Do(func() {
+		if t.conn != nil {
+			t.conn.Close()
+			select {
+			case <-t.done:
+			case <-time.After(3 * time.Second):
+			}
+		}
+		log.Println("[SNMP Trap] Listener stopped")
+	})
 }
 
 func (t *TrapReceiver) allowCommunity(community, srcIP string) bool {
@@ -223,7 +313,10 @@ func formatVarbindValue(v gosnmp.SnmpPDU) string {
 	switch v.Type {
 	case gosnmp.OctetString:
 		if val, ok := v.Value.([]byte); ok && len(val) > 0 {
-			return string(val)
+			// Sender-controlled text bound for the relayed message and our
+			// log lines: neutralise CR/LF and terminal escapes like every
+			// polled device string (cleanDeviceString, D-31 twin).
+			return cleanDeviceString(string(val))
 		}
 	case gosnmp.Integer:
 		return fmt.Sprintf("%d", v.Value)
